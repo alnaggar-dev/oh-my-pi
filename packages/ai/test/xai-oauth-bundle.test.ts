@@ -32,6 +32,10 @@ describe("xai-oauth bundled catalog (regression)", () => {
 			expect(bundledEntry.api).toBe("openai-responses");
 			expect(bundledEntry.contextWindow).toBe(seededModel.contextWindow);
 			expect(bundledEntry.reasoning).toBe(seededModel.reasoning);
+			// baseUrl pins endpoint routing: CLI-only models (Composer 2.5) MUST
+			// carry the Grok CLI proxy URL, public models the api.x.ai URL. A regen
+			// that drops the proxy baseUrl silently 404s Composer against api.x.ai.
+			expect(bundledEntry.baseUrl).toBe(seededModel.baseUrl);
 			// Input modality must survive both the curated seed and the bundle.
 			// Without this the static fallback used on offline boot strips
 			// vision capability silently (Codex PR #1127 review).

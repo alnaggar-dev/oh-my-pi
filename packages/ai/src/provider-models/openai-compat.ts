@@ -12,6 +12,7 @@ import {
 import { toFireworksPublicModelId } from "../utils/fireworks-model-id";
 import { createBundledReferenceMap, createReferenceResolver } from "./bundled-references";
 import { UNK_CONTEXT_WINDOW, UNK_MAX_TOKENS } from "./discovery-constants";
+import { XAI_GROK_CLI_PROXY_BASE_URL } from "./xai-grok-cli-proxy";
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
@@ -652,6 +653,13 @@ export interface XaiOAuthModelManagerConfig {
 
 interface XAICuratedModel {
 	id: string;
+	/**
+	 * Pin the model to a specific endpoint, overriding the provider's resolved
+	 * baseUrl. Set for Grok CLI proxy-only models (Composer 2.5) so they route to
+	 * cli-chat-proxy.grok.com regardless of any `providers.xai-oauth.baseUrl`
+	 * override; left undefined for public-API models (default `api.x.ai/v1`).
+	 */
+	baseUrl?: string;
 	contextWindow: number;
 	name?: string;
 	/** Whether the model reasons natively. Defaults to true for Grok-4.x family. */
@@ -688,6 +696,19 @@ interface XAICuratedModel {
 export const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
 	// grok-build is text-only per the bundled catalog; omit `input` for the default.
 	{ id: "grok-build", contextWindow: 512_000, name: "Grok Build", supportsReasoningEffort: false },
+	// grok-composer-2.5-fast ("Composer 2.5 Fast") is a Grok Build CLI-only
+	// coding model: NOT served by api.x.ai (absent from /v1/models), reachable
+	// only via the Grok CLI proxy. `baseUrl` pins it to the proxy so
+	// streamXAIResponses routes it there and attaches the x-grok-* headers.
+	// Vision-capable, non-reasoning; the proxy rejects the reasoning-effort dial.
+	{
+		id: "grok-composer-2.5-fast",
+		contextWindow: 200_000,
+		name: "Composer 2.5 Fast",
+		reasoning: false,
+		input: ["text", "image"],
+		baseUrl: XAI_GROK_CLI_PROXY_BASE_URL,
+	},
 	{ id: "grok-4.3", contextWindow: 1_000_000, name: "Grok 4.3", input: ["text", "image"] },
 	// grok-4.20-multi-agent-0309 is text-only per the bundled catalog; omit `input` for the default.
 	{ id: "grok-4.20-multi-agent-0309", contextWindow: 2_000_000, name: "Grok 4.20 (Multi-Agent)" },
@@ -738,6 +759,7 @@ function mergeCuratedIntoModel(base: Model<"openai-responses">, curated: XAICura
 	};
 	return {
 		...base,
+		baseUrl: curated.baseUrl ?? base.baseUrl,
 		contextWindow: curated.contextWindow,
 		name: curated.name ?? base.name,
 		reasoning: curated.reasoning ?? true,

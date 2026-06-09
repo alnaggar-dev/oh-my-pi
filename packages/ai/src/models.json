@@ -64582,6 +64582,31 @@
 				"minLevel": "minimal",
 				"maxLevel": "xhigh"
 			}
+		},
+		"grok-composer-2.5-fast": {
+			"id": "grok-composer-2.5-fast",
+			"name": "Composer 2.5 Fast",
+			"api": "openai-responses",
+			"provider": "xai-oauth",
+			"baseUrl": "https://cli-chat-proxy.grok.com/v1",
+			"reasoning": false,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 200000,
+			"maxTokens": 8888,
+			"compat": {
+				"reasoningEffortMap": {
+					"minimal": "low"
+				}
+			}
 		}
 	},
 	"xiaomi": {

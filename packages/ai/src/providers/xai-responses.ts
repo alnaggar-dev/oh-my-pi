@@ -3,6 +3,8 @@
 // Logic EXTRACTED into a dedicated xAI adapter so the generic OpenAI Responses
 // path stays provider-agnostic and the OpenAI Codex Responses path is unaffected.
 
+import { randomUUID } from "node:crypto";
+import { grokCliProxyHeaders, XAI_GROK_CLI_PROXY_BASE_URL } from "../provider-models/xai-grok-cli-proxy";
 import type { Context, Model, StreamFunction } from "../types";
 import {
 	getOpenAIResponsesCacheSessionId,
@@ -32,7 +34,7 @@ function grokSupportsReasoningEffort(modelId: string): boolean {
 /**
  * xAI Grok Responses adapter (SuperGrok OAuth path).
  *
- * Three xAI-specific behaviors vs the generic OpenAI Responses adapter:
+ * Four xAI-specific behaviors vs the generic OpenAI Responses adapter:
  *
  *  1. `x-grok-conv-id` header + body `prompt_cache_key` route prompt-cache
  *     hits on xAI's edge. Hermes uses both (agent/transports/codex.py:182-193).
@@ -44,11 +46,18 @@ function grokSupportsReasoningEffort(modelId: string): boolean {
  *     replayed conversation history; the blob inside is non-replayable under
  *     OAuth and the wrapper item 404s without it (store=false; server cannot
  *     resolve by id).
+ *  4. Grok CLI proxy routing — models whose `baseUrl` is the Grok CLI proxy
+ *     (Composer 2.5; see provider-models/xai-grok-cli-proxy.ts) ship only inside
+ *     the Grok Build CLI and are unreachable on api.x.ai. They need the
+ *     `x-grok-*` routing headers (client id/version, `x-xai-token-auth`,
+ *     `x-grok-model-override`) plus a conversation id so the proxy binds the
+ *     SuperGrok OAuth bearer to the CLI-only model.
  *
  * Everything else is the generic OpenAI Responses transport. The xAI bearer
  * token arrives in `options.apiKey` via AuthStorage.getApiKey() upstream, and
- * the xAI base URL (`https://api.x.ai/v1`) arrives via `model.baseUrl` from
- * the provider registry — not routed through this wrapper.
+ * the base URL arrives via `model.baseUrl` from the provider registry —
+ * `https://api.x.ai/v1` for public models, the Grok CLI proxy for CLI-only
+ * ones — not rewritten by this wrapper.
  */
 export const streamXAIResponses: StreamFunction<"openai-responses"> = (
 	model: Model<"openai-responses">,
@@ -60,6 +69,15 @@ export const streamXAIResponses: StreamFunction<"openai-responses"> = (
 	const xaiHeaders: Record<string, string> = { ...options?.headers };
 	if (cacheSessionId) {
 		xaiHeaders["x-grok-conv-id"] = cacheSessionId;
+	}
+
+	// Grok CLI proxy-only models (Composer 2.5) ride model.baseUrl =
+	// cli-chat-proxy.grok.com; the proxy needs x-grok-* routing headers to bind
+	// the SuperGrok OAuth bearer to the CLI-only model, plus a conversation id it
+	// tracks state by (reuse the cache session id when present for cache hits).
+	if ((model.baseUrl ?? "").startsWith(XAI_GROK_CLI_PROXY_BASE_URL)) {
+		Object.assign(xaiHeaders, grokCliProxyHeaders(model.id));
+		xaiHeaders["x-grok-conv-id"] ??= randomUUID();
 	}
 
 	const xaiBody: Record<string, unknown> = { ...(options?.extraBody ?? {}) };

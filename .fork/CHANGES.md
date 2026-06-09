@@ -15,4 +15,10 @@ Keep simple entries simple; add `Symbols`/`Drift-if` only when upstream behavior
 
 ---
 
-_No customizations registered yet._
+## custom: xai-oauth-composer-2.5
+
+Reason: Surfaces xAI's Grok Build CLI-only Composer 2.5 (grok-composer-2.5-fast) in the xai-oauth picker and routes it through the Grok CLI chat proxy (cli-chat-proxy.grok.com), which the public api.x.ai/v1/models dynamic fetch can never discover.
+Touches: packages/ai/src/provider-models/xai-grok-cli-proxy.ts; packages/ai/src/provider-models/openai-compat.ts; packages/ai/src/providers/xai-responses.ts; packages/ai/src/models.json; packages/ai/test/xai-oauth-bundle.test.ts; packages/ai/test/xai-oauth-grok-cli-proxy.test.ts
+Symbols: streamOpenAIResponses@packages/ai/src/providers/openai-responses.ts
+Drift-if: streamOpenAIResponses/createClient stops routing by model.baseUrl or stops merging options.headers into the request client, so Composer hits api.x.ai (404) or reaches the proxy without the x-grok-* auth headers (401).
+Verify: cd packages/ai && bun test test/xai-oauth-grok-cli-proxy.test.ts test/xai-oauth-bundle.test.ts
