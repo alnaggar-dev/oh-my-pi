@@ -20,4 +20,4 @@
 # trailer). Until then audit.sh falls back to merge-base(HEAD, upstream) with a note.
 # A non-empty SHA that does not resolve is a HARD ERROR (corruption / force-push), not
 # a silent fallback.
-815913f579bbc7c81ceaeb46b3c3f736441f3b2a upstream/main
+8e2083111cf311d5f73f35a5548fd9ab075b42f1 upstream/main
