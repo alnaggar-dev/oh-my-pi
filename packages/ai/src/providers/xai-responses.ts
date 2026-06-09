@@ -11,6 +11,7 @@ import {
 	type OpenAIResponsesOptions,
 	streamOpenAIResponses,
 } from "./openai-responses";
+import { rewriteGrokCliToolPayload, translateGrokCliToolCalls } from "./xai-grok-cli-tools";
 
 // xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3 /
 // grok-code-fast / grok-4.20-0309-* / grok-build with HTTP 400 ("Model X does
@@ -52,6 +53,10 @@ function grokSupportsReasoningEffort(modelId: string): boolean {
  *     `x-grok-*` routing headers (client id/version, `x-xai-token-auth`,
  *     `x-grok-model-override`) plus a conversation id so the proxy binds the
  *     SuperGrok OAuth bearer to the CLI-only model.
+ *     Their tool calls are additionally translated wire-side: pi's built-ins are
+ *     advertised under the Cursor/Grok names the model was trained on (see
+ *     xai-grok-cli-tools.ts) and the model's calls are mapped back to pi names +
+ *     canonical args. `edit` is left native (no faithful StrReplace equivalent).
  *
  * Everything else is the generic OpenAI Responses transport. The xAI bearer
  * token arrives in `options.apiKey` via AuthStorage.getApiKey() upstream, and
@@ -65,6 +70,7 @@ export const streamXAIResponses: StreamFunction<"openai-responses"> = (
 	options: OpenAIResponsesOptions = {},
 ) => {
 	const cacheSessionId = getOpenAIResponsesCacheSessionId(options);
+	const isGrokCliProxy = (model.baseUrl ?? "").startsWith(XAI_GROK_CLI_PROXY_BASE_URL);
 
 	const xaiHeaders: Record<string, string> = { ...options?.headers };
 	if (cacheSessionId) {
@@ -75,7 +81,7 @@ export const streamXAIResponses: StreamFunction<"openai-responses"> = (
 	// cli-chat-proxy.grok.com; the proxy needs x-grok-* routing headers to bind
 	// the SuperGrok OAuth bearer to the CLI-only model, plus a conversation id it
 	// tracks state by (reuse the cache session id when present for cache hits).
-	if ((model.baseUrl ?? "").startsWith(XAI_GROK_CLI_PROXY_BASE_URL)) {
+	if (isGrokCliProxy) {
 		Object.assign(xaiHeaders, grokCliProxyHeaders(model.id));
 		xaiHeaders["x-grok-conv-id"] ??= randomUUID();
 	}
@@ -94,7 +100,17 @@ export const streamXAIResponses: StreamFunction<"openai-responses"> = (
 		// Caller-passed value always wins (escape hatch for future xAI behavior
 		// changes); otherwise gate the effort dial on the allowlist.
 		omitReasoningEffort: options?.omitReasoningEffort ?? !grokSupportsReasoningEffort(model.id),
+		// Composer/Grok-Build proxy models were trained on Cursor/Grok tool names;
+		// rewrite pi's tool definitions + replayed history to those names on the
+		// wire by mutating the built params, then chain any caller onPayload.
+		onPayload: isGrokCliProxy
+			? (payload, payloadModel) => {
+					rewriteGrokCliToolPayload(payload);
+					return options?.onPayload?.(payload, payloadModel);
+				}
+			: options?.onPayload,
 	};
 
-	return streamOpenAIResponses(model, context, xaiOptions);
+	const stream = streamOpenAIResponses(model, context, xaiOptions);
+	return isGrokCliProxy ? translateGrokCliToolCalls(stream) : stream;
 };
