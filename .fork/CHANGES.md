@@ -22,3 +22,15 @@ Touches: packages/ai/src/provider-models/xai-grok-cli-proxy.ts; packages/ai/src/
 Symbols: streamOpenAIResponses@packages/ai/src/providers/openai-responses.ts; convertTools@packages/ai/src/providers/openai-responses.ts
 Drift-if: streamOpenAIResponses/createClient stops routing by model.baseUrl, stops merging options.headers, stops invoking onPayload on the mutable params, or convertTools stops emitting top-level function tool names — so Composer hits api.x.ai (404), loses its x-grok-* auth headers (401), or is served pi tool names/schemas instead of the Grok surface it was trained on.
 Verify: cd packages/ai && bun test test/xai-oauth-grok-cli-proxy.test.ts test/xai-oauth-bundle.test.ts test/xai-oauth-grok-cli-tools.test.ts
+
+## custom: gitignore-temp-scratch
+
+Reason: Ignores the fork-local `.temp/` scratch directory (agent throwaway scripts and artifacts) so session debris never shows in git status or sneaks into commits; appended as a marked "# Custom" block at the end of upstream's .gitignore to keep the port conflict surface minimal.
+Touches: .gitignore
+Verify: grep -qxF '.temp' .gitignore
+
+## custom: omp-fork-change-skill
+
+Reason: Relocates the fork-flow register-and-verify skill from the toolkit-local .fork-flow/skills/ path (which OMP skill discovery never scans) into .omp/skills/ so the fork-change workflow is discoverable during normal agent sessions.
+Touches: .omp/skills/fork-change/SKILL.md
+Verify: grep -q '^name: fork-change' .omp/skills/fork-change/SKILL.md
