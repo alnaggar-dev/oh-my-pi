@@ -427,7 +427,12 @@ import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-
 import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 
-import { cfgAdvisorEnabled, cfgAdvisorMaxNotesPerUpdate } from "../advisor/settings";
+import {
+	cfgAdvisorEnabled,
+	cfgAdvisorIncludeThinking,
+	cfgAdvisorMaxNotesPerUpdate,
+	cfgAdvisorProjectContext,
+} from "../advisor/settings";
 import { cfgBrowserEnabled, cfgBrowserFreezeOnTurnEnd, cfgBrowserIdleCloseSec } from "../tools/browser/settings";
 import {
 	cfgClaudeResets,
@@ -489,6 +494,9 @@ const cfgAdvisorRuntimeInputs = combine({
 	enabled: cfgAdvisorEnabled,
 	maxNotesPerUpdate: cfgAdvisorMaxNotesPerUpdate,
 	tier: cfgTierAdvisor,
+	// Resolved at advisor build time.
+	includeThinking: cfgAdvisorIncludeThinking,
+	projectContext: cfgAdvisorProjectContext,
 });
 /** Settings behind the session's extra workspace roots and the auto-QA prompt note. */
 const cfgWorkspacePromptInputs = combine({

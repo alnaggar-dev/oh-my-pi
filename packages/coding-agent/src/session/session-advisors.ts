@@ -120,7 +120,9 @@ import type { YieldQueue } from "./yield-queue";
 import {
 	cfgAdvisorEvictStaleResults,
 	cfgAdvisorImmuneTurns,
+	cfgAdvisorIncludeThinking,
 	cfgAdvisorMaxNotesPerUpdate,
+	cfgAdvisorProjectContext,
 	cfgAdvisorReviewInterval,
 	cfgAdvisorReviewMode,
 	cfgAdvisorSyncBacklog,
@@ -1264,6 +1266,11 @@ export class SessionAdvisors {
 				? this.#host.effectiveServiceTier(model)
 				: resolveModelServiceTier(advisorTierMap, model);
 
+		// Build-time cost controls: both are baked into the runtimes below, so the
+		// selector rebuilds advisors when either changes.
+		const includeThinking = cfgAdvisorIncludeThinking.get(this.#host.settings);
+		const includeProjectContext = cfgAdvisorProjectContext.get(this.#host.settings);
+
 		for (const descriptor of descriptors) {
 			const {
 				config,
@@ -1287,7 +1294,10 @@ export class SessionAdvisors {
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
 			const systemPrompt = [prompt.render(advisorSystemPrompt, { max_notes_per_update: budgetPerUpdate })];
-			if (this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
+			// `advisor.projectContext: false` drops the verbatim <project-context>
+			// block (AGENTS.md + rules + environment, ~10k tokens here) from every
+			// advisor request; the advisor can still read those files with its tools.
+			if (includeProjectContext && this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
 			if (this.#advisorMemoryPrompt) systemPrompt.push(this.#advisorMemoryPrompt);
 			if (this.#advisorWatchdogPrompt) systemPrompt.push(this.#advisorWatchdogPrompt);
 			if (this.#advisorSharedInstructions) systemPrompt.push(this.#advisorSharedInstructions);
@@ -1544,6 +1554,7 @@ export class SessionAdvisors {
 				snapshotMessages: () => this.#host.agent.state.messages,
 				maintainContext: (incoming, signal) => this.#maintainAdvisorContext(advisorRef, incoming, signal),
 				obfuscator: this.#host.obfuscator(),
+				includeThinking,
 				getModelIdentity: () => formatModelString(advisorRef.agent.state.model),
 				beginAdvisorUpdate: inProgress => {
 					advisorRef.recorder.beginTurn();
