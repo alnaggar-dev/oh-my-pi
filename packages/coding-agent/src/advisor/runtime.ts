@@ -18,7 +18,6 @@ import {
 } from "../session/session-history-format";
 import { ADVISOR_RENDER_OPTIONS, advisorToolIOTransform, renderAdvisorDeltaChunks } from "./delta-split";
 import { fingerprintMessage } from "./message-fingerprint";
-
 /**
  * Minimal slice of `Agent` the runtime drives — satisfied by pi-agent-core
  * `Agent`. `state.error` mirrors `Agent.state.error`: provider/stream failures
@@ -43,6 +42,12 @@ export interface AdvisorRuntimeHost {
 	snapshotMessages(): AgentMessage[];
 	/** Redact primary transcript bytes before they reach the advisor model. */
 	obfuscator?: SecretObfuscator;
+	/**
+	 * Whether primary reasoning blocks are rendered into advisor deltas
+	 * (`advisor.includeThinking`). Defaults to `true`. Resolved at build time:
+	 * the host rebuilds its runtimes when the setting changes.
+	 */
+	includeThinking?: boolean;
 	/**
 	 * Pre-prompt context maintenance for the advisor's own append-only context.
 	 * Promotes the advisor model to a larger sibling when its context nears the
