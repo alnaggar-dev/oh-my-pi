@@ -2,7 +2,7 @@
  * Settings declared by this domain (see `config/registry.ts`). Declaration order is the
  * settings-panel order; `config/all-settings.ts` registers every domain.
  */
-import { register } from "../config/registry";
+import { register, type SettingValueOf } from "../config/registry";
 import { ADVISOR_DEFAULT_BUDGET_PER_UPDATE } from "./emission-guard";
 
 // Advisor is interactive-session assistance: protocol hosts opt in explicitly instead of inheriting the
@@ -93,6 +93,61 @@ export const cfgAdvisorEvictStaleResults = register({
 		label: "Advisor Evict Stale Results",
 		description:
 			"Before each review, replace the advisor's read/grep/glob output from older reviews with a short placeholder. The latest review is kept.",
+		condition: "advisorEnabled",
+	},
+});
+
+export const cfgAdvisorReviewOn = register({
+	id: "advisor.reviewOn",
+	type: "enum",
+	values: ["step", "mutation", "turn"] as const,
+	default: "step",
+	ui: {
+		tab: "model",
+		group: "Advisor",
+		label: "Advisor Review Cadence",
+		description:
+			"How often the advisor reviews the main agent while a turn is still running. The final turn boundary is always reviewed; lowering the cadence cuts advisor requests (and cost) proportionally.",
+		options: [
+			{ value: "step", label: "Every step", description: "Default." },
+			{
+				value: "mutation",
+				label: "Risky steps",
+				description: "Mid-turn: skip steps that only ran read tools (read/grep/glob/ast_grep/…)",
+			},
+			{ value: "turn", label: "Turn end", description: "Review once per turn, when the main agent stops." },
+		],
+		condition: "advisorEnabled",
+	},
+});
+
+/** Advisor mid-turn review cadence. */
+export type AdvisorReviewCadence = SettingValueOf<typeof cfgAdvisorReviewOn>;
+
+export const cfgAdvisorIncludeThinking = register({
+	id: "advisor.includeThinking",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "model",
+		group: "Advisor",
+		label: "Advisor Sees Reasoning",
+		description:
+			"Include the main agent's reasoning blocks in the transcript deltas sent to the advisor. Disabling trims advisor input at the cost of hiding the agent's intent.",
+		condition: "advisorEnabled",
+	},
+});
+
+export const cfgAdvisorProjectContext = register({
+	id: "advisor.projectContext",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "model",
+		group: "Advisor",
+		label: "Advisor Project Context",
+		description:
+			"Repeat the project context block (AGENTS.md, repo rules, environment) in the advisor's system prompt. Disabling shrinks every advisor request; the advisor can still read files itself.",
 		condition: "advisorEnabled",
 	},
 });

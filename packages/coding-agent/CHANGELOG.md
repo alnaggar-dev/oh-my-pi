@@ -350,9 +350,14 @@
 ### Changed
 
 - Shell-backed API keys and headers resolve asynchronously without freezing terminal input or running during catalog construction.
+### Added
+
+- Added the `advisor.reviewOn`, `advisor.includeThinking`, and `advisor.projectContext` settings to control advisor token spend. `advisor.reviewOn` defaults to `step` (today's behavior: one review per primary agent-loop step); `mutation` skips a mid-turn step only when every tool call since the last review is review-exempt — the read-tier tools minus `retain`, `memory_edit`, `checkpoint`, and `rewind`, so any unrecognized or mutating tool still triggers a review; `turn` reviews only the terminal boundary. The terminal boundary is always reviewed and skipped content is never dropped. `advisor.includeThinking: false` omits primary reasoning from the advisor delta, and `advisor.projectContext: false` omits the discovered `<project-context>` block from the advisor system prompt.
+- Expanded edit diffs in advisor transcript deltas are now bounded by the same 8 KiB / 80-line budget as other expanded tool input/output instead of being sent in full.
 
 ### Fixed
 
+- Fixed every `require("@oh-my-pi/pi-*")` first-use boundary dying with `BuildMessage: NameTooLong reading "file:file:file:…"` once the legacy-pi extension shim was installed — most visibly the `/login` provider selector, which crashed the process as an unhandled rejection. The shim's resolve hook matches the canonical `@oh-my-pi` scope as well as the legacy aliases, so a specifier that remapped to itself was re-resolved through `Bun.resolveSync` inside the hook, Bun re-entered the same hook, and each pass prefixed another `file:` until the name exceeded the OS limit. Such a specifier now declines unless a bundled/root override answers it, leaving native resolution untouched.
 - macOS process discovery now retains the complete PID list when locating executables and descendants. ([#12290](https://github.com/can1357/oh-my-pi/pull/12290) by [@iliaal](https://github.com/iliaal))
 - Reduced snapshot-recording stalls when a session retains large file histories. ([#12279](https://github.com/can1357/oh-my-pi/pull/12279) by [@iliaal](https://github.com/iliaal))
 - Cancelled background jobs remain tracked until execution finishes, so cleanup cannot report completion prematurely after retention expires. ([#12278](https://github.com/can1357/oh-my-pi/pull/12278) by [@iliaal](https://github.com/iliaal))

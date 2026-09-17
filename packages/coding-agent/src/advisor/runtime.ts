@@ -3,6 +3,7 @@ import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-a
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { raceWithSignal } from "@oh-my-pi/pi-ai/utils/abort";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { AdvisorReviewCadence } from "./settings";
 import {
 	collectNativeReplayRegexSecretValues,
 	obfuscateNativeReplay,
@@ -14,8 +15,38 @@ import {
 	formatSessionHistoryMarkdown,
 	PRIMARY_CONTEXT_CUSTOM_TYPES,
 } from "../session/session-history-format";
+import { READ_ONLY_TOOL_NAMES } from "../task/read-only-policy";
+import { normalizeToolName } from "../tools/builtin-names";
 import { ADVISOR_RENDER_OPTIONS, renderAdvisorDeltaChunks } from "./delta-split";
 import { fingerprintMessage } from "./message-fingerprint";
+
+export type { AdvisorReviewCadence };
+
+/**
+ * Read-tier tools that nevertheless mutate durable state, so a mid-turn step
+ * containing one is worth an advisor review even under `advisor.reviewOn:
+ * mutation`. `retain`/`memory_edit` write the memory bank; `checkpoint`/`rewind`
+ * move the session's git-backed history. Declared BEFORE the derived table
+ * below: that initializer runs at module load, so a later `const` would be a
+ * TDZ ReferenceError.
+ */
+const ADVISOR_STATEFUL_READ_TIER_TOOLS: Record<string, true> = {
+	retain: true,
+	memory_edit: true,
+	checkpoint: true,
+	rewind: true,
+};
+
+/**
+ * Tool names whose presence in a mid-turn step does NOT justify an advisor
+ * review under `advisor.reviewOn: mutation` — the read-approval tier minus the
+ * state-mutating entries above. Fail-safe by construction: anything absent
+ * (every write/exec tool, `lsp` — whose rename/code_actions edit files —
+ * `hub`, `task`, and all MCP/plugin tools) forces a review.
+ */
+const ADVISOR_REVIEW_EXEMPT_TOOLS: Record<string, true> = Object.fromEntries(
+	[...READ_ONLY_TOOL_NAMES].filter(name => !ADVISOR_STATEFUL_READ_TIER_TOOLS[name]).map(name => [name, true]),
+);
 
 /**
  * Minimal slice of `Agent` the runtime drives — satisfied by pi-agent-core
@@ -41,6 +72,12 @@ export interface AdvisorRuntimeHost {
 	snapshotMessages(): AgentMessage[];
 	/** Redact primary transcript bytes before they reach the advisor model. */
 	obfuscator?: SecretObfuscator;
+	/**
+	 * Whether primary reasoning blocks are rendered into advisor deltas
+	 * (`advisor.includeThinking`). Defaults to `true`. Resolved at build time:
+	 * the host rebuilds its runtimes when the setting changes.
+	 */
+	includeThinking?: boolean;
 	/**
 	 * Pre-prompt context maintenance for the advisor's own append-only context.
 	 * Promotes the advisor model to a larger sibling when its context nears the
@@ -294,8 +331,13 @@ export class AdvisorRuntime {
 	 * terminal turn ends the cascade, or on reset, so a later refusal starts fresh.
 	 */
 	readonly #refusalModelsTried = new Set<string>();
-	/** Whether primary reasoning is included in advisor deltas for the current model. */
-	#includeThinking = true;
+	/**
+	 * Whether primary reasoning is included in advisor deltas for the current
+	 * model. Seeded from `host.includeThinking` (the `advisor.includeThinking`
+	 * setting) and forced off for the rest of a model's life by a classifier
+	 * refusal; never re-enabled above the host's setting.
+	 */
+	#includeThinking: boolean;
 	#modelIdentity: string | undefined;
 	/** Completed 3-failure backlog-drop cycles since the last success/reset. */
 	#droppedBacklogs = 0;
@@ -338,7 +380,9 @@ export class AdvisorRuntime {
 		private readonly agent: AdvisorAgent,
 		private readonly host: AdvisorRuntimeHost,
 		private readonly retryDelayMs = 1000,
-	) {}
+	) {
+		this.#includeThinking = host.includeThinking ?? true;
+	}
 
 	get backlog(): number {
 		return this.#backlog;
@@ -379,12 +423,21 @@ export class AdvisorRuntime {
 	 *   steps will follow). The rendered heading is tagged `[in progress]` so the
 	 *   advisor knows to withhold critique on partial work. The flag is carried on
 	 *   the delta and forwarded to the reprime path so it is never silently dropped.
+	 * @param opts.cadence - `advisor.reviewOn`, re-read by the host on every step.
+	 *   Only consulted while `willContinue` is `true`: the terminal boundary is
+	 *   always reviewed.
 	 */
-	onTurnEnd(messages?: AgentMessage[], opts?: { willContinue?: boolean }): void {
+	onTurnEnd(messages?: AgentMessage[], opts?: { willContinue?: boolean; cadence?: AdvisorReviewCadence }): void {
 		if (this.disposed || this.#quotaExhausted || this.#halted) return;
 		const all = messages ?? this.host.snapshotMessages();
 		this.#latestMessages = all;
 		const wip = opts?.willContinue ?? false;
+		// Placement is load-bearing on BOTH sides: AFTER #latestMessages so a
+		// skipped step's transcript is still the newest snapshot for the reprime
+		// path, and BEFORE #renderDelta because that call advances
+		// #lastCount/#deliveredPrefix/#seenContext — skipping ahead of it keeps
+		// the skipped steps queued for the next review instead of dropping them.
+		if (wip && !this.#shouldReviewMidTurn(all, opts?.cadence)) return;
 		let rendered: Omit<PendingDelta, "turns" | "overflowRecovery"> | null = null;
 		// #renderDelta advances the cursor/prefix/dedup state before formatting
 		// can throw; snapshot them so a formatter bug loses NOTHING — the next
@@ -413,6 +466,31 @@ export class AdvisorRuntime {
 			this.#notifyWaiters();
 			void this.#drain();
 		}
+	}
+
+	/**
+	 * Whether a mid-turn (`willContinue:true`) step is worth an advisor request
+	 * under the active `advisor.reviewOn` cadence. `step` (default) reviews
+	 * everything; `turn` defers to the terminal boundary; `mutation` reviews
+	 * unless EVERY tool call since the last review is read-only
+	 * ({@link ADVISOR_REVIEW_EXEMPT_TOOLS}) — a step with no tool calls at all
+	 * (text-only, aborted) is therefore deferred too, and the next non-exempt
+	 * step carries the skipped ones along.
+	 */
+	#shouldReviewMidTurn(all: AgentMessage[], cadence: AdvisorReviewCadence | undefined): boolean {
+		if (cadence === undefined || cadence === "step") return true;
+		if (cadence === "turn") return false;
+		// Scan in place from the review cursor — no slice: this runs on every
+		// primary step.
+		for (let i = this.#lastCount; i < all.length; i++) {
+			const message = all[i];
+			if (message === undefined || message.role !== "assistant") continue;
+			for (const block of message.content) {
+				if (block.type !== "toolCall") continue;
+				if (!ADVISOR_REVIEW_EXEMPT_TOOLS[normalizeToolName(block.name)]) return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -669,7 +747,9 @@ export class AdvisorRuntime {
 		const identity = this.host.getModelIdentity?.();
 		if (identity === undefined || identity === this.#modelIdentity) return;
 		this.#modelIdentity = identity;
-		this.#includeThinking = true;
+		// A new model gets a fresh reasoning attempt — but never above the
+		// `advisor.includeThinking` setting the host resolved.
+		this.#includeThinking = this.host.includeThinking ?? true;
 	}
 
 	// Candidate 4 (multi-message split): render the Session update as MULTIPLE
