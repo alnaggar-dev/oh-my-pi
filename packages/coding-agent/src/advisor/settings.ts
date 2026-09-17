@@ -139,3 +139,31 @@ export const cfgAdvisorEvictStaleResults = register({
 		condition: "advisorEnabled",
 	},
 });
+
+export const cfgAdvisorIncludeThinking = register({
+	id: "advisor.includeThinking",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "model",
+		group: "Advisor",
+		label: "Advisor Sees Reasoning",
+		description:
+			"Include the main agent's reasoning blocks in the transcript deltas sent to the advisor. Disabling trims advisor input at the cost of hiding the agent's intent.",
+		condition: "advisorEnabled",
+	},
+});
+
+export const cfgAdvisorProjectContext = register({
+	id: "advisor.projectContext",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "model",
+		group: "Advisor",
+		label: "Advisor Project Context",
+		description:
+			"Repeat the project context block (AGENTS.md, repo rules, environment) in the advisor's system prompt. Disabling shrinks every advisor request; the advisor can still read files itself.",
+		condition: "advisorEnabled",
+	},
+});
