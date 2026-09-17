@@ -473,6 +473,8 @@ Advisors review primary turns on a configurable cadence and can inject advice. E
 | `advisor.reviewInterval` | number | `1` | Default advisor only: review every Nth eligible update. Skipped updates are sent with the next scheduled review; pending advice delivery never depends on cadence. Applies live. |
 | `advisor.maxNotesPerUpdate` | number | `4` | Non-blocker notes accepted per advisor review, from 1–32. Higher-severity notes can replace only pending notes from the same review. `WATCHDOG.yml` top-level or per-advisor values override this default. |
 | `advisor.evictStaleResults` | boolean | `true` | Before each review, replace the advisor's `read`/`grep`/`glob` output from older reviews with a short placeholder. The latest review is kept. |
+| `advisor.includeThinking` | boolean | `true` | Include the primary's assistant reasoning in the rendered advisor delta. |
+| `advisor.projectContext` | boolean | `true` | Include the discovered `<project-context>` block (`AGENTS.md` and related standing instructions) in the advisor system prompt. |
 
 ### Thinking
 
