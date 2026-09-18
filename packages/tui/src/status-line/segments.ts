@@ -16,7 +16,7 @@ import { fileHyperlink } from "../render/hyperlink";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../theme/session-color";
 import { summarizeLoopCondition } from "./loop";
 import { formatMetric } from "../components/metric";
-import { formatBillingSummary } from "./metrics";
+import { formatAutoThinkingActivity, formatBillingSummary } from "./metrics";
 import { sanitizeStatusText } from "../chrome/shared";
 import {
 	formatContextUsage,
@@ -299,7 +299,9 @@ function modelThinkingDisplay(ctx: SegmentContext): string {
 	if (ctx.session.isAutoThinking) {
 		// Pending (no turn classified yet / classifying) shows a symbol-theme
 		// question-box marker; once resolved it shows `<level>`.
-		const resolved = ctx.session.autoResolvedThinkingLevel();
+		// A live classification outranks the previous turn's resolved level.
+		const activity = ctx.session.autoThinkingActivity?.();
+		const resolved = activity?.classifying ? undefined : ctx.session.autoResolvedThinkingLevel();
 		return resolved
 			? (theme.thinking[resolved as keyof Theme["thinking"]] ?? resolved)
 			: `${theme.thinking.autoPending} auto`;
@@ -886,6 +888,26 @@ const contextPctSegment: StatusLineSegment = {
 	},
 };
 
+/**
+ * Auto-thinking classifier tally for this session: how many turns resolved a
+ * level, and (after a `!`) how many fell back to a guess. Hidden unless the
+ * session runs the classifier and has classified at least one turn.
+ */
+const autoThinkingSegment: StatusLineSegment = {
+	id: "auto_thinking",
+	render(ctx) {
+		if (!ctx.session.isAutoThinking) return { content: "", visible: false };
+		const content = formatAutoThinkingActivity(ctx.session.autoThinkingActivity?.(), theme);
+		if (!content) return { content: "", visible: false };
+		return { content: theme.fg("statusLineModel", content), visible: true };
+	},
+	describe(ctx) {
+		if (!ctx.session.isAutoThinking) return null;
+		const content = formatAutoThinkingActivity(ctx.session.autoThinkingActivity?.(), theme);
+		return content ? segView([span(content, "statusLineModel")]) : null;
+	},
+};
+
 const contextTotalSegment: StatusLineSegment = {
 	id: "context_total",
 	render(ctx) {
@@ -1289,6 +1311,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	token_rate: tokenRateSegment,
 	cost: costSegment,
 	context_pct: contextPctSegment,
+	auto_thinking: autoThinkingSegment,
 	context_total: contextTotalSegment,
 	time_spent: timeSpentSegment,
 	time: timeSegment,
