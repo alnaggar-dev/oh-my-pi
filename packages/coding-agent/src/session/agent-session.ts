@@ -435,7 +435,7 @@ import {
 	USER_INTERRUPT_LABEL,
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
-import { ModelControls, type ModelControlsHost } from "./model-controls";
+import { type AutoThinkingActivity, ModelControls, type ModelControlsHost } from "./model-controls";
 import {
 	isPrewalkPlanNudge,
 	PrewalkCoordinator,
@@ -7122,6 +7122,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** The level `auto` resolved to for the current turn (undefined until classified). */
 	autoResolvedThinkingLevel(): Effort | undefined {
 		return this.#models.autoResolvedThinkingLevel;
+	}
+
+	/** Live auto-thinking classifier activity (in-flight flag + per-session tallies). */
+	autoThinkingActivity(): AutoThinkingActivity {
+		return this.#models.autoThinkingActivity;
 	}
 
 	/** Live per-family service tiers (OpenAI / Anthropic / Google). */
