@@ -224,6 +224,7 @@ const modelSegment: StatusLineSegment = {
 
 		// Resolve the current thinking-level display ("◉ xhigh", "⟳ auto", …)
 		// when the model supports thinking and the segment isn't hiding it.
+		let classifyingNow = false;
 		let thinkingDisplay = "";
 		if (opts.showThinkingLevel !== false && state.model?.thinking) {
 			if (ctx.session.isAutoThinking) {
@@ -231,7 +232,8 @@ const modelSegment: StatusLineSegment = {
 				// question-box marker; once resolved it shows `<level>`.
 				// A live classification outranks the previous turn's resolved level.
 				const activity = ctx.session.autoThinkingActivity?.();
-				const resolved = activity?.classifying ? undefined : ctx.session.autoResolvedThinkingLevel();
+				classifyingNow = activity?.classifying === true;
+				const resolved = classifyingNow ? undefined : ctx.session.autoResolvedThinkingLevel();
 				thinkingDisplay = resolved
 					? (theme.thinking[resolved as keyof Theme["thinking"]] ?? resolved)
 					: `${theme.thinking.autoPending} auto`;
@@ -249,8 +251,11 @@ const modelSegment: StatusLineSegment = {
 		}
 
 		// Compact mode swaps the model icon for the thinking-level glyph and drops
-		// the " · <level>" tail, keeping the level visible as a single icon.
-		const compact = ctx.compactThinkingLevel && thinkingDisplay !== "";
+		// the " · <level>" tail, keeping the level visible as a single icon. A live
+		// classification opts out: compacted, it is a bare glyph swap in the icon
+		// slot, indistinguishable from the idle pending state — the spelled-out
+		// `⟳ auto` tail is the only form a reader actually notices.
+		const compact = ctx.compactThinkingLevel && thinkingDisplay !== "" && !classifyingNow;
 		const modelIcon = compact ? leadingGlyph(thinkingDisplay) : theme.icon.model;
 
 		// Fast-mode icon and thinking-level suffix trail the model name and are

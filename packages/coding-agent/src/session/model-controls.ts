@@ -41,6 +41,13 @@ import type { SessionManager } from "./session-manager";
 
 import { cfgDefaultThinkingLevel, cfgProvidersFireworksTier } from "./settings";
 import { cfgDisabledProviders, cfgEnabledModels } from "../config/model-settings";
+/**
+ * How long the classifier marker stays up after classification ends. A
+ * classification usually finishes faster than the status line's repaint cadence,
+ * so the flag is held briefly to stay perceivable. Display-only: no turn work
+ * ever waits on this window.
+ */
+export const MIN_CLASSIFYING_VISIBLE_MS = 1000;
 
 /** Capabilities borrowed from the owning AgentSession. */
 export interface ModelControlsHost {
@@ -101,6 +108,10 @@ export class ModelControls {
 	 * child's classifications roll up into the spawning session's tally.
 	 */
 	readonly #autoActivity: AutoThinkingTally;
+	/** Pending linger timer that clears {@link AutoThinkingTally.classifying}. */
+	#classifyingLingerTimer: NodeJS.Timeout | undefined;
+	/** `Date.now()` when this session's classification started. */
+	#classifyStartedAt = 0;
 	#serviceTierByFamily: ServiceTierByFamily;
 
 	constructor(
@@ -635,6 +646,53 @@ export class ModelControls {
 	static readonly #AUTO_THINKING_TIMEOUT_MS = 4000;
 
 	/**
+	 * Sole mutation point for the shared tally's `classifying` flag: emits only on
+	 * a real transition, so the status line repaints once per edge.
+	 */
+	#setClassifying(next: boolean): void {
+		if (this.#autoActivity.classifying === next) return;
+		this.#autoActivity.classifying = next;
+		this.#host.emit({ type: "auto_thinking_activity", classifying: next });
+	}
+
+	/** Raise the marker before the classifier is awaited, so the UI sees it in flight. */
+	#beginClassifying(): void {
+		this.#classifyStartedAt = Date.now();
+		if (this.#classifyingLingerTimer) {
+			clearTimeout(this.#classifyingLingerTimer);
+			this.#classifyingLingerTimer = undefined;
+		}
+		this.#autoActivity.inFlight += 1;
+		this.#setClassifying(true);
+	}
+
+	/**
+	 * Drop the marker once the last classification in the tree finished, no sooner
+	 * than {@link MIN_CLASSIFYING_VISIBLE_MS} after this one started. Never
+	 * awaited: the turn continues with the resolved level while the timer only
+	 * trails the display flag.
+	 */
+	#endClassifying(): void {
+		this.#autoActivity.inFlight -= 1;
+		if (this.#autoActivity.inFlight > 0) return;
+		const remaining = MIN_CLASSIFYING_VISIBLE_MS - (Date.now() - this.#classifyStartedAt);
+		if (remaining <= 0) {
+			this.#setClassifying(false);
+			return;
+		}
+		const timer = setTimeout(() => {
+			this.#classifyingLingerTimer = undefined;
+			// A classification that started during the linger keeps the marker up;
+			// its own completion owns the clear.
+			if (this.#autoActivity.inFlight > 0) return;
+			this.#setClassifying(false);
+		}, remaining);
+		// Purely cosmetic: it must never hold the process open.
+		timer.unref();
+		this.#classifyingLingerTimer = timer;
+	}
+
+	/**
 	 * Classify the current user turn and set the effective thinking level for it.
 	 * Bounded by a timeout + abort; on failure it preserves the last classified
 	 * level, or uses the provisional concrete level before the first resolution.
@@ -661,8 +719,7 @@ export class ModelControls {
 				sessionId: this.#host.sessionManager.getSessionId(),
 				parentId: this.#host.sessionManager.getLeafId(),
 			};
-			this.#autoActivity.inFlight += 1;
-			this.#autoActivity.classifying = true;
+			this.#beginClassifying();
 			try {
 				resolved = await classifyDifficulty(promptText, {
 					settings: this.#host.settings,
@@ -685,8 +742,7 @@ export class ModelControls {
 				});
 			} finally {
 				clearTimeout(timer);
-				this.#autoActivity.inFlight -= 1;
-				this.#autoActivity.classifying = this.#autoActivity.inFlight > 0;
+				this.#endClassifying();
 			}
 			// Count the turn only while it is still the live one: an aborted or
 			// superseded turn discards its result, so it discards its tally too.
