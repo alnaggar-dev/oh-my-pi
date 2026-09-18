@@ -141,6 +141,52 @@ describe("subagent HUD lines", () => {
 			expect(withoutAdvisor).not.toContain(theme.icon.advisor);
 		});
 
+		it("names the resolved effort level after the agent name and role", () => {
+			const session = makeSession({
+				id: "EffortWorker",
+				agent: "scout",
+				description: "Inspect rendering",
+				progress: makeProgress({
+					id: "EffortWorker",
+					resolvedModelIdentity: "openai/gpt-5",
+					resolvedThinkingLevel: ThinkingLevel.High,
+				}),
+			});
+			const role = `${theme.format.bracketLeft}scout${theme.format.bracketRight}`;
+			expect(render([session])).toContain(
+				`EffortWorker ${role} ${theme.format.bracketLeft}high${theme.format.bracketRight}: Inspect rendering`,
+			);
+
+			// Nothing explicit resolved: the row keeps its previous shape.
+			session.progress = makeProgress({
+				id: "EffortWorker",
+				resolvedModelIdentity: "openai/gpt-5",
+				resolvedThinkingLevel: ThinkingLevel.Inherit,
+			});
+			expect(render([session])).toContain(`EffortWorker ${role}: Inspect rendering`);
+		});
+
+		it("keeps effort inside the row budget on narrow terminals", () => {
+			const sessions = [
+				makeSession({
+					id: `EffortWorker${"-wide".repeat(10)}`,
+					agent: `role-${"extended-".repeat(6)}`,
+					description: "Every available column ".repeat(10),
+					progress: makeProgress({
+						id: "EffortWorker",
+						resolvedModelIdentity: "openai/gpt-5",
+						resolvedThinkingLevel: ThinkingLevel.Max,
+						advisor: true,
+					}),
+				}),
+			];
+			for (const width of [30, 40, 60, 120]) {
+				for (const row of render(sessions, width).split("\n")) {
+					expect(Bun.stringWidth(row)).toBeLessThanOrEqual(width);
+				}
+			}
+		});
+
 		it("keeps metadata hidden when disabled or settings have not initialized", () => {
 			const sessions = [
 				makeSession({

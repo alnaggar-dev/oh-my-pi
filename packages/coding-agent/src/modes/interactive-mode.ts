@@ -150,6 +150,7 @@ import {
 	replaceTabs,
 	shortenEmbeddedPaths,
 	shortenPath,
+	thinkingLevelBadge,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui/render/render-utils";
@@ -848,8 +849,8 @@ export function layoutPinnedHud(runningTotal: number, expanded: boolean): Pinned
 
 /**
  * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
- * a bounded set of running-agent rows in the same `Id ⟨role⟩: description` shape
- * the inline task rows use (muted task preview when no description was given).
+ * a bounded set of running-agent rows in the same `Id ⟨role⟩ ⟨effort⟩: description`
+ * shape the inline task rows use (muted task preview when no description was given).
  * Layout mirrors the Todos HUD exactly: unindented header, then
  * `renderTreeList` rows (dim connectors) shifted right by one space.
  * Every active subagent is listed — detached background spawns and sync task
@@ -879,7 +880,16 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 					agentTypeBadge(role, theme),
 					Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}`)),
 				);
-				const titleBudget = Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}${badge}`));
+				// Effort is model metadata: it follows the same badge gate and the
+				// same dim bracket styling as the role badge, so the row names the
+				// agent, its type, and the effort it runs at.
+				const effort = showModelBadge
+					? truncateToWidth(
+							thinkingLevelBadge(session.progress?.resolvedThinkingLevel, theme),
+							Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}${badge}`)),
+						)
+					: "";
+				const titleBudget = Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}${badge}${effort}`));
 				const modelBadge = showModelBadge
 					? formatFeedModelBadge(
 							session.progress?.resolvedModelIdentity ?? session.progress?.resolvedModel,
@@ -890,7 +900,7 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 						)
 					: "";
 				const modelLead = modelBadge ? `${modelBadge} ` : "";
-				let line = `${dot} ${modelLead}${theme.fg("accent", theme.bold(displayId))}${badge}`;
+				let line = `${dot} ${modelLead}${theme.fg("accent", theme.bold(displayId))}${badge}${effort}`;
 				const description = session.description?.trim() || session.progress?.description?.trim();
 				const distinctDescription =
 					description && !labelEchoesHandle(session.id, description) ? description : undefined;
