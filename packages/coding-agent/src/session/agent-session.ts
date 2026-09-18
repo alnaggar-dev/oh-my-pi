@@ -370,7 +370,12 @@ import {
 	USER_INTERRUPT_LABEL,
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
-import { type AutoThinkingActivity, ModelControls, type ModelControlsHost } from "./model-controls";
+import {
+	type AutoThinkingActivity,
+	type AutoThinkingTally,
+	ModelControls,
+	type ModelControlsHost,
+} from "./model-controls";
 import {
 	isPrewalkPlanNudge,
 	PrewalkCoordinator,
@@ -431,6 +436,7 @@ import { YieldQueue } from "./yield-queue";
 export * from "./agent-session-events";
 export * from "./agent-session-types";
 export type { AdvisorStats, AdvisorStatusOverviewEntry, PerAdvisorStat } from "./session-advisors";
+export type { AutoThinkingActivity, AutoThinkingTally } from "./model-controls";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
 /** Assistant thinking+reply words a deferred auto-title waits for before retitling from context. */
@@ -1708,6 +1714,7 @@ export class AgentSession implements SettingsScope {
 			thinkingLevel: config.thinkingLevel,
 			thinkingLevelCeiling: config.thinkingLevelCeiling,
 			serviceTierByFamily: config.serviceTierByFamily,
+			activity: config.autoThinkingActivity,
 		});
 
 		this.#promptTemplates = config.promptTemplates ?? [];
@@ -6019,6 +6026,14 @@ export class AgentSession implements SettingsScope {
 	/** Live auto-thinking classifier activity (in-flight flag + per-session tallies). */
 	autoThinkingActivity(): AutoThinkingActivity {
 		return this.#models.autoThinkingActivity;
+	}
+
+	/**
+	 * The same tally object, mutable: handed to subagent sessions so their
+	 * classifications roll up into this session's counters.
+	 */
+	autoThinkingTally(): AutoThinkingTally {
+		return this.#models.autoThinkingTally;
 	}
 
 	/** Live per-family service tiers (OpenAI / Anthropic / Google). */
