@@ -1298,6 +1298,7 @@ export class VibeSessionRegistry {
 			modelRole: record.modelRole,
 			parentActiveModelPattern: session.getActiveModelString?.(),
 			thinkingLevel: record.agent.thinkingLevel,
+			autoThinkingActivity: session.autoThinkingTally?.(),
 			sessionFile,
 			persistArtifacts: Boolean(sessionFile),
 			artifactsDir,
