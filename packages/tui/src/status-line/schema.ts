@@ -14,6 +14,7 @@ export const STATUS_LINE_SEGMENT_IDS = [
 	"token_rate",
 	"cost",
 	"context_pct",
+	"auto_thinking",
 	"context_total",
 	"time_spent",
 	"time",
@@ -38,7 +39,7 @@ export const CUSTOM_STATUS_LINE_DEFAULTS: {
 	readonly right: StatusLineSegmentId[];
 } = {
 	left: ["vim", "model", "mode", "path", "git", "pr"],
-	right: ["session_name", "token_total", "cost", "context_pct"],
+	right: ["session_name", "token_total", "cost", "context_pct", "auto_thinking"],
 };
 
 export const CONTEXT_LINE_MODE_VALUES = ["off", "percentage", "annotated", "embedded"] as const;
