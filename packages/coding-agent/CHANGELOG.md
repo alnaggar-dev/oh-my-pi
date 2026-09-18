@@ -288,6 +288,10 @@
 
 - Added an `auto` thinking activity readout to the status line: sessions now expose the classifier's in-flight state plus per-session counts of turns it resolved a level for versus turns that fell back after a timeout or error.
 
+### Changed
+
+- Changed the status line's `auto` thinking activity readout to count a whole session tree: subagent classifications now roll up into the spawning session's tally, so a turn where several subagents classified is reflected in the parent's counts.
+
 ### Fixed
 
 - Fixed clipboard paste stalling on an empty clipboard; image and text clipboard reads now run concurrently so the empty-clipboard status surfaces after the slower read instead of the sum of both.

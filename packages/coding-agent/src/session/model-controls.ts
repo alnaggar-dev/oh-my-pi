@@ -63,7 +63,6 @@ export interface ModelControlsHost {
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 }
 
-/** Owns model selection, thinking effort, role cycling, and service tiers. */
 /** Live auto-thinking classifier activity for this session. */
 export interface AutoThinkingActivity {
 	/** A classification request is in flight right now. */
@@ -74,6 +73,20 @@ export interface AutoThinkingActivity {
 	readonly fallback: number;
 }
 
+/**
+ * Mutable tally shared by a session tree: the spawning session's object is
+ * handed to every subagent session, so child classifications land on it.
+ * `inFlight` is bookkeeping for concurrent children; `classifying` mirrors
+ * `inFlight > 0` so the renderer keeps reading one boolean.
+ */
+export interface AutoThinkingTally {
+	classifying: boolean;
+	classified: number;
+	fallback: number;
+	inFlight: number;
+}
+
+/** Owns model selection, thinking effort, role cycling, and service tiers. */
 export class ModelControls {
 	readonly #host: ModelControlsHost;
 	#scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
@@ -82,8 +95,12 @@ export class ModelControls {
 	readonly #thinkingLevelCeiling: Effort | undefined;
 	#autoThinking = false;
 	#autoResolvedLevel: Effort | undefined;
-	/** Mutated in place: the status line reads it every frame, so it is never copied. */
-	readonly #autoActivity = { classifying: false, classified: 0, fallback: 0 };
+	/**
+	 * Mutated in place: the status line reads it every frame, so it is never
+	 * copied. Shared with every subagent session spawned from this one, so a
+	 * child's classifications roll up into the spawning session's tally.
+	 */
+	readonly #autoActivity: AutoThinkingTally;
 	#serviceTierByFamily: ServiceTierByFamily;
 
 	constructor(
@@ -93,11 +110,14 @@ export class ModelControls {
 			thinkingLevel?: ConfiguredThinkingLevel;
 			thinkingLevelCeiling?: Effort;
 			serviceTierByFamily?: ServiceTierByFamily;
+			/** Tally shared with the spawning session's tree; absent → this session owns its own. */
+			activity?: AutoThinkingTally;
 		},
 	) {
 		this.#host = host;
 		this.#scopedModels = options.scopedModels ?? [];
 		this.#serviceTierByFamily = options.serviceTierByFamily ?? {};
+		this.#autoActivity = options.activity ?? { classifying: false, classified: 0, fallback: 0, inFlight: 0 };
 		this.#thinkingLevelCeiling = options.thinkingLevelCeiling;
 		if (options.thinkingLevel === AUTO_THINKING) {
 			// Keep auto pending until the first turn while exposing a valid wire effort.
@@ -148,6 +168,11 @@ export class ModelControls {
 
 	/** Stable classifier activity; the same object is mutated in place. */
 	get autoThinkingActivity(): AutoThinkingActivity {
+		return this.#autoActivity;
+	}
+
+	/** Same object as {@link autoThinkingActivity}, mutable for subagent roll-up. */
+	get autoThinkingTally(): AutoThinkingTally {
 		return this.#autoActivity;
 	}
 
@@ -636,6 +661,7 @@ export class ModelControls {
 				sessionId: this.#host.sessionManager.getSessionId(),
 				parentId: this.#host.sessionManager.getLeafId(),
 			};
+			this.#autoActivity.inFlight += 1;
 			this.#autoActivity.classifying = true;
 			try {
 				resolved = await classifyDifficulty(promptText, {
@@ -659,7 +685,8 @@ export class ModelControls {
 				});
 			} finally {
 				clearTimeout(timer);
-				this.#autoActivity.classifying = false;
+				this.#autoActivity.inFlight -= 1;
+				this.#autoActivity.classifying = this.#autoActivity.inFlight > 0;
 			}
 			// Count the turn only while it is still the live one: an aborted or
 			// superseded turn discards its result, so it discards its tally too.
