@@ -607,6 +607,7 @@ export class Theme {
 			warning: this.#symbols["icon.warning"],
 			rewind: this.#symbols["icon.rewind"],
 			auto: this.#symbols["icon.auto"],
+			intelligence: this.#symbols["icon.intelligence"],
 			fast: this.#symbols["icon.fast"],
 			extensionSkill: this.#symbols["icon.extensionSkill"],
 			extensionTool: this.#symbols["icon.extensionTool"],

@@ -788,6 +788,8 @@ For a custom status line, set `statusLine.preset: custom` and configure `statusL
 
 The `cost` segment shows recorded session costs. For an active provider/model with scheduled pricing, it appends `↑` during peak hours or `↓` off-peak, refreshing at boundaries even while idle. The arrow reflects the current tariff, not past spending; flat-price models and explicit cost overrides have no arrow. See [usage costs and time-based pricing](models.md#usage-costs-and-time-based-pricing) for the UTC schedule and estimation semantics.
 
+The `auto_thinking` segment tracks the automatic thinking-level classifier and renders only while the session runs in `auto` thinking mode and at least one turn has been classified. `🧠 8` means eight turns resolved a level; `🧠 8·2!` adds the two turns whose classification timed out or errored, so a guessed level was used. It is part of the `full` and `nerd` presets and of the Custom right-hand defaults. While a classification is in flight, the thinking level beside the model name reads `auto` with the pending glyph instead of the last resolved level. The glyph follows `symbolPreset` (`IQ` under `ascii`).
+
 ### Interaction
 
 | Key                    | Type    | Default         | Values                                                                                                  |

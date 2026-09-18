@@ -64,6 +64,16 @@ export interface ModelControlsHost {
 }
 
 /** Owns model selection, thinking effort, role cycling, and service tiers. */
+/** Live auto-thinking classifier activity for this session. */
+export interface AutoThinkingActivity {
+	/** A classification request is in flight right now. */
+	readonly classifying: boolean;
+	/** Turns where the classifier returned a level. */
+	readonly classified: number;
+	/** Turns where it timed out or errored and a guessed level was used. */
+	readonly fallback: number;
+}
+
 export class ModelControls {
 	readonly #host: ModelControlsHost;
 	#scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
@@ -72,6 +82,8 @@ export class ModelControls {
 	readonly #thinkingLevelCeiling: Effort | undefined;
 	#autoThinking = false;
 	#autoResolvedLevel: Effort | undefined;
+	/** Mutated in place: the status line reads it every frame, so it is never copied. */
+	readonly #autoActivity = { classifying: false, classified: 0, fallback: 0 };
 	#serviceTierByFamily: ServiceTierByFamily;
 
 	constructor(
@@ -132,6 +144,11 @@ export class ModelControls {
 	/** Last concrete effort selected by automatic classification. */
 	get autoResolvedThinkingLevel(): Effort | undefined {
 		return this.#autoResolvedLevel;
+	}
+
+	/** Stable classifier activity; the same object is mutated in place. */
+	get autoThinkingActivity(): AutoThinkingActivity {
+		return this.#autoActivity;
 	}
 
 	/** Models explicitly scoped to the session's cycle command, minus currently disabled providers. */
@@ -619,6 +636,7 @@ export class ModelControls {
 				sessionId: this.#host.sessionManager.getSessionId(),
 				parentId: this.#host.sessionManager.getLeafId(),
 			};
+			this.#autoActivity.classifying = true;
 			try {
 				resolved = await classifyDifficulty(promptText, {
 					settings: this.#host.settings,
@@ -641,6 +659,13 @@ export class ModelControls {
 				});
 			} finally {
 				clearTimeout(timer);
+				this.#autoActivity.classifying = false;
+			}
+			// Count the turn only while it is still the live one: an aborted or
+			// superseded turn discards its result, so it discards its tally too.
+			if (this.#host.promptGeneration() === generation) {
+				if (resolved === undefined) this.#autoActivity.fallback += 1;
+				else this.#autoActivity.classified += 1;
 			}
 		}
 

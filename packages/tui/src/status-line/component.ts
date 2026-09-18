@@ -300,6 +300,9 @@ interface StatusLineExternalInputs {
 	sessionId: string | undefined;
 	isStreaming: boolean | undefined;
 	isAutoThinking: boolean | undefined;
+	autoThinkingClassifying: boolean;
+	autoThinkingClassified: number;
+	autoThinkingFallback: number;
 	isFastModeActive: boolean;
 	anthropicSlowModeLabel: string | undefined;
 	compactionSpeculation: unknown;
@@ -2320,6 +2323,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			if (typeof part === "string") systemPromptContentSize += part.length;
 		}
 		const tools = this.session.agent?.state?.tools;
+		const autoThinking = this.session.autoThinkingActivity?.();
 		return {
 			themeRef: theme,
 			themeEpoch: getThemeEpoch(),
@@ -2368,6 +2372,9 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			sessionId: this.session.sessionManager?.getSessionId?.(),
 			isStreaming: this.session.isStreaming,
 			isAutoThinking: this.session.isAutoThinking,
+			autoThinkingClassifying: autoThinking?.classifying ?? false,
+			autoThinkingClassified: autoThinking?.classified ?? 0,
+			autoThinkingFallback: autoThinking?.fallback ?? 0,
 			isFastModeActive:
 				typeof this.session.isFastModeActive === "function" ? this.session.isFastModeActive() : false,
 			anthropicSlowModeLabel:
@@ -2427,6 +2434,9 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			left.sessionId === right.sessionId &&
 			left.isStreaming === right.isStreaming &&
 			left.isAutoThinking === right.isAutoThinking &&
+			left.autoThinkingClassifying === right.autoThinkingClassifying &&
+			left.autoThinkingClassified === right.autoThinkingClassified &&
+			left.autoThinkingFallback === right.autoThinkingFallback &&
 			left.isFastModeActive === right.isFastModeActive &&
 			left.anthropicSlowModeLabel === right.anthropicSlowModeLabel &&
 			left.compactionSpeculation === right.compactionSpeculation

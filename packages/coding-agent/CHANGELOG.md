@@ -284,6 +284,9 @@
 - Fixed llama.cpp discovery and routing for PrismML Bonsai 2 27B GGUF models, including support for cached models and the Qwen 3.8 thinking-level ladder.
 
 ## [18.2.6] - 2026-09-18
+### Added
+
+- Added an `auto` thinking activity readout to the status line: sessions now expose the classifier's in-flight state plus per-session counts of turns it resolved a level for versus turns that fell back after a timeout or error.
 
 ### Fixed
 

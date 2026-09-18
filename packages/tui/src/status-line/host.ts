@@ -19,6 +19,16 @@ export interface ActiveRepoContext {
 	source: "single-direct-child-repo";
 }
 
+/**
+ * Live auto-thinking classifier activity: whether a classification is in
+ * flight, and this session's resolved/guessed turn tallies.
+ */
+export interface StatusLineAutoThinkingActivity {
+	readonly classifying: boolean;
+	readonly classified: number;
+	readonly fallback: number;
+}
+
 export interface StatusLineSession {
 	state: { model?: Model; thinkingLevel?: ThinkingLevel; messages: readonly AgentMessage[] };
 	model?: Model;
@@ -52,6 +62,8 @@ export interface StatusLineSession {
 	};
 	getContextUsage(): { tokens: number; contextWindow: number; percent: number | null } | undefined;
 	autoResolvedThinkingLevel(): string | undefined;
+	/** Optional: hosts that don't track the auto-thinking classifier omit it. */
+	autoThinkingActivity?(): StatusLineAutoThinkingActivity | undefined;
 	isFastModeActive(): boolean;
 	/** Anthropic subscription slow-mode label (`low priority until 14:30 · 62% left`) while active. */
 	getAnthropicSlowModeLabel?(): string | undefined;
@@ -67,6 +79,8 @@ export interface FooterSession {
 	state: Pick<StatusLineSession["state"], "model" | "thinkingLevel">;
 	isAutoThinking: boolean;
 	autoResolvedThinkingLevel(): string | undefined;
+	/** Optional: hosts that don't track the auto-thinking classifier omit it. */
+	autoThinkingActivity?(): StatusLineAutoThinkingActivity | undefined;
 	getContextUsage: StatusLineSession["getContextUsage"];
 	modelRegistry: Pick<StatusLineSession["modelRegistry"], "isUsingOAuth">;
 	sessionManager: { getEntries(): readonly { type: string; message?: AgentMessage }[] };
