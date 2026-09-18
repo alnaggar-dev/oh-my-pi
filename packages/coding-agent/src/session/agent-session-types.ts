@@ -50,6 +50,7 @@ import type { XdevState } from "../tools/xdev";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { SettingsGatedToolDelta } from "./session-tools";
 import type { CostGateApi } from "./cost-gate";
+import type { AutoThinkingTally } from "./model-controls";
 import type { SessionManager } from "./session-manager";
 
 /** Maximum time the interactive shutdown path waits for Mnemopi consolidation. */
@@ -217,6 +218,8 @@ export interface AgentSessionConfig {
 	 * startup fallback, are not affected.
 	 */
 	disableModelFallback?: boolean;
+	/** Auto-thinking tally shared with the spawning session's tree, so subagent classifications roll up into it. */
+	autoThinkingActivity?: AutoThinkingTally;
 	/** Retry chain ownership when startup selected one of its fallback entries. */
 	initialRetryFallback?: InitialRetryFallbackState;
 	/** Skip retry.fallbackChains validation at construction; the host calls `validateRetryFallbackChains()` later. */

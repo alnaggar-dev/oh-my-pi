@@ -188,6 +188,7 @@ import {
 } from "./secrets";
 import {
 	AgentSession,
+	type AutoThinkingTally,
 	type InitialRetryFallbackState,
 	MCP_DISCOVERY_TURN_WAIT_MS,
 	type PlanYolo,
@@ -652,6 +653,12 @@ export interface CreateAgentSessionOptions {
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); retry-fallback recovery re-clamps to it. */
 	thinkingLevelCeiling?: Effort;
+	/**
+	 * Auto-thinking tally shared by a whole spawn tree. Subagent spawns pass the
+	 * spawning session's tally so child classifications roll up into the parent's
+	 * status-line counter; omitted → the session owns its own tally.
+	 */
+	autoThinkingActivity?: AutoThinkingTally;
 	/** OpenAI service-tier override for this session. `null` omits `service_tier`. */
 	openAIServiceTier?: ServiceTier | null;
 	/**
@@ -2694,6 +2701,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setTodoPhases: phases => session.setTodoPhases(phases),
 			commitTodoPhases: phases => session.commitTodoPhases(phases),
 			getWorkPoolYieldItems: () => session?.getWorkPoolYieldItems() ?? [],
+			autoThinkingTally: () => session.autoThinkingTally(),
 			getLastAssistantText: () => session?.getLastAssistantText(),
 			getYieldReportText: toolCallId => resolveYieldReportText(session?.messages ?? [], toolCallId),
 			getToolCallIntent: toolCallId => resolveToolCallIntent(session?.messages ?? [], toolCallId),
@@ -5090,6 +5098,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
 			thinkingLevelCeiling: options.thinkingLevelCeiling,
 			disableModelFallback: options.disableModelFallback,
+			autoThinkingActivity: options.autoThinkingActivity,
 			initialRetryFallback,
 			deferRetryFallbackValidation: options.deferRetryFallbackValidation,
 			prewalk,
