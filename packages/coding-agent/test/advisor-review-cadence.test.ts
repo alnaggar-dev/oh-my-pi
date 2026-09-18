@@ -45,13 +45,13 @@ async function settle(): Promise<void> {
 }
 
 /** One primary tool-call step: assistant turn (marker text + tool call) plus its result. */
-function pushStep(messages: AgentMessage[], marker: string, tool: string): void {
+function pushStep(messages: AgentMessage[], marker: string, tool: string, args?: Record<string, unknown>): void {
 	const id = `${marker}-call`;
 	messages.push({
 		role: "assistant",
 		content: [
 			{ type: "text", text: marker },
-			{ type: "toolCall", id, name: tool, arguments: { path: `${marker}.ts` } },
+			{ type: "toolCall", id, name: tool, arguments: args ?? { path: `${marker}.ts` } },
 		],
 		timestamp: messages.length + 1,
 	} as unknown as AgentMessage);
@@ -140,6 +140,42 @@ describe("advisor review cadence", () => {
 			expected++;
 			expect(promptInputs).toHaveLength(expected);
 			expect(promptText(promptInputs[expected - 1])).toContain(`via-${tool}`);
+		}
+	});
+
+	it("exempts hub inspection ops but reviews hub process and coordination ops under reviewOn=mutation", async () => {
+		// The hub carve-out is parameter-discriminated, so it is invisible to the
+		// tool-name table above: `isHubReviewExempt` must keep inspection out of
+		// the advisor's way without hiding a job kill or a peer steer.
+		const { runtime, messages, promptInputs } = newRuntime();
+
+		pushStep(messages, "hub-jobs", "hub", { op: "jobs" });
+		runtime.onTurnEnd(messages, { willContinue: true, cadence: "mutation" });
+		await settle();
+		expect(promptInputs).toHaveLength(0);
+		expect(runtime.backlog).toBe(0);
+
+		pushStep(messages, "hub-start", "hub", { op: "start", name: "web", application: "bun" });
+		runtime.onTurnEnd(messages, { willContinue: true, cadence: "mutation" });
+		await runtime.waitForCatchup(1_000, 1);
+		expect(promptInputs).toHaveLength(1);
+		const text = promptText(promptInputs[0]);
+		expect(text).toContain("hub-start");
+		// The skipped inspection step still rides along.
+		expect(text).toContain("hub-jobs");
+	});
+
+	it("reviews hub cancel and peer send even though they need no user confirmation", async () => {
+		const { runtime, messages, promptInputs } = newRuntime();
+
+		let expected = 0;
+		for (const args of [{ op: "cancel", ids: ["job_1"] }, { op: "send", to: "Peer", message: "stop" }]) {
+			pushStep(messages, `hub-${args.op}`, "hub", args);
+			runtime.onTurnEnd(messages, { willContinue: true, cadence: "mutation" });
+			await runtime.waitForCatchup(1_000, 1);
+			expected++;
+			expect(promptInputs).toHaveLength(expected);
+			expect(promptText(promptInputs[expected - 1])).toContain(`hub-${args.op}`);
 		}
 	});
 });

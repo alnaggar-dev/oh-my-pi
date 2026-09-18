@@ -17,6 +17,7 @@ import {
 } from "../session/session-history-format";
 import { READ_ONLY_TOOL_NAMES } from "../task/read-only-policy";
 import { normalizeToolName } from "../tools/builtin-names";
+import { isHubReviewExempt } from "../tools/hub/approval";
 import { ADVISOR_RENDER_OPTIONS, renderAdvisorDeltaChunks } from "./delta-split";
 import { fingerprintMessage } from "./message-fingerprint";
 
@@ -42,7 +43,10 @@ const ADVISOR_STATEFUL_READ_TIER_TOOLS: Record<string, true> = {
  * review under `advisor.reviewOn: mutation` — the read-approval tier minus the
  * state-mutating entries above. Fail-safe by construction: anything absent
  * (every write/exec tool, `lsp` — whose rename/code_actions edit files —
- * `hub`, `task`, and all MCP/plugin tools) forces a review.
+ * `task`, and all MCP/plugin tools) forces a review. `hub` is not a table
+ * entry: it is parameter-discriminated in #shouldReviewMidTurn via
+ * `isHubReviewExempt`, so its inspection ops are exempt and everything else
+ * — process lifecycle, `cancel`, peer `send` — is not.
  */
 const ADVISOR_REVIEW_EXEMPT_TOOLS: Record<string, true> = Object.fromEntries(
 	[...READ_ONLY_TOOL_NAMES].filter(name => !ADVISOR_STATEFUL_READ_TIER_TOOLS[name]).map(name => [name, true]),
@@ -487,7 +491,15 @@ export class AdvisorRuntime {
 			if (message === undefined || message.role !== "assistant") continue;
 			for (const block of message.content) {
 				if (block.type !== "toolCall") continue;
-				if (!ADVISOR_REVIEW_EXEMPT_TOOLS[normalizeToolName(block.name)]) return true;
+				const name = normalizeToolName(block.name);
+				// `hub` is parameter-discriminated: pure inspection ops are not
+				// worth a review; process lifecycle, `cancel`, and peer `send`
+				// are (see isHubReviewExempt).
+				if (name === "hub") {
+					if (isHubReviewExempt(block.arguments)) continue;
+					return true;
+				}
+				if (!ADVISOR_REVIEW_EXEMPT_TOOLS[name]) return true;
 			}
 		}
 		return false;
