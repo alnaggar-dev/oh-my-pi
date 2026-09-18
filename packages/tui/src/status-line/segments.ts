@@ -342,10 +342,17 @@ const modelSegment: StatusLineSegment = {
 	render(ctx) {
 		const modelName = modelDisplayName(ctx);
 		const thinkingDisplay = modelThinkingDisplay(ctx);
+		const classifyingNow =
+			thinkingDisplay !== "" &&
+			ctx.session.isAutoThinking &&
+			ctx.session.autoThinkingActivity?.()?.classifying === true;
 
 		// Compact mode swaps the model icon for the thinking-level glyph and drops
-		// the " · <level>" tail, keeping the level visible as a single icon.
-		const compact = ctx.compactThinkingLevel && thinkingDisplay !== "";
+		// the " · <level>" tail, keeping the level visible as a single icon. A live
+		// classification opts out: compacted, it is a bare glyph swap in the icon
+		// slot, indistinguishable from the idle pending state — the spelled-out
+		// `⟳ auto` tail is the only form a reader actually notices.
+		const compact = ctx.compactThinkingLevel && thinkingDisplay !== "" && !classifyingNow;
 		const modelIcon = compact ? leadingGlyph(thinkingDisplay) : theme.icon.model;
 
 		// Fast-mode icon and thinking-level suffix trail the model name and are
