@@ -631,6 +631,7 @@ function buildExecutorOptions(
 		parentActiveModelPattern: policy.parentActiveModelPattern,
 		modelInheritsLiveThinkingLevel: policy.modelInheritsLiveThinkingLevel,
 		thinkingLevel: policy.effectiveAgent.thinkingLevel,
+		autoThinkingActivity: session.autoThinkingTally?.(),
 		effort: request.effort,
 		solutionSpace: request.solutionSpace?.trim() || undefined,
 		...(policy.schema.source === "none"
