@@ -1984,8 +1984,6 @@ export class AgentSession implements SettingsScope {
 			hasPendingNextTurnMessages: () => this.#pendingNextTurnMessages.length > 0,
 			convertToLlmForSideRequest: messages => this.#convertToLlmForSideRequest(messages),
 			effectiveServiceTier: model => this.#models.effectiveServiceTier(model),
-			resolveContextPromotionTarget: (model, contextWindow, signal) =>
-				this.#maintenance.resolveContextPromotionTarget(model, contextWindow, signal),
 			resolveCompactionModelCandidates: (model, availableModels) =>
 				this.#maintenance.resolveCompactionModelCandidates(model, availableModels),
 			resolveRetryFallbackRole: (selector, model, roleHint) =>
