@@ -366,4 +366,21 @@ describe("ToolCallLoopGuard multi-call turns", () => {
 		expect(guard.recordTurn(turn(a()))).toBeNull();
 		expect(guard.recordTurn(turn(b()))).toBeNull();
 	});
+
+	test("trips on one call repeated far past the bound while alternating with others", () => {
+		const guard = new ToolCallLoopGuard({ threshold: 2, exemptTools: [], cumulative: true });
+		const spin = () => [toolCall("glob", { path: ".git/index.lock" })];
+		let detection = null;
+		for (let index = 0; index < 10; index++) {
+			expect(guard.recordTurn(turn([toolCall("grep", { pattern: `probe-${index}` })]))).toBeNull();
+			detection = guard.recordTurn(turn(spin()));
+			if (detection) break;
+		}
+		expect(detection).toMatchObject({
+			kind: "repeated_tool_call",
+			toolName: "glob",
+			count: 10,
+			argumentsSummary: '{"path":".git/index.lock"}',
+		});
+	});
 });

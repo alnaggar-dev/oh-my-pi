@@ -105,7 +105,7 @@ export class AdvisorLoopGuard {
 			.filter((tool): tool is string => typeof tool === "string" && tool.length > 0);
 		const settingsKey = `${threshold}:${JSON.stringify(exemptTools)}`;
 		if (!this.#guard || this.#guardSettingsKey !== settingsKey) {
-			this.#guard = new ToolCallLoopGuard({ threshold, exemptTools });
+			this.#guard = new ToolCallLoopGuard({ threshold, exemptTools, cumulative: true });
 			this.#guardSettingsKey = settingsKey;
 		}
 		return this.#guard;
