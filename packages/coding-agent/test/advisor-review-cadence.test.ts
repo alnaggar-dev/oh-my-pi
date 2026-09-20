@@ -169,7 +169,10 @@ describe("advisor review cadence", () => {
 		const { runtime, messages, promptInputs } = newRuntime();
 
 		let expected = 0;
-		for (const args of [{ op: "cancel", ids: ["job_1"] }, { op: "send", to: "Peer", message: "stop" }]) {
+		for (const args of [
+			{ op: "cancel", ids: ["job_1"] },
+			{ op: "send", to: "Peer", message: "stop" },
+		]) {
 			pushStep(messages, `hub-${args.op}`, "hub", args);
 			runtime.onTurnEnd(messages, { willContinue: true, cadence: "mutation" });
 			await runtime.waitForCatchup(1_000, 1);
