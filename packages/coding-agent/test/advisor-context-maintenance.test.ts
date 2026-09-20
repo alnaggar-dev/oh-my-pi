@@ -159,10 +159,7 @@ describe("AgentSession advisor context maintenance", () => {
 		};
 	}
 
-	function createAdvisorFallbackHarness(options?: {
-		sameProviderNativeEnabled?: boolean;
-		remoteEnabled?: boolean;
-	}) {
+	function createAdvisorFallbackHarness(options?: { sameProviderNativeEnabled?: boolean; remoteEnabled?: boolean }) {
 		const primaryMock = createMockModel({
 			provider: "anthropic",
 			responses: [{ content: ["primary complete"] }],
