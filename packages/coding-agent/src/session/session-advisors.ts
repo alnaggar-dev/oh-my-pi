@@ -20,6 +20,7 @@ import {
 	estimateTranscriptTokens,
 	getAnthropicCompactionPayload,
 	isOpenAiRemoteCompactionApi,
+	isTranscriptUsageAnchor,
 	NativeCompactionError,
 	prepareCompaction,
 	type SessionMessageEntry,
@@ -73,6 +74,7 @@ import {
 	resolveAdvisorDeliveryChannel,
 	slugifyAdvisorName,
 } from "../advisor";
+import { AdvisorToolResultDedupe } from "../advisor/tool-result-dedupe";
 import { evictStaleToolResults } from "../advisor/tool-result-eviction";
 import type { ModelRegistry } from "../config/model-registry";
 import {
@@ -352,6 +354,13 @@ interface ActiveAdvisor {
 	retryFallbackPendingSuccess: boolean;
 	/** Count of consecutive usage-limit block waits, bounded by retry.maxRetries; reset on turn success. */
 	usageLimitRetries: number;
+	/**
+	 * Tokens this advisor's stale-tool-result eviction removed since the newest
+	 * provider usage anchor reported its context. That usage still counts the
+	 * evicted bytes, so the anchored estimate subtracts this; reset whenever a
+	 * fresh anchor lands or the message array is replaced.
+	 */
+	evictedSinceAnchor: number;
 	signature: string;
 }
 /** First index whose provider usage may anchor the advisor's context estimate. */
@@ -1310,6 +1319,10 @@ export class SessionAdvisors {
 				(note, severity, turn) => this.#routeAdvice(advisorRef, note, severity, turn),
 				emissionGuard,
 			);
+			// 13.2% of advisor investigation calls repeat a byte-identical earlier
+			// call within one advisor session; the repeat result is replaced by a
+			// pointer at the still-live original.
+			const toolResultDedupe = new AdvisorToolResultDedupe();
 
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
@@ -1457,6 +1470,9 @@ export class SessionAdvisors {
 						buildAdvisorQuarantineSourceText(currentAdvisorInput, advisorAgent.state.messages),
 					);
 				},
+				// An investigation result identical to one the advisor already
+				// carries becomes a pointer at that copy (see dedupe above).
+				//
 				// A turn whose only tool calls are `advise` has nothing left to do:
 				// without this the model is re-invoked over the whole prefix just to
 				// say "done" (measured at ~6% of advisor spend, zero notes). Stop the
@@ -1467,7 +1483,10 @@ export class SessionAdvisors {
 				// records in index order and a not-yet-started sibling would see the
 				// aborted signal and become a skipped placeholder — a lost note.
 				afterToolCall: ctx => {
-					if (ctx.toolCall.name !== adviseTool.name) return undefined;
+					if (ctx.toolCall.name !== adviseTool.name) {
+						if (ctx.isError) return undefined;
+						return toolResultDedupe.check(ctx.toolCall, ctx.result, advisorAgent.state.messages);
+					}
 					if (ctx.isError) return undefined;
 					let lastAdviseId: string | undefined;
 					for (const block of ctx.assistantMessage.content) {
@@ -1540,6 +1559,8 @@ export class SessionAdvisors {
 					advisorLoopGuardStopped = false;
 					advisorAgent.reset();
 					appendOnlyContext.log.clear();
+					// No anchor and no messages left to have evicted from.
+					advisorRef.evictedSinceAnchor = 0;
 				},
 				rollbackTo: count => {
 					// Drop the failed user batch + synthetic assistant-error turn
@@ -1550,6 +1571,7 @@ export class SessionAdvisors {
 					}
 					appendOnlyContext.resetSyncCursor();
 					advisorAgent.state.error = undefined;
+					advisorRef.evictedSinceAnchor = 0;
 				},
 				state: advisorAgent.state,
 			};
@@ -1654,6 +1676,7 @@ export class SessionAdvisors {
 				pendingCoveredTurn: 0,
 				retryFallbackPendingSuccess: false,
 				usageLimitRetries: 0,
+				evictedSinceAnchor: 0,
 				signature,
 			};
 			this.#refreshAdvisorProviderIdentity(advisorRef);
@@ -1923,7 +1946,12 @@ export class SessionAdvisors {
 	#attachAdvisorRecorderFeed(advisor: ActiveAdvisor): void {
 		advisor.agentUnsubscribe = advisor.agent.subscribe(event => {
 			if (event.type !== "message_end") return;
-			if (event.message.role === "assistant") this.#recordAdvisorCost(advisor, event.message);
+			if (event.message.role === "assistant") {
+				this.#recordAdvisorCost(advisor, event.message);
+				// A fresh provider usage anchor reports the context as it stands
+				// now — post-eviction — so the correction it carried is spent.
+				if (isTranscriptUsageAnchor(event.message)) advisor.evictedSinceAnchor = 0;
+			}
 			advisor.recorder.record(event.message);
 		});
 	}
@@ -2560,6 +2588,9 @@ export class SessionAdvisors {
 
 		agent.replaceMessages([summaryMessage, ...recentMessages]);
 		this.#releaseRefusalPin(advisor);
+		// The retained tail's own anchors are gone with the replaced array; there
+		// is no stale provider usage left for the correction to offset.
+		advisor.evictedSinceAnchor = 0;
 		return false;
 	}
 	/**
@@ -2998,6 +3029,7 @@ export class SessionAdvisors {
 			skipPrunedAnchors: true,
 			excludeEncryptedReasoning: true,
 		});
+		return Math.max(0, estimate - advisor.evictedSinceAnchor);
 	}
 
 	/**
