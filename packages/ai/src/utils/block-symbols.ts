@@ -174,6 +174,35 @@ export function isPerCallContextMessage(message: PerCallContextMessageCarrier | 
 }
 
 /**
+ * Latest history-rewrite timestamp folded into a provider wire message.
+ *
+ * `convertAnthropicMessages` stamps a tool_result wire message with the
+ * newest `prunedAt` among the `toolResult` messages it serializes (advisor
+ * stale-result eviction, primary tool-output pruning). A rewrite changes the
+ * prefix hash of every position from there on, so prompt caching reads this
+ * mark to learn where the rewritten region starts and can anchor a
+ * breakpoint in front of it.
+ *
+ * Symbol-keyed so the mark never persists across the JSONL round-trip and
+ * never reaches the wire.
+ */
+export const kRewriteAt = Symbol("provider.message.rewriteAt");
+
+/** Carries the history-rewrite timestamp without exposing a string-keyed property. */
+export type RewriteAtCarrier = object & { [kRewriteAt]?: number };
+
+/** Records a history-rewrite timestamp, keeping the newest one seen. */
+export function markRewriteAt(message: RewriteAtCarrier, rewriteAt: number): void {
+	const current = message[kRewriteAt];
+	if (current === undefined || rewriteAt > current) message[kRewriteAt] = rewriteAt;
+}
+
+/** History-rewrite timestamp of a wire message, or undefined when nothing behind it was rewritten. */
+export function rewriteAtOf(message: RewriteAtCarrier | null | undefined): number | undefined {
+	return message?.[kRewriteAt];
+}
+
+/**
  * Original history position carried by a context message clone.
  *
  * Object-spread transforms retain this symbol, allowing the extension runner
