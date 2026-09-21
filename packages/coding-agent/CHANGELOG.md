@@ -235,6 +235,12 @@
 - Expanded browser security and resilience controls with configurable HTTPS error handling, domain allow-listing, and automatic tab recycling when security-sensitive state changes.
 - Updated background job notifications to deliver output as follow-up messages and discourage unnecessary polling.
 - Expanded the bash tool's documented auxiliary utilities and removed its truncation footer notice.
+- Startup no longer composes the entire bundled model catalog to validate kind-role fallback chains; provider-qualified selectors are checked against their providers' slices.
+- The advisor stops its review as soon as a turn's only tool calls are `advise`; the extra model request that used to follow every note (~6% of advisor spend, producing nothing) no longer runs. Turns that advise and keep investigating are unchanged.
+- The advisor now evicts the oversized tool results of finished reviews from its own context before the next review (blanked to `[Stale result elided - N tokens]`), and answers a byte-identical repeat `read`/`grep`/`glob` call with `[Unchanged since your earlier identical call]` while the earlier result is still in context. Measured over 895 advisor transcripts, stale investigation output was ~48% of the context the advisor re-sent on every request; the deltas it reviews and the notes it writes are untouched. The eviction cut is placed where the freed tokens outweigh the prompt-cache re-write behind it.
+### Changed
+
+- npm and compiled builds embed `models.json` as JSON text instead of an object literal, cutting ~100 ms from bundle launch.
 
 ### Fixed
 

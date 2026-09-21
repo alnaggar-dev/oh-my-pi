@@ -80,6 +80,9 @@
 
 - Updated API response cost reporting to use aggregate usage totals.
 - Model list responses now optionally include a model kind.
+### Changed
+
+- Anthropic prompt caching now adds a breakpoint on the last message before a long in-place history rewrite (pruned or evicted tool results), so the re-billed region stops at the rewrite instead of falling back to the previous checkpoint up to 15 user turns earlier. Short tail rewrites keep the existing breakpoint layout.
 
 ### Fixed
 

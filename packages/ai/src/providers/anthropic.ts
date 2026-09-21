@@ -71,6 +71,8 @@ import {
 	kStreamingBlockIndex,
 	kStreamingLastParseLen,
 	kStreamingPartialJson,
+	markRewriteAt,
+	rewriteAtOf,
 } from "../utils/block-symbols";
 import { withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
@@ -3946,6 +3948,40 @@ function applyCacheControlToLastBlock(blocks: ContentBlockParam[], cacheControl:
 const ANTHROPIC_MAX_BREAKPOINTS = 4;
 const ANTHROPIC_DECIMATION_INTERVAL = 15;
 
+/**
+ * Anthropic checks at most 20 positions behind a breakpoint for a prior cache
+ * entry (a run of consecutive `tool_use` blocks counts as one position, and so
+ * does a run of consecutive `tool_result` blocks). Rewritten history further
+ * back than that is unreachable from the tail breakpoint, so the boundary
+ * anchor below is gated a few positions under the limit — the next request
+ * appends a turn or two on top of the region measured here.
+ */
+const ANTHROPIC_REWRITE_BOUNDARY_POSITIONS = 16;
+
+/** Cache-lookback positions spanned by `messages[start..end]`. */
+function countLookbackPositions(messages: readonly MessageParam[], start: number, end: number): number {
+	let positions = 0;
+	let previousType: string | undefined;
+	for (let index = start; index <= end; index++) {
+		const message = messages[index];
+		if (!message) continue;
+		const content = message.content;
+		if (typeof content === "string") {
+			positions++;
+			previousType = "text";
+			continue;
+		}
+		for (const block of content) {
+			// Runs of tool_use / tool_result blocks collapse to one position each,
+			// so a wide parallel-tool turn does not evict the previous entry.
+			if (block.type === previousType && (block.type === "tool_use" || block.type === "tool_result")) continue;
+			positions++;
+			previousType = block.type;
+		}
+	}
+	return positions;
+}
+
 function countHeadBreakpoints(params: MessageCreateParamsStreaming): number {
 	let count = 0;
 	if (Array.isArray(params.system)) {
@@ -4028,6 +4064,44 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 	// Stable historical decimation checkpoint every 15 user turns (15th, 30th, 45th...)
 	const decimationIndices = userIndices.filter((_, ordinal) => (ordinal + 1) % ANTHROPIC_DECIMATION_INTERVAL === 0);
 
+	// An in-place history rewrite (advisor stale-result eviction, tool-output
+	// pruning) changes every prefix hash from the first rewritten message on.
+	// The tail breakpoint then has to walk back past the whole rewritten region
+	// to find a still-valid entry; once that region is longer than the
+	// 20-position lookback window the walk finds nothing, the check falls back
+	// to the previous explicit breakpoint (up to 15 user turns earlier), and
+	// the entire span in between is re-billed at the cacheWrite premium. An
+	// extra breakpoint on the last message BEFORE the rewritten region has its
+	// own lookback window, which lands a few positions behind it on the entry
+	// the previous request wrote, so only the rewritten bytes are re-billed.
+	// Gated on length: the common shallow prune stays inside the tail's own
+	// lookback and keeps today's decimation behavior.
+	let rewriteBoundary = -1;
+	let latestRewriteAt: number | undefined;
+	for (let index = 0; index <= messageEnd; index++) {
+		const rewriteAt = rewriteAtOf(params.messages[index]);
+		if (rewriteAt !== undefined && (latestRewriteAt === undefined || rewriteAt > latestRewriteAt)) {
+			latestRewriteAt = rewriteAt;
+		}
+	}
+	if (latestRewriteAt !== undefined) {
+		// Only the newest rewrite batch matters: everything an older pass
+		// touched was already re-billed by the request that followed it.
+		for (let index = 0; index <= messageEnd; index++) {
+			if (rewriteAtOf(params.messages[index]) === latestRewriteAt) {
+				rewriteBoundary = index - 1;
+				break;
+			}
+		}
+		if (
+			rewriteBoundary >= 0 &&
+			countLookbackPositions(params.messages, rewriteBoundary + 1, messageEnd) <=
+				ANTHROPIC_REWRITE_BOUNDARY_POSITIONS
+		) {
+			rewriteBoundary = -1;
+		}
+	}
+
 	// Collect up to 2 trailing candidates from the message tail, skipping
 	// per-call messages, turn-scoped messages, and mid-conversation
 	// tool-control messages. A per-call tail candidate is rebuilt next request
@@ -4056,14 +4130,20 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 	}
 	// Prioritize:
 	// 1. Most recent trailing message
-	// 2. Latest decimation checkpoints (newest first) to maintain stable long-context anchors
-	// 3. Newest message at or before the first per-call/turn-scoped mark, so a
+	// 2. Last message before a long rewritten region, so the tail breakpoint's
+	//    lookback is not the only thing standing between a history rewrite and
+	//    a full-prefix cache miss
+	// 3. Latest decimation checkpoints (newest first) to maintain stable long-context anchors
+	// 4. Newest message at or before the first per-call/turn-scoped mark, so a
 	//    volatile interior message costs only its own re-billed bytes instead
 	//    of invalidating the whole reusable prefix behind it
-	// 4. Second trailing message
+	// 5. Second trailing message
 	const candidateIndices: number[] = [];
 	if (trailingCandidates.length > 0) {
 		candidateIndices.push(trailingCandidates[0]);
+	}
+	if (rewriteBoundary >= 0 && !candidateIndices.includes(rewriteBoundary)) {
+		candidateIndices.push(rewriteBoundary);
 	}
 	for (let i = decimationIndices.length - 1; i >= 0; i--) {
 		if (!candidateIndices.includes(decimationIndices[i])) {
@@ -5010,6 +5090,28 @@ export function convertAnthropicMessages(
 		opts?.credentialId,
 	);
 
+	// A history rewrite is re-billed by the first request sent after it; the
+	// tail breakpoint that request writes then sits within the lookback of
+	// every later tail. So the rewrite mark read by `applyPromptCaching` is
+	// only stamped while no assistant turn after the rewritten region
+	// postdates it — afterwards the layout stays exactly the pre-rewrite one.
+	let latestRewriteAt: number | undefined;
+	let firstRewriteIndex = -1;
+	for (let i = 0; i < transformedMessages.length; i++) {
+		const msg = transformedMessages[i];
+		if (msg.role !== "toolResult" || msg.prunedAt === undefined) continue;
+		if (latestRewriteAt === undefined || msg.prunedAt > latestRewriteAt) {
+			latestRewriteAt = msg.prunedAt;
+			firstRewriteIndex = i;
+		}
+	}
+	const rewriteAt = latestRewriteAt;
+	const markRewrites =
+		rewriteAt !== undefined &&
+		!transformedMessages.some(
+			(msg, index) => index > firstRewriteIndex && msg.role === "assistant" && msg.timestamp > rewriteAt,
+		);
+
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const msg = transformedMessages[i];
 
@@ -5264,9 +5366,13 @@ export function convertAnthropicMessages(
 				content: toolResults,
 			};
 
-			// Add the current tool result
+			// Add the current tool result. A pruned result means its bytes were
+			// rewritten in place after an earlier request cached them, so the
+			// merged wire message carries the newest `prunedAt` behind it for
+			// `applyPromptCaching` to anchor a breakpoint in front of.
 			toolResults.push(buildToolResultBlock(model, msg, hoistedImages));
 			copyPerCallContextMessage(toolResultParam, msg);
+			if (markRewrites && msg.prunedAt !== undefined) markRewriteAt(toolResultParam, msg.prunedAt);
 
 			// Look ahead for consecutive toolResult messages
 			let j = i + 1;
@@ -5274,6 +5380,7 @@ export function convertAnthropicMessages(
 				const nextMsg = transformedMessages[j] as ToolResultMessage; // We know it's a toolResult
 				toolResults.push(buildToolResultBlock(model, nextMsg, hoistedImages));
 				copyPerCallContextMessage(toolResultParam, nextMsg);
+				if (markRewrites && nextMsg.prunedAt !== undefined) markRewriteAt(toolResultParam, nextMsg.prunedAt);
 				j++;
 			}
 

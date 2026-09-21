@@ -54,6 +54,15 @@ function canonicalizeToolCallValue(value: unknown): unknown {
 	return output;
 }
 
+/**
+ * Stable identity for one tool call: name plus arguments with object keys
+ * sorted and the agent-authored `intent` field dropped, so cosmetic argument
+ * reordering or a reworded intent never hides a genuine repeat.
+ */
+export function toolCallSignature(name: string, args: unknown): string {
+	return JSON.stringify([name, canonicalizeToolCallValue(args)]);
+}
+
 function summarizeText(text: string, limit: number): string {
 	let summary = text.replace(/\s+/g, " ").trim();
 	if (summary.length > limit) {
@@ -105,7 +114,7 @@ export class ToolCallLoopGuard {
 			return null;
 		}
 
-		const signatures = toolCalls.map(tc => JSON.stringify([tc.name, canonicalizeToolCallValue(tc.arguments)]));
+		const signatures = toolCalls.map(tc => toolCallSignature(tc.name, tc.arguments));
 		const turnHash = JSON.stringify([...signatures].sort());
 		if (turnHash === this.#lastHash) {
 			this.#count++;
