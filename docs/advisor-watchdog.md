@@ -102,6 +102,8 @@ When the primary transcript is rewritten, the advisor runtime is reset:
 
 Reset clears the advisor's private in-memory transcript and rewinds its cursor. The next advisor update replays the current bounded primary transcript instead of continuing from stale pre-rewrite context.
 
+The primary's per-turn prune passes (superseded/useless/aged tool results blanked in place with `prunedAt`) do not reset the advisor: the advisor received the full result when it was delivered and keeps that copy in its own context, and the prune mutates the delivered message object in place, so the delivered-prefix identity check sees unchanged history. Every other rewrite of an already-delivered message (rollback, branch, edited content) still triggers the reset above.
+
 When the advisor is enabled mid-session, the cursor seeds to the current primary transcript length. That avoids replaying the whole old conversation on the first enabled turn.
 
 ## Tools and isolation
@@ -218,13 +220,16 @@ counter.
 - **One review per primary agent-loop step, not one per user turn.** A 15-step primary turn can trigger up to 15 advisor reviews.
 - **Each review re-sends the advisor's append-only history.** Advisor requests carry a prompt-cache key and the delta is split per source message, so the unchanged prefix can hit the provider cache — but cache reads are still billed, just discounted.
 - **Each review can add provider rounds of its own.** The advisor's `read`/`grep`/`glob` investigation and its `advise` calls are separate requests inside the same review.
-- **A runaway advisor tool loop is bounded only by `model.toolCallLoopGuard.*`**, which the advisor reuses from the primary.
+- **A runaway advisor tool loop is bounded only by `model.toolCallLoopGuard.*`**, which the advisor reuses from the primary. The advisor's guard tallies identical calls cumulatively over a review, not just consecutively, so an alternating loop is bounded too.
+- **A turn whose only tool calls are `advise` ends the review.** The advisor is not re-invoked over its whole prefix just to emit a closing message; a turn that advises and keeps investigating continues.
 - **A `WATCHDOG.yml` roster multiplies everything by N.** Each enabled entry is a separate agent with its own context reviewing the same delta.
 - **Every advisor reset replays the whole bounded primary transcript** (compaction, session switch, branch, context-maintenance re-prime — see [What the advisor sees](#what-the-advisor-sees)).
 
 Measured over 825 persisted advisor transcripts (58,059 provider requests): 96.8% of input tokens were cache reads, and cache reads were 63.6% of the dollars. A median review sent ~1k fresh tokens on a ~49k cached prefix and cost ~$0.04; a review averaged 2.1 requests. On that traffic, halving review frequency would have saved ~46% of advisor spend, dropping the `<project-context>` block ~12%, and excluding thinking ~6%. Only ~4% of inter-request gaps exceeded five minutes at half cadence, so cache expiry does not cancel the saving.
 
 Budget from the mean, not the median: re-measured over 890 primary transcripts (43,955 primary steps) and 27,702 advisor reviews, the **mean** review cost **~$0.11** — 2.8x the median above, because the distribution is long-tailed. On that same traffic `mutation` skips 39.7% of mid-turn steps (36.9% of all steps), cutting reviews from 14.3 to 9.0 per turn; after `#drain` coalescing absorbs part of it, the measured net is a ~33% reduction in advisor requests.
+
+Measured over 895 advisor transcripts (29,046 reviews, $3,316; synthetic fixture sessions excluded): cache reads were 64% of the dollars, but a cache *write* costs ~17x a cache read per token, so a lever that shrinks the carried prefix by rewriting it can cost more than it saves. Spend is heavy-tailed (median review $0.045, p99 $0.875; the top 1,000 reviews were 41% of the total), 58% of spend went to reviews that produced no note, and 13% of investigation calls were byte-identical repeats within one advisor session. Those measurements drove the shipped changes: `advisor.reviewOn: mutation`, the cumulative repeat bound, ending the review on an advise-only turn, stale-result eviction with call de-duplication (see [Cost and context behavior](#cost-and-context-behavior)), and no advisor re-prime on the primary's per-turn prune. A hard per-review request cap was measured (cap 8 ≈ 19% of spend, but it drops ~4% of notes) and not shipped.
 
 ### Cadence and delta knobs
 
@@ -405,8 +410,11 @@ Advisor usage is separate model usage. `/advisor status` reports advisor token c
 
 The advisor has its own append-only context. Before each advisor prompt, `AgentSession` estimates incoming tokens and may maintain advisor context:
 
-1. compact the advisor's own message history (the advisor never switches to a larger model: a promotion keeps the oversized context, moves it to a pricier model, and drops the prompt cache)
-2. for readable history, re-prime from the current bounded primary transcript if compaction has no candidates or still cannot fit
+1. evict the oversized tool results (`read`/`grep`/`glob` output) of finished reviews from the advisor's own history. Measured over 895 transcripts, that output was ~48% of the context the advisor re-sent on every request; the deltas it reviewed and the notes it wrote are never touched. Each evicted result is blanked to `[Stale result elided - N tokens]`. The cut is cache-aware: it is placed where the tokens it frees outweigh the bytes the provider must re-write behind it, so a small result deep in the history is left alone rather than paying to reach it.
+2. compact the advisor's own message history (the advisor never switches to a larger model: a promotion keeps the oversized context, moves it to a pricier model, and drops the prompt cache)
+3. for readable history, re-prime from the current bounded primary transcript if compaction has no candidates or still cannot fit
+
+Inside a review, a `read`/`grep`/`glob` call that byte-matches an earlier call whose result is still in the advisor's context returns `[Unchanged since your earlier identical call]` instead of the full output again (13% of advisor investigation calls were such repeats). An evicted, rolled-back, or errored earlier result does not count — the full result is served again.
 
 Native compaction replaces advisor history only when the active model can replay its provider and Responses API format. A foreign native-enabled summarizer uses portable text summarization for readable history instead. Once the advisor holds native history, incompatible summarizers, retry fallbacks, and cooldown restorations are skipped. Maintenance failure preserves that history rather than re-priming it away; normal advisor request-failure handling still applies.
 
