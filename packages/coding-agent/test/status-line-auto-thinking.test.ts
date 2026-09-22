@@ -164,6 +164,12 @@ describe("status line auto-thinking indicator", () => {
 			expect(plain(component.renderBottomBar(110, "full"))).toContain("🧠 2");
 			live.classifying = true;
 			expect(plain(component.renderBottomBar(110, "full"))).toContain("⟳ auto");
+			live.fallback = 1;
+			expect(plain(component.renderBottomBar(110, "full"))).toContain("2·1!");
+			live.classifying = false;
+			const settled = plain(component.renderBottomBar(110, "full"));
+			expect(settled).toContain("2·1!");
+			expect(settled).not.toContain("auto");
 		} finally {
 			component.dispose();
 		}
