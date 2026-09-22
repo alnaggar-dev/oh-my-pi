@@ -76,6 +76,7 @@ export class TanCommandController {
 		const parentPromptCacheKey =
 			session.agent.promptCacheKey ?? (taskPromptCacheKey === undefined ? parentSessionId : undefined);
 		const thinkingLevel = session.configuredThinkingLevel();
+		const autoThinkingActivity = session.autoThinkingTally();
 		const systemPrompt = [...session.systemPrompt];
 		const toolNames = session.getEnabledToolNames();
 		const activeToolNames = session.getActiveToolNames();
@@ -156,6 +157,7 @@ export class TanCommandController {
 								sessionManager: cloneManager,
 								model,
 								thinkingLevel,
+								autoThinkingActivity,
 								systemPrompt,
 								toolNames,
 								mountedToolNames,
