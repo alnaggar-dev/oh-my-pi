@@ -1,0 +1,491 @@
+# Customizations on `mine`
+
+What this fork changes, why, and what must still be true after an upstream sync.
+
+**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `legacy-pi`), one
+`###` per feature under it, seven fields per feature: **What it does**, **Why**, **Files**
+(the files the feature *owns* — nothing else may list my files), **Depends on upstream**,
+**Tripwire paths** (upstream files the sync probe reads), **Must still be true**, **Check**.
+Paths are always full repo-relative paths. No line numbers anywhere; they rot on every rebase.
+
+**Keeping it current.** After a change, run `fork-commit`: it places the change in the
+right entry (or writes a new one) and commits code and ledger together. When upstream
+moves, `sync-upstream` rebases, re-checks that every changed file is owned by exactly one
+entry, and probes each entry's tripwire paths — a hit sends that entry's **Must still be
+true** list to a subagent to verify against the rebased code. A clean rebase proves
+nothing about intent; this file is the difference between "it compiled" and "it still
+does what I wanted".
+
+---
+
+## Advisor
+
+### Advisor review cadence and spend controls
+
+- **What it does:** Three settings decide what the advisor costs. `advisor.reviewOn`
+  (`step` = review after every agent step, `mutation` = skip mid-turn steps that only
+  read, `turn` = one review at the end), `advisor.includeThinking` (send the main
+  agent's reasoning or not), `advisor.projectContext` (repeat the AGENTS.md/rules block
+  in the advisor's system prompt or not).
+- **Why:** One review per step on a long turn was the biggest advisor bill; a review
+  averages ~$0.11.
+- **Files:** `packages/coding-agent/src/config/settings-schema.ts`,
+  `packages/coding-agent/src/advisor/runtime.ts`, `packages/coding-agent/src/session/session-advisors.ts`,
+  `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `docs/advisor-watchdog.md`,
+  `docs/settings.md` (the three `advisor.*` rows and the reworded advisor intro).
+- **Depends on upstream:** `AdvisorRuntime.onTurnEnd(messages, { willContinue })` and
+  its `willContinue` flag; the settings-schema entry shape, its
+  `ui.condition: "advisorEnabled"` gate and `SettingValue<>` type derivation; the
+  settings-change rebuild switch in `selector-controller.ts`;
+  `formatSessionHistoryMarkdown`'s `includeThinking` option; the advisor
+  system-prompt assembly and `#advisorContextPrompt`.
+- **Tripwire paths:** `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `packages/coding-agent/src/session/session-history-format.ts`
+- **Must still be true:**
+  - With `reviewOn: turn`, no advisor request is made for any mid-turn step, and that
+    work still appears in the single end-of-turn review — nothing is dropped.
+  - The final boundary of a turn is always reviewed, whatever `reviewOn` says.
+  - `includeThinking: false` keeps reasoning text out of the advisor's delta;
+    `projectContext: false` keeps the `<project-context>` block out of its prompt.
+  - Changing `includeThinking` or `projectContext` mid-session rebuilds the advisors;
+    changing `reviewOn` does not need a rebuild.
+- **Check:** `bun test packages/coding-agent/test/advisor-review-cadence.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
+
+### Read-only tools skipped by the `mutation` cadence
+
+- **What it does:** Under `reviewOn: mutation`, a mid-turn step is skipped when every
+  tool call since the last review was a pure read. The skip list is computed at module
+  load from upstream's read-tier list, minus four tools that are read-tier but still
+  change stored state (`retain`, `memory_edit`, `checkpoint`, `rewind`).
+- **Why:** Reviewing a step that only read files spends a full advisor request on work
+  that cannot break anything.
+- **Files:** `packages/coding-agent/src/advisor/runtime.ts`
+  (`ADVISOR_STATEFUL_READ_TIER_TOOLS`, `ADVISOR_REVIEW_EXEMPT_TOOLS`,
+  `#shouldReviewMidTurn`).
+- **Depends on upstream:** `READ_ONLY_TOOL_NAMES` in
+  `packages/coding-agent/src/task/read-only-policy.ts`. **The exempt table is DERIVED
+  from it at module load, never hardcoded — that is the safety property.** A new
+  upstream read tool becomes exempt automatically; a new writing tool is absent and so
+  still forces a review. Also `normalizeToolName` in `packages/coding-agent/src/tools/builtin-names.ts`, and
+  the `toolCall` block shape on assistant messages. Ordering constraint:
+  `ADVISOR_STATEFUL_READ_TIER_TOOLS` must stay declared *before* the derived table or
+  module load throws.
+- **Tripwire paths:** `packages/coding-agent/src/task/read-only-policy.ts`, `packages/coding-agent/src/tools/builtin-names.ts`
+- **Must still be true:**
+  - A mid-turn step whose only tool calls are read-only ones does not trigger a review
+    under `mutation`.
+  - A step containing `retain`, `memory_edit`, `checkpoint` or `rewind` does trigger
+    one, even though upstream classes those as read-tier.
+  - A step containing any tool absent from upstream's read-tier list — `write`, `edit`,
+    `bash`, `lsp`, `task`, any MCP or plugin tool — triggers one.
+  - A skipped step is not lost: its content lands in the next review that happens.
+- **Check:** `bun test packages/coding-agent/test/advisor-review-cadence.test.ts`
+
+### Hub inspection ops skipped by the `mutation` cadence
+
+- **What it does:** The `hub` tool is judged by its `op` argument, not its name. Pure
+  look-at-it ops (`list`, `jobs`, `inbox`, `logs`, `ps`, `describe`, `wait`) let a
+  mid-turn step be skipped; everything else (`start`, `stop`, `restart`, `cancel`,
+  `send`) forces a review.
+- **Why:** One tool name covers both "show me the peers" and "kill that job", so a
+  name-only list would either hide job kills from the advisor or bill a review for
+  every status check.
+- **Files:** `packages/coding-agent/src/tools/hub/approval.ts`
+  (`HUB_ADVISOR_EXEMPT_OPS`, `isHubReviewExempt`, plus `hubApproval` moved here),
+  `packages/coding-agent/src/tools/hub/index.ts` (now imports `hubApproval` instead
+  of defining it, so the advisor can reach the op classifier without pulling in the
+  hub runtime), `packages/coding-agent/src/advisor/runtime.ts` (`#shouldReviewMidTurn`).
+- **Depends on upstream:** the `hub` op union in `packages/coding-agent/src/tools/hub/index.ts`. **`HUB_ADVISOR_EXEMPT_OPS`
+  must keep covering the complete union** — an op upstream adds is treated as worth a
+  review (safe, but costs money), and an inspection op upstream renames stops being
+  exempt. Also `hubApproval` in the same file (the exempt list is deliberately narrower
+  than that approval tier; do not let a refactor collapse the two), and the leaf-module
+  rule: `approval.ts` must stay free of hub runtime imports so the advisor can import it.
+- **Tripwire paths:** `packages/coding-agent/src/tools/hub/index.ts`
+- **Must still be true:**
+  - Under `mutation`, a step whose only call is `hub` with an inspection op does not
+    trigger a review.
+  - `hub` with `start` / `stop` / `restart` / `cancel` / `send` does trigger one.
+  - A `hub` call with a missing, non-string or unrecognized `op` triggers one.
+  - Every op in the `hub` schema union is covered by one of those two behaviors.
+- **Check:** `bun test packages/coding-agent/test/advisor-review-cadence.test.ts`
+
+### Advise-only turn ends the review
+
+- **What it does:** When an advisor turn's only tool calls are `advise`, the review
+  stops there instead of spending one more request so the model can say "done".
+- **Why:** That closing round-trip re-sent the whole advisor prefix and produced no
+  advice — about 6% of advisor spend.
+- **Files:** `packages/coding-agent/src/session/session-advisors.ts` (the
+  `afterToolCall` hook and `TERMINAL_TOOL_RESULT_ABORT_REASON` wiring).
+- **Depends on upstream:** `TERMINAL_TOOL_RESULT_ABORT_REASON` and the graceful-yield
+  handling around it — the abort must still persist the finished tool batch and still
+  run `onTurnEnd`, exactly like the primary's `yield` tool; the `afterToolCall` hook
+  contract and its `ctx.toolCall` / `ctx.isError` / `ctx.message` shape;
+  `Agent.abort(reason)` passing the reason through to the loop's signal.
+- **Tripwire paths:** `packages/agent/src/agent-loop.ts`
+- **Must still be true:**
+  - An advisor turn whose only tool call is `advise` makes exactly one provider request
+    for that review, and the note still reaches the main transcript.
+  - A turn calling `advise` alongside another tool keeps going and makes the follow-up
+    request.
+  - When one turn emits several `advise` calls, every note is delivered and every
+    `advise` tool result is real, not a skipped placeholder.
+  - The advisor's transcript ends on the `advise` tool result, so the next review
+    resumes cleanly and `advisor.state.error` is unset.
+- **Check:** `bun test packages/coding-agent/test/advisor-advise-terminal.test.ts`
+
+### Advisor context slimming: stale-result eviction and repeat-call de-duplication
+
+- **What it does:** Before each advisor request, file contents the advisor read during
+  *finished* reviews are blanked to `[Stale result elided - N tokens]`, with the cut
+  point chosen so the tokens freed beat the bytes that must be re-sent. Inside a
+  review, a `read`/`grep`/`glob` call identical to an earlier one whose result is still
+  in context returns `[Unchanged since your earlier identical call]`.
+- **Why:** Old investigation output was ~48% of what the advisor re-sent every request,
+  and 13% of its investigation calls were byte-identical repeats that would re-inflate
+  exactly what the eviction just trimmed.
+- **Files:** `packages/coding-agent/src/advisor/tool-result-eviction.ts`,
+  `packages/coding-agent/src/advisor/tool-result-dedupe.ts`, `packages/coding-agent/src/session/session-advisors.ts`.
+- **Depends on upstream:** the in-place rewrite contract for tool results — `prunedAt`
+  on `ToolResultMessage` and `invalidateMessageCache`; `Tokenizer.countMessage`;
+  compaction's `MIN_PRUNE_TOKENS` (**not exported — `MIN_EVICT_TOKENS = 50` is a
+  hand-kept copy that drifts silently if upstream changes it**); `toolCallSignature`
+  in `packages/ai/src/utils/tool-call-loop-guard.ts` (must keep ignoring the
+  agent-authored `intent` field and key order); the `AfterToolCallResult` shape
+  including `useless`; `isTranscriptUsageAnchor` and `estimateTranscriptTokens`.
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/message-cache.ts`, `packages/agent/src/compaction/compaction.ts`, `packages/agent/src/compaction/transcript-tokens.ts`, `packages/ai/src/utils/tool-call-loop-guard.ts`
+- **Must still be true:**
+  - After a review finishes, the next request carries a short elision stub in place of
+    that review's large file output, while the primary deltas and the advisor's notes
+    are unchanged.
+  - An already-blanked result is not blanked again; results under the small-result
+    floor are left alone.
+  - A repeated identical investigation call returns the "unchanged" stub, but the full
+    output is served again if the earlier result was evicted, rolled back, errored,
+    held an image, or the file changed.
+  - Right after an eviction, no compaction fires that only the pre-eviction token count
+    would have triggered.
+- **Check:** `bun test packages/coding-agent/test/advisor/tool-result-eviction.test.ts packages/coding-agent/test/advisor/tool-result-dedupe.test.ts packages/coding-agent/test/advisor-tool-result-eviction.test.ts packages/coding-agent/test/advisor-context-maintenance.test.ts`
+
+### Cache breakpoint in front of a rewritten region (Anthropic)
+
+- **What it does:** When history was rewritten in place deeper than Anthropic's
+  20-position lookback, the request adds a cache breakpoint on the last message
+  *before* the rewritten region, so only the rewritten bytes are re-billed.
+- **Why:** Without it, the money saved by eviction is lost again at the cache-write
+  premium — a cache write costs roughly 16x a cache read per token.
+- **Files:** `packages/ai/src/providers/anthropic.ts`
+  (`ANTHROPIC_REWRITE_BOUNDARY_POSITIONS`, `countLookbackPositions`),
+  `packages/ai/src/utils/block-symbols.ts` (`kRewriteAt`, `markRewriteAt`,
+  `rewriteAtOf` — symbol-keyed so the mark never reaches the wire).
+- **Depends on upstream:** `prunedAt` and the rule that a prune mutates in place; the
+  4-breakpoint budget and head-caching plan (`applyHeadCaching`,
+  `countHeadBreakpoints`, `planStableAnthropicSystem`/`planStableAnthropicTools`) that
+  the message-tail budget subtracts from; the merge path that collapses consecutive
+  tool results into one wire message; Anthropic's 20-position lookback, encoded as
+  `ANTHROPIC_REWRITE_BOUNDARY_POSITIONS = 16`.
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/ai/src/providers/anthropic.ts`
+- **Must still be true:**
+  - A rewrite deeper than the lookback window gets a breakpoint before it plus the
+    usual trailing one, and the request never exceeds 4 breakpoints.
+  - A shallow rewrite near the tail changes nothing.
+  - Once a later assistant turn postdates the rewrite, the extra breakpoint disappears.
+  - With several rewrites, the boundary comes from the newest batch only.
+- **Check:** `bun test packages/ai/test/anthropic-rewrite-boundary-caching.test.ts`
+
+### Advisor shrinks its context instead of moving to a bigger model
+
+- **What it does:** When the advisor's context nears its window it compacts or
+  re-primes on the model it is configured with. It never switches to a larger sibling.
+- **Why:** Promotion keeps the same oversized context, moves it to a pricier model, and
+  throws away the prompt cache — the worst of both.
+- **Files:** `packages/coding-agent/src/session/session-advisors.ts`
+  (`#maintainAdvisorContext`), `docs/advisor-watchdog.md`.
+- **Depends on upstream:** `resolveContextPromotionConfiguredTarget` and
+  `Model.contextPromotionTarget` — the tripwire is an upstream change that
+  re-introduces promote-first behavior into shared maintenance code the advisor calls;
+  also `resolveCompactionMethodOrder` / `resolveMethodSettings` and
+  `prepareCompaction` / `compact`.
+- **Tripwire paths:** `packages/coding-agent/src/session/role-models.ts`, `packages/coding-agent/src/session/compaction-methods.ts`, `packages/agent/src/compaction/compaction.ts`
+- **Must still be true:**
+  - An advisor whose context overflows finishes maintenance still on its configured
+    model, having compacted or re-primed.
+  - Eviction runs before the compaction gate, and runs even when compaction is off.
+  - A failed maintenance attempt leaves the existing history in place rather than
+    wiping it.
+- **Check:** `bun test packages/coding-agent/test/advisor-context-maintenance.test.ts`
+
+### Bounded repeated tool calls inside one advisor review
+
+- **What it does:** The advisor's private loop counts its own repeated tool calls. At
+  the threshold it gets one corrective message; if it repeats anyway the review is
+  aborted. Repeats are counted across the whole review, so alternating between two
+  calls is bounded too.
+- **Why:** The advisor runs a loop that never passes through the main session's guards,
+  so a model re-issuing one failing call could burn dozens of requests inside a single
+  "successful" review.
+- **Files:** `packages/coding-agent/src/advisor/loop-guard.ts`,
+  `packages/ai/src/utils/tool-call-loop-guard.ts` (the `cumulative` option),
+  `packages/coding-agent/src/session/session-advisors.ts` (the `AdvisorLoopGuard` wiring),
+  `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md` (reworded:
+  the corrective no longer says "consecutive" or "this turn", because repeats are
+  now counted cumulatively across the whole review).
+- **Depends on upstream:** the shared settings `model.toolCallLoopGuard.enabled` /
+  `.threshold` / `.exemptTools` (one knob governs both loops);
+  `renderToolCallLoopRedirect`; `ToolCallLoopGuard` / `RepeatedToolCallDetection`; the
+  `AgentTurnEndContext` shape and the converter rule that only native roles survive —
+  the corrective is a `user` message on purpose, a `custom` one would be dropped.
+- **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/config/settings-schema.ts`
+- **Must still be true:**
+  - An advisor repeating a call up to the threshold gets one corrective and still makes
+    its next request.
+  - Repeating again after the corrective aborts the update instead of looping.
+  - Repeat counting starts fresh after a context reset or update boundary.
+  - With `model.toolCallLoopGuard.enabled: false`, the advisor is not bounded by it.
+- **Check:** `bun test packages/coding-agent/test/advisor-tool-call-loop-guard.test.ts`
+
+### Advisor keeps its context across the primary's per-turn prune
+
+- **What it does:** When the main agent's per-turn prune blanks old tool results in its
+  own transcript, the advisor does not treat that as "history was rewritten" and does
+  not throw its context away. Every other rewrite (rollback, branch, edited message,
+  compaction, session switch) still resets it.
+- **Why:** A reset makes the advisor replay the entire primary transcript and refill
+  the provider cache from scratch — pure cost, since it already holds the result.
+- **Files:** `packages/coding-agent/src/advisor/runtime.ts` (the delivered-prefix
+  identity check),
+  `packages/coding-agent/src/session/session-maintenance.ts` (both
+  `resetAdvisorRuntimes` calls removed from the prune paths — that removal *is* the
+  feature; a sync that reinstates either one silently restores the old cost).
+- **Depends on upstream:** the primary's per-turn prune must keep mutating the *same*
+  message object in place rather than replacing it in the array — the cheap path is the
+  reference check `delivered.message === current`; the `AgentMessage` top-level field
+  names hashed by `fingerprintMessage` (an upstream rename or a newly rendered field
+  makes the fingerprint blind); the renderer field list in `session-history-format.ts`
+  that the fingerprint mirrors; `AppendOnlyContextManager.#messageDigest`.
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/coding-agent/src/session/session-maintenance.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/message-fingerprint.ts`
+- **Must still be true:**
+  - A per-turn prune of an already-delivered primary tool result does not re-prime the
+    advisor and does not replay the transcript.
+  - Replacing a delivered message with a genuinely different one still resets it.
+  - A message re-delivered as an equivalent clone (same rendered content, different id
+    or timestamp) does not count as a change.
+  - When the prefix does change, the reason is recorded — which index, which fields —
+    so an unexpected replay is diagnosable.
+- **Check:** `bun test packages/coding-agent/test/agent-session-prune-persistence.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
+
+### Bounded diffs and tool output inside advisor deltas
+
+- **What it does:** Every expanded diff and tool input/output rendered into an advisor
+  delta is middle-truncated to 8 KiB / 80 lines per tool call, with an elision marker.
+  Small ones pass through byte-identical.
+- **Why:** A single large edit diff could otherwise dump an unbounded blob into every
+  advisor request.
+- **Files:** `packages/coding-agent/src/session/session-history-format.ts`.
+- **Depends on upstream:** `truncateMiddle` and its `{ maxBytes, maxLines }` options
+  plus the elision marker text; the `details.diff` field on edit tool results;
+  `formatSessionHistoryMarkdown`'s option object (`expandEditDiffs`, `expandToolIO`,
+  `transformExpandedToolIO`) — the advisor sets all of these, so an upstream default
+  change silently changes what it is billed for.
+- **Tripwire paths:** `packages/tui/src/tools/streaming-output.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/delta-split.ts`
+- **Must still be true:**
+  - A 400-line diff keeps head and tail, drops the middle, and carries a marker.
+  - A small diff renders byte-identically, with no marker.
+  - Truncation happens after secret obfuscation, so redaction is never bypassed.
+  - Fenced output containing backticks still gets a wrapper the content cannot break.
+- **Check:** `bun test packages/coding-agent/test/session/session-history-format.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
+
+### Advisor `auto` thinking tracks the primary turn's effort
+
+- **What it does:** An advisor set to `auto` runs at whatever effort the primary
+  session's classifier picked for the current turn, re-tuned at each review boundary.
+  Previously `auto` on an advisor silently collapsed to the fixed `medium` default.
+- **Why:** `auto` is a session-level selector with no per-advisor classifier, so
+  building an advisor erased it and the advisor reviewed hard turns at medium effort.
+- **Files:** `packages/coding-agent/src/session/session-advisors.ts`,
+  `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`.
+- **Depends on upstream:** the advisor host interface — `isAutoThinking()` and
+  `primaryThinkingLevel()` are implemented as live getters, and the inherited level is
+  **derived from the primary's live level each time, never snapshotted at build time**;
+  `AUTO_THINKING`, `concreteThinkingLevel`, `resolveThinkingLevelForModel`,
+  `clampAutoThinkingEffort`, `toReasoningEffort`, `shouldDisableReasoning`;
+  `resolveModelOverride` / `formatModelSelectorValue`. **The advisor runtime signature
+  signs the `auto` selector, not the resolved level — if upstream folds the concrete
+  level into that signature, every per-turn effort change rebuilds the advisor and
+  destroys its accumulated context.** Also the review-boundary hook
+  `#retuneAutoThinkingAdvisors()` (re-tunes via `setThinkingLevel` only — no rebuild,
+  no model change) and the model-hub role assignment in `selector-controller.ts`.
+- **Tripwire paths:** `packages/tui/src/thinking.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `packages/coding-agent/src/session/role-models.ts`
+- **Must still be true:**
+  - With the primary on `auto`, an `auto` advisor runs at the primary's current
+    resolved effort, not `medium`.
+  - With the primary pinned to a concrete level, an `auto` advisor falls back to its own
+    configured level and is unaffected.
+  - When the classifier resolves a different level, the live advisor's effort changes at
+    the next review boundary and it is the same instance — model, context and cached
+    prefix survive.
+  - An `auto` advisor's runtime signature does not change when the resolved effort does.
+- **Check:** `bun test packages/coding-agent/test/advisor-auto-thinking.test.ts packages/coding-agent/test/advisor-devin-thinking.test.ts`
+
+## Status line and TUI
+
+### Auto-thinking classifier readout in the status line
+
+- **What it does:** With thinking set to `auto`, the status line and footer show a live
+  `⟳ auto` marker while the classifier decides how hard to think about the turn, plus a
+  running count of turns it decided (`8`) versus turns that fell back to a guess after
+  a timeout or error (`8·2!`). The marker is held for at least a second so it is
+  actually visible.
+- **Why:** With `auto` on there was no way to see whether the classifier was working,
+  what it picked, or how often it was silently failing.
+- **Files:** `packages/coding-agent/src/session/model-controls.ts`,
+  `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/agent-session-events.ts`,
+  `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/footer.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/component.ts`,
+  `packages/tui/src/theme/theme-class.ts`, `packages/tui/src/render/render-utils.ts`,
+  `docs/settings.md` (the `auto_thinking` segment description).
+- **Depends on upstream:** the `StatusLineSegment` / `StatusLineSegmentId` shape and the
+  `SEGMENTS` registry. **Three hardcoded lists are NOT derived from each other and each
+  needs the segment id by hand — upstream rewriting any of them drops the segment
+  silently:** `STATUS_LINE_SEGMENT_IDS` (`status-line/schema.ts`), the Custom preset's
+  right-hand defaults (same file), and the `full` / `nerd` arrays
+  (`status-line/presets.ts`). Also `StatusLineSession` and the footer session shape in
+  `status-line/host.ts` — the accessor is optional, so upstream could drop the call
+  site with no error; `StatusLineExternalInputs` and its equality function in
+  `status-line/component.ts` (the tally object identity is stable by design, so the
+  three numeric fields must stay in the cache key); `thinking.autoPending` across all
+  three symbol presets; `thinkingLevelGlyph`'s `auto → autoPending` branch; the
+  `AgentSessionEvent` union and the `satisfies`-checked handler map (a removed event
+  member is a compile error — that is the safety property); `classifyDifficulty`, its
+  4 s timeout, and `promptGeneration()`; `statusLine.invalidate()` plus the **forced**
+  `ui.requestRender(true)` — the bar is otherwise byte-identical and an unforced render
+  diffs it away.
+- **Tripwire paths:** `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/render/render-utils.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/config/settings-schema.ts`
+- **Must still be true:**
+  - While a classification is in flight, the bar shows the pending marker, not the
+    previous turn's resolved level.
+  - A classification faster than the repaint cadence still leaves the marker up for at
+    least 1000 ms, and the hold never delays the turn.
+  - Changing only the counters repaints the custom bar; they do not freeze at their
+    first painted value.
+  - Nothing renders when `auto` is off, when both counters are zero, or when the host
+    exposes no accessor; the `·N!` part appears only after a real fallback.
+- **Check:** `bun test packages/coding-agent/test/status-line-auto-thinking.test.ts packages/coding-agent/test/auto-thinking-tally.test.ts`
+
+### Subagent auto-thinking rolls into the parent's tally
+
+- **What it does:** A subagent that classifies its own thinking level adds to the
+  counters of the session that spawned it. While any classification anywhere in the
+  tree is running, the parent's pending marker stays up.
+- **Why:** Most classifications happen inside subagents, so without roll-up the
+  parent's status line showed almost nothing during a busy multi-agent turn.
+- **Files:** `packages/coding-agent/src/session/model-controls.ts`,
+  `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/agent-session.ts`,
+  `packages/coding-agent/src/tools/index.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/task/executor.ts`,
+  `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/vibe/runtime.ts`.
+- **Depends on upstream:** the tool-facing session interface in `packages/coding-agent/src/tools/index.ts` —
+  the customization **widens** it with the optional `autoThinkingTally?()`, so if
+  upstream changes how that object is built the accessor goes missing at runtime with
+  no type error; the accessor table in `sdk.ts`; the spawn option bags
+  (`autoThinkingActivity` on task options, `AgentSessionConfig`, and its consumption in
+  `agent-session.ts`); **the three spawn call sites that read the parent's tally —
+  `structured-subagent.ts`, `vibe/runtime.ts`, `task/executor.ts`. A new upstream spawn
+  path simply will not roll up, silently.** `ModelControls`' `activity?` option:
+  absent means the session owns a fresh tally; `inFlight` is what makes overlapping
+  children correct.
+- **Tripwire paths:** `packages/coding-agent/src/tools/index.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/session/agent-session-types.ts`
+- **Must still be true:**
+  - A classification inside a subagent increments the spawning session's `classified`
+    count, not a separate one.
+  - A subagent whose classification fails increments the shared `fallback` count.
+  - With two overlapping classifications, the marker stays up until the last finishes.
+  - A session created without a handed-down tally keeps its own independent counts.
+- **Check:** `bun test packages/coding-agent/test/auto-thinking-tally.test.ts`
+
+### Effort level shown in the pinned Subagents list
+
+- **What it does:** Each row of the pinned Subagents block names the effort that agent
+  runs at — a dim `⟨high⟩` badge after the id and role badge.
+- **Why:** The HUD showed which model each subagent used but not how hard it was told
+  to think, which is the more expensive half of the choice.
+- **Files:** `packages/coding-agent/src/modes/interactive-mode.ts`,
+  `packages/tui/src/render/render-utils.ts`.
+- **Depends on upstream:** `AgentProgress.resolvedThinkingLevel` and its settled twin
+  on `AgentResult` — **the badge is derived from this field, never computed
+  independently**, so it is correct as long as upstream keeps publishing it; if
+  upstream stops setting it the badge disappears quietly. `thinkingLevelBadge(level,
+  theme)` — contract: empty string for `undefined` and `Inherit`, leading-space dim
+  bracketed label otherwise. **`formatFeedModelBadge`'s exact argument list
+  `(modelIdentity, thinkingLevel, advisor, uiTheme, maxWidth)` — a reordered or added
+  parameter is a silent mis-render, not a type error.** Also
+  `isFeedModelBadgeEnabled()` / `FEED_MODEL_BADGE_WIDTH` and the
+  `task.showResolvedModelBadge` setting (the effort badge deliberately shares that one
+  gate), plus the row-budget helpers `truncateToWidth`, `visibleWidth`,
+  `renderTreeList`, `layoutPinnedHud`.
+- **Tripwire paths:** `packages/tui/src/tools/task.ts`, `packages/tui/src/render/render-utils.ts`, `packages/coding-agent/src/task/executor.ts`
+- **Must still be true:**
+  - A running subagent reporting a resolved effort shows it as a bracketed badge after
+    its id and role badge.
+  - A subagent with no explicit effort shows no badge, and its row is otherwise
+    unchanged.
+  - On a narrow terminal the row never overflows — the badge is truncated or dropped
+    first.
+  - The effort badge is hidden whenever the resolved-model badge is hidden; it never
+    appears on its own.
+- **Check:** `bun test packages/coding-agent/test/subagent-hud-render.test.ts`
+
+## legacy-pi
+
+### legacy-pi canonical `require` fix
+
+- **What it does:** The plugin compatibility shim declines a `@oh-my-pi/...` import that
+  maps to itself and has no registered override, letting Bun resolve it normally.
+  Before, the shim re-resolved such a specifier through `Bun.resolveSync`, Bun
+  re-entered the same hook, and the import died with `NameTooLong`.
+- **Why:** Once any legacy-pi plugin was installed, the first
+  `require("@oh-my-pi/pi-*")` crashed — most visibly `/login`, which took down the app.
+- **Files:** `packages/coding-agent/src/extensibility/plugins/legacy-pi-compat.ts`.
+- **Depends on upstream:** `CANONICAL_PI_SCOPE` and `PI_SCOPE_ALIASES` — the canonical
+  scope is **intentionally** in the alias list, which is why the hook can be handed a
+  self-mapping specifier; the guard tests `remapped === args.path` rather than a
+  hardcoded scope name, so another self-mapping scope is covered automatically.
+  `remapLegacyPiSpecifier`'s return contract (`undefined` = not ours);
+  `legacyPiPackageRootOverrides` and its builder (the escape hatch is "decline *unless*
+  an override is registered", so how that map is populated decides whether the hook
+  still answers in compiled builds); `resolveCanonicalPiSpecifier`; the process-global
+  `Bun.plugin` `onResolve` filter (which is why the test runs in a child process); and
+  Bun's re-entrancy behavior for `Bun.resolveSync` inside an `onResolve` hook.
+- **Tripwire paths:** `packages/coding-agent/src/extensibility/plugins/legacy-pi-compat.ts`
+- **Must still be true:**
+  - After the shim installs, `require("@oh-my-pi/pi-ai/index.js")` loads and never
+    produces `NameTooLong`.
+  - A self-mapping canonical specifier with no registered override is declined and
+    resolved by Bun natively.
+  - One that *does* have an override is still answered, so compiled binaries keep one
+    in-process copy of each pi package.
+  - Legacy `@mariozechner/*` and `@earendil-works/*` specifiers still remap.
+- **Check:** `bun test packages/coding-agent/test/extensibility/legacy-pi-canonical-require.test.ts packages/coding-agent/test/pi-scope-aliases.test.ts`
+
+---
+
+## Known follow-ups
+
+- **`find → glob` comment goes stale on the next sync.** The `normalizeToolNames`
+  call in `filterAdvisorTools` (`packages/coding-agent/src/advisor/config.ts`)
+  says "Normalize legacy aliases (search→grep, find→glob)". That is accurate today, but
+  upstream has already deleted the `find` alias (`find` is now a real tool), so after
+  the next sync the comment and the matching line in `docs/advisor-watchdog.md` are
+  wrong, and a WATCHDOG.yml `tools: [find]` resolves to the new find tool instead of
+  glob. Fix both when the sync lands.
+- **Stale comment: the advisor no longer promotes models.**
+  the `maintainContext` doc comment in `packages/coding-agent/src/advisor/runtime.ts` still describes promoting to a
+  larger sibling. That was dropped; the doc and the tests are already correct, only the
+  comment is wrong.
+- **Two settings have no test.** Nothing asserts that `advisor.projectContext: false`
+  removes the `<project-context>` block, or that `advisor.includeThinking` reaches a
+  built advisor runtime. After a sync that touches advisor system-prompt assembly,
+  check those two by hand.
+- **Hand-copied constant.** `MIN_EVICT_TOKENS = 50` mirrors compaction's unexported
+  `MIN_PRUNE_TOKENS`. If upstream changes its value, nothing breaks loudly — the two
+  just drift.
+- **Pre-existing format failure.** `test/advisor-advise-terminal.test.ts` fails
+  `oxfmt --check` today, independently of any sync. `bun run fix:ts` clears it.
