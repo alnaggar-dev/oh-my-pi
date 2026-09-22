@@ -1019,6 +1019,8 @@ export class SessionAdvisors {
 			instructions,
 			budget,
 			tier,
+			cfgAdvisorIncludeThinking.get(this.#host.settings),
+			cfgAdvisorProjectContext.get(this.#host.settings),
 		].join("\u001f");
 	}
 

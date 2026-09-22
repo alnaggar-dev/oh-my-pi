@@ -3,6 +3,11 @@ import { type } from "@oh-my-pi/omptype";
 import { resolveThresholdTokens, shouldCompact } from "@oh-my-pi/pi-agent-core/compaction";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { Agent } from "@oh-my-pi/pi-agent-core";
+import { Effort } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import * as classifier from "@oh-my-pi/pi-coding-agent/auto-thinking/classifier";
 import type { EffectiveExtensionRoots } from "@oh-my-pi/pi-coding-agent/capability/types";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -16,7 +21,7 @@ import type { AgentRef } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
-import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -29,6 +34,8 @@ import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
+import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 import { createSessionDefaults } from "../helpers/session-defaults";
 
 import { cfgAdvisorEnabled } from "@oh-my-pi/pi-coding-agent/advisor/settings";
@@ -189,6 +196,7 @@ interface ReviveOwnerOptions {
 
 function createFactory(cwd: string, eventBus?: EventBus, owner: ReviveOwnerOptions = {}) {
 	const parentSession = {
+		autoThinkingTally: vi.fn(),
 		sessionManager: {
 			getCwd: () => cwd,
 			getArtifactManager: () => undefined,
@@ -227,6 +235,85 @@ afterEach(async () => {
 });
 
 describe("persisted subagent revival", () => {
+	it("rolls real cold-revived classifications into the live owner's tree after a session switch", async () => {
+		const cwd = makeTempDir("@pi-revive-auto-thinking-");
+		const authStorage = createInMemoryAuthStorage();
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected bundled test model");
+		const settings = Settings.isolated({
+			"async.enabled": false,
+			"compaction.enabled": false,
+			"marketplace.autoUpdate": "off",
+			"todo.enabled": false,
+		});
+		const sessions: AgentSession[] = [];
+		const makeOwner = () => {
+			const session = new AgentSession({
+				agent: new Agent({ initialState: { model, systemPrompt: ["parent"], tools: [], messages: [] } }),
+				sessionManager: SessionManager.inMemory(cwd),
+				settings,
+				modelRegistry,
+				disableExtensionDiscovery: true,
+			});
+			sessions.push(session);
+			return session;
+		};
+		try {
+			const previousOwner = makeOwner();
+			const currentOwner = makeOwner();
+			const ctx = {
+				session: previousOwner,
+				authStorage,
+				modelRegistry,
+				settings,
+				enableLsp: false,
+			};
+			const sessionFile = await createPersistedSession(cwd, true, "default");
+			const ref = AgentRegistry.global().register(createRef(sessionFile));
+			const reviver = await createPersistedSubagentReviverFactory(ctx)(ref);
+			if (!reviver) throw new Error("Expected a persisted reviver");
+			// The owner is live, unlike a tangent's dispatch-time snapshot.
+			ctx.session = currentOwner;
+			const createAgentSession = sdkModule.createAgentSession;
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(options =>
+				createAgentSession({
+					agentDir: cwd,
+					skills: [],
+					contextFiles: [],
+					promptTemplates: [],
+					slashCommands: [],
+					skipPythonPreflight: true,
+					disableExtensionDiscovery: true,
+					...options,
+				}),
+			);
+			const child = await reviver(ref);
+			sessions.push(child);
+			child.setThinkingLevel(AUTO_THINKING);
+			const stream = createMockModel({ handler: { content: ["revived complete"] } });
+			child.agent.streamFn = stream.stream;
+			vi.spyOn(classifier, "classifyDifficulty")
+				.mockResolvedValueOnce(Effort.Low)
+				.mockRejectedValueOnce(new Error("classifier unavailable"));
+
+			await child.prompt("Classify the revived task", { attribution: "user" });
+			expect(currentOwner.autoThinkingActivity()).toMatchObject({ classified: 1, fallback: 0 });
+			expect(previousOwner.autoThinkingActivity()).toMatchObject({ classified: 0, fallback: 0 });
+
+			await child.prompt("Continue after the classifier fails", { attribution: "user" });
+			expect(currentOwner.autoThinkingActivity()).toMatchObject({ classified: 1, fallback: 1 });
+			expect(previousOwner.autoThinkingActivity()).toMatchObject({ classified: 0, fallback: 0 });
+			expect(child.getLastAssistantMessage()?.content).toEqual([{ type: "text", text: "revived complete" }]);
+		} finally {
+			for (const session of sessions.reverse()) await session.dispose();
+			authStorage.close();
+			AgentLifecycleManager.resetGlobalForTests();
+			AgentRegistry.resetGlobalForTests();
+		}
+	}, 20_000);
+
 	it("initializes the extension runtime on cold revival so tool_call handlers are not fail-closed blocked", async () => {
 		const cwd = makeTempDir("@pi-revive-ext-init-");
 		const sessionFile = await createPersistedSession(cwd);
