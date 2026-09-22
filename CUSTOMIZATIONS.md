@@ -39,7 +39,7 @@ does what I wanted".
   settings-change rebuild switch in `selector-controller.ts`;
   `formatSessionHistoryMarkdown`'s `includeThinking` option; the advisor
   system-prompt assembly and `#advisorContextPrompt`.
-- **Tripwire paths:** `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `packages/coding-agent/src/session/session-history-format.ts`
+- **Tripwire paths:** `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/advisor/delta-split.ts`
 - **Must still be true:**
   - With `reviewOn: turn`, no advisor request is made for any mid-turn step, and that
     work still appears in the single end-of-turn review — nothing is dropped.
@@ -60,16 +60,19 @@ does what I wanted".
   that cannot break anything.
 - **Files:** `packages/coding-agent/src/advisor/runtime.ts`
   (`ADVISOR_STATEFUL_READ_TIER_TOOLS`, `ADVISOR_REVIEW_EXEMPT_TOOLS`,
-  `#shouldReviewMidTurn`).
+  `#shouldReviewMidTurn`), `packages/coding-agent/src/advisor/config.ts` (only the
+  `filterAdvisorTools` comment, kept accurate about which legacy tool aliases exist).
 - **Depends on upstream:** `READ_ONLY_TOOL_NAMES` in
   `packages/coding-agent/src/task/read-only-policy.ts`. **The exempt table is DERIVED
   from it at module load, never hardcoded — that is the safety property.** A new
   upstream read tool becomes exempt automatically; a new writing tool is absent and so
-  still forces a review. Also `normalizeToolName` in `packages/coding-agent/src/tools/builtin-names.ts`, and
+  still forces a review. `find` is upstream's semantic search tool and is read-tier on
+  purpose: its only write is a self-cleaning temp dir, so it is correctly exempt.
+  Also `normalizeToolName` in `packages/coding-agent/src/tools/builtin-names.ts`, and
   the `toolCall` block shape on assistant messages. Ordering constraint:
   `ADVISOR_STATEFUL_READ_TIER_TOOLS` must stay declared *before* the derived table or
   module load throws.
-- **Tripwire paths:** `packages/coding-agent/src/task/read-only-policy.ts`, `packages/coding-agent/src/tools/builtin-names.ts`
+- **Tripwire paths:** `packages/coding-agent/src/task/read-only-policy.ts`, `packages/coding-agent/src/tools/builtin-names.ts`, `packages/coding-agent/src/tools/jfind/index.ts`
 - **Must still be true:**
   - A mid-turn step whose only tool calls are read-only ones does not trigger a review
     under `mutation`.
@@ -120,9 +123,9 @@ does what I wanted".
 - **Depends on upstream:** `TERMINAL_TOOL_RESULT_ABORT_REASON` and the graceful-yield
   handling around it — the abort must still persist the finished tool batch and still
   run `onTurnEnd`, exactly like the primary's `yield` tool; the `afterToolCall` hook
-  contract and its `ctx.toolCall` / `ctx.isError` / `ctx.message` shape;
+  contract and its `ctx.toolCall` / `ctx.isError` / `ctx.assistantMessage` shape;
   `Agent.abort(reason)` passing the reason through to the loop's signal.
-- **Tripwire paths:** `packages/agent/src/agent-loop.ts`
+- **Tripwire paths:** `packages/agent/src/agent-loop.ts`, `packages/agent/src/agent.ts`, `packages/agent/src/types.ts`
 - **Must still be true:**
   - An advisor turn whose only tool call is `advise` makes exactly one provider request
     for that review, and the note still reaches the main transcript.
@@ -233,9 +236,11 @@ does what I wanted".
 - **Depends on upstream:** the shared settings `model.toolCallLoopGuard.enabled` /
   `.threshold` / `.exemptTools` (one knob governs both loops);
   `renderToolCallLoopRedirect`; `ToolCallLoopGuard` / `RepeatedToolCallDetection`; the
-  `AgentTurnEndContext` shape and the converter rule that only native roles survive —
-  the corrective is a `user` message on purpose, a `custom` one would be dropped.
-- **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/config/settings-schema.ts`
+  `AgentTurnEndContext` shape, and the converter the advisor actually runs —
+  `convertToLlmForSideRequest` (`session-provider-boundary.ts`), not the agent core's
+  default. The corrective is a `user` message on purpose: that survives every
+  converter, whereas `custom` only survives this one.
+- **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/session/messages.ts`, `packages/coding-agent/src/session/session-provider-boundary.ts`, `packages/coding-agent/src/session/stream-guards.ts`, `packages/agent/src/types.ts`
 - **Must still be true:**
   - An advisor repeating a call up to the threshold gets one corrective and still makes
     its next request.
@@ -359,7 +364,7 @@ does what I wanted".
   4 s timeout, and `promptGeneration()`; `statusLine.invalidate()` plus the **forced**
   `ui.requestRender(true)` — the bar is otherwise byte-identical and an unforced render
   diffs it away.
-- **Tripwire paths:** `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/render/render-utils.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/config/settings-schema.ts`
+- **Tripwire paths:** `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/glyph-bundle.json`, `packages/tui/src/render/render-utils.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`
 - **Must still be true:**
   - While a classification is in flight, the bar shows the pending marker, not the
     previous turn's resolved level.
@@ -387,12 +392,13 @@ does what I wanted".
   upstream changes how that object is built the accessor goes missing at runtime with
   no type error; the accessor table in `sdk.ts`; the spawn option bags
   (`autoThinkingActivity` on task options, `AgentSessionConfig`, and its consumption in
-  `agent-session.ts`); **the three spawn call sites that read the parent's tally —
-  `structured-subagent.ts`, `vibe/runtime.ts`, `task/executor.ts`. A new upstream spawn
-  path simply will not roll up, silently.** `ModelControls`' `activity?` option:
+  `agent-session.ts`); **the spawn call sites that read the parent's tally —
+  `structured-subagent.ts`, `vibe/runtime.ts`, `task/executor.ts`. A spawn path that
+  does not pass `autoThinkingActivity` simply will not roll up, silently — see the
+  known follow-up for the two that do not.** `ModelControls`' `activity?` option:
   absent means the session owns a fresh tally; `inFlight` is what makes overlapping
   children correct.
-- **Tripwire paths:** `packages/coding-agent/src/tools/index.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/session/agent-session-types.ts`
+- **Tripwire paths:** `packages/coding-agent/src/tools/index.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`, `packages/coding-agent/src/session/agent-session-types.ts`
 - **Must still be true:**
   - A classification inside a subagent increments the spawning session's `classified`
     count, not a separate one.
@@ -469,13 +475,13 @@ does what I wanted".
 
 ## Known follow-ups
 
-- **`find → glob` comment goes stale on the next sync.** The `normalizeToolNames`
-  call in `filterAdvisorTools` (`packages/coding-agent/src/advisor/config.ts`)
-  says "Normalize legacy aliases (search→grep, find→glob)". That is accurate today, but
-  upstream has already deleted the `find` alias (`find` is now a real tool), so after
-  the next sync the comment and the matching line in `docs/advisor-watchdog.md` are
-  wrong, and a WATCHDOG.yml `tools: [find]` resolves to the new find tool instead of
-  glob. Fix both when the sync lands.
+- **Two spawn paths do not roll up their auto-thinking tally.**
+  `packages/coding-agent/src/task/persisted-revive.ts` (cold revive of a parked
+  subagent) and `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`
+  both call `createAgentSession` with the parent session in scope but omit
+  `autoThinkingActivity`, so classifications there never reach the parent's counters.
+  Pre-existing, not caused by a sync. `packages/coding-agent/src/modes/agents-hub-deps.ts`
+  has the same omission but no session in scope, so it would need a signature change.
 - **Stale comment: the advisor no longer promotes models.**
   the `maintainContext` doc comment in `packages/coding-agent/src/advisor/runtime.ts` still describes promoting to a
   larger sibling. That was dropped; the doc and the tests are already correct, only the
@@ -487,5 +493,3 @@ does what I wanted".
 - **Hand-copied constant.** `MIN_EVICT_TOKENS = 50` mirrors compaction's unexported
   `MIN_PRUNE_TOKENS`. If upstream changes its value, nothing breaks loudly — the two
   just drift.
-- **Pre-existing format failure.** `test/advisor-advise-terminal.test.ts` fails
-  `oxfmt --check` today, independently of any sync. `bun run fix:ts` clears it.
