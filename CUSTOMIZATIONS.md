@@ -36,10 +36,11 @@ does what I wanted".
 - **Depends on upstream:** `AdvisorRuntime.onTurnEnd(messages, { willContinue })` and
   its `willContinue` flag; the settings-schema entry shape, its
   `ui.condition: "advisorEnabled"` gate and `SettingValue<>` type derivation; the
-  settings-change rebuild switch in `selector-controller.ts`;
+  settings-change rebuild switch in `selector-controller.ts` and the runtime signature
+  in `session-advisors.ts`, which includes both build-time content settings;
   `formatSessionHistoryMarkdown`'s `includeThinking` option; the advisor
   system-prompt assembly and `#advisorContextPrompt`.
-- **Tripwire paths:** `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/advisor/delta-split.ts`
+- **Tripwire paths:** `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`
 - **Must still be true:**
   - With `reviewOn: turn`, no advisor request is made for any mid-turn step, and that
     work still appears in the single end-of-turn review — nothing is dropped.
@@ -48,7 +49,7 @@ does what I wanted".
     `projectContext: false` keeps the `<project-context>` block out of its prompt.
   - Changing `includeThinking` or `projectContext` mid-session rebuilds the advisors;
     changing `reviewOn` does not need a rebuild.
-- **Check:** `bun test packages/coding-agent/test/advisor-review-cadence.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
+- **Check:** `bun test packages/coding-agent/test/advisor-live-settings.test.ts packages/coding-agent/test/advisor-review-cadence.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
 
 ### Read-only tools skipped by the `mutation` cadence
 
@@ -361,17 +362,19 @@ does what I wanted".
   three symbol presets; `thinkingLevelGlyph`'s `auto → autoPending` branch; the
   `AgentSessionEvent` union and the `satisfies`-checked handler map (a removed event
   member is a compile error — that is the safety property); `classifyDifficulty`, its
-  4 s timeout, and `promptGeneration()`; `statusLine.invalidate()` plus the **forced**
-  `ui.requestRender(true)` — the bar is otherwise byte-identical and an unforced render
-  diffs it away.
-- **Tripwire paths:** `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/glyph-bundle.json`, `packages/tui/src/render/render-utils.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`
+  4 s timeout, and `promptGeneration()`; shared activity notifications after counter
+  increments and at pending-state transitions; `statusLine.invalidate()` plus
+  `ui.requestRender(true)` for prompt refresh even when the parent is idle. Counter
+  values also participate in the render cache, so ordinary renders can refresh them.
+- **Tripwire paths:** `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/glyph-bundle.json`, `packages/tui/src/render/render-utils.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`
 - **Must still be true:**
   - While a classification is in flight, the bar shows the pending marker, not the
     previous turn's resolved level.
   - A classification faster than the repaint cadence still leaves the marker up for at
-    least 1000 ms, and the hold never delays the turn.
-  - Changing only the counters repaints the custom bar; they do not freeze at their
-    first painted value.
+    least 1000 ms after the latest classification starts, and the hold never delays
+    the turn. An older child's timer cannot clear a newer child's hold.
+  - Child-only activity repaints an idle parent's pending marker and counters,
+    including the final hold-expiry repaint after the child has been disposed.
   - Nothing renders when `auto` is off, when both counters are zero, or when the host
     exposes no accessor; the `·N!` part appears only after a real fallback.
 - **Check:** `bun test packages/coding-agent/test/status-line-auto-thinking.test.ts packages/coding-agent/test/auto-thinking-tally.test.ts`
@@ -380,32 +383,40 @@ does what I wanted".
 
 - **What it does:** A subagent that classifies its own thinking level adds to the
   counters of the session that spawned it. While any classification anywhere in the
-  tree is running, the parent's pending marker stays up.
+  tree is running, the parent's pending marker stays up, followed by the shared
+  visibility hold. Cold revival and `/tan` belong to the same spawning tree.
 - **Why:** Most classifications happen inside subagents, so without roll-up the
   parent's status line showed almost nothing during a busy multi-agent turn.
 - **Files:** `packages/coding-agent/src/session/model-controls.ts`,
   `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/agent-session.ts`,
   `packages/coding-agent/src/tools/index.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/task/executor.ts`,
-  `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/vibe/runtime.ts`.
+  `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/vibe/runtime.ts`,
+  `packages/coding-agent/src/task/persisted-revive.ts`,
+  `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`.
 - **Depends on upstream:** the tool-facing session interface in `packages/coding-agent/src/tools/index.ts` —
   the customization **widens** it with the optional `autoThinkingTally?()`, so if
   upstream changes how that object is built the accessor goes missing at runtime with
   no type error; the accessor table in `sdk.ts`; the spawn option bags
   (`autoThinkingActivity` on task options, `AgentSessionConfig`, and its consumption in
-  `agent-session.ts`); **the spawn call sites that read the parent's tally —
-  `structured-subagent.ts`, `vibe/runtime.ts`, `task/executor.ts`. A spawn path that
-  does not pass `autoThinkingActivity` simply will not roll up, silently — see the
-  known follow-up for the two that do not.** `ModelControls`' `activity?` option:
-  absent means the session owns a fresh tally; `inFlight` is what makes overlapping
-  children correct.
-- **Tripwire paths:** `packages/coding-agent/src/tools/index.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`, `packages/coding-agent/src/session/agent-session-types.ts`
+  `agent-session.ts`); **every child constructor must forward the parent's tally,
+  including cold revival and `/tan`.** Cold revival reads the live owner when revived;
+  `/tan` snapshots its owner's tally before deferred dispatch so changing focus cannot
+  move the counts into another tree. `ModelControls`' `activity?` option: absent means
+  a fresh tally. A private shared activity object owns `inFlight` notifications and
+  one visibility deadline/timer per tally. `AgentSession.beginDispose()` must detach
+  only its own notification subscription, not the surviving tree's hold.
+- **Tripwire paths:** `packages/coding-agent/src/tools/index.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`, `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`
 - **Must still be true:**
   - A classification inside a subagent increments the spawning session's `classified`
     count, not a separate one.
   - A subagent whose classification fails increments the shared `fallback` count.
   - With two overlapping classifications, the marker stays up until the last finishes.
+  - Cold revival uses the current owner's counters; a deferred tangent keeps its
+    dispatch owner's counters even if focus switches before construction.
+  - Disposed or superseded classifications do not count, but still release their
+    in-flight contribution; surviving sessions continue receiving activity updates.
   - A session created without a handed-down tally keeps its own independent counts.
-- **Check:** `bun test packages/coding-agent/test/auto-thinking-tally.test.ts`
+- **Check:** `bun test packages/coding-agent/test/auto-thinking-tally.test.ts packages/coding-agent/test/task/persisted-revive.test.ts packages/coding-agent/test/modes/controllers/tan-command-controller.test.ts`
 
 ### Effort level shown in the pinned Subagents list
 
@@ -475,21 +486,10 @@ does what I wanted".
 
 ## Known follow-ups
 
-- **Two spawn paths do not roll up their auto-thinking tally.**
-  `packages/coding-agent/src/task/persisted-revive.ts` (cold revive of a parked
-  subagent) and `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`
-  both call `createAgentSession` with the parent session in scope but omit
-  `autoThinkingActivity`, so classifications there never reach the parent's counters.
-  Pre-existing, not caused by a sync. `packages/coding-agent/src/modes/agents-hub-deps.ts`
-  has the same omission but no session in scope, so it would need a signature change.
 - **Stale comment: the advisor no longer promotes models.**
   the `maintainContext` doc comment in `packages/coding-agent/src/advisor/runtime.ts` still describes promoting to a
   larger sibling. That was dropped; the doc and the tests are already correct, only the
   comment is wrong.
-- **Two settings have no test.** Nothing asserts that `advisor.projectContext: false`
-  removes the `<project-context>` block, or that `advisor.includeThinking` reaches a
-  built advisor runtime. After a sync that touches advisor system-prompt assembly,
-  check those two by hand.
 - **Hand-copied constant.** `MIN_EVICT_TOKENS = 50` mirrors compaction's unexported
   `MIN_PRUNE_TOKENS`. If upstream changes its value, nothing breaks loudly — the two
   just drift.
