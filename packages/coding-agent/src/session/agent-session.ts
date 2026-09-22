@@ -6486,6 +6486,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	beginDispose(): void {
 		this.#isDisposed = true;
 		for (const dispose of this.#disposers.splice(0)) dispose();
+		this.#models.dispose();
 		this.#modelDiscoveryAbortController.abort();
 		this.#queuedMessageDrainBlocked = false;
 		this.#usagePreflightReadyForNextModelCall = false;
@@ -7129,7 +7130,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.#models.autoResolvedThinkingLevel;
 	}
 
-	/** Live auto-thinking classifier activity (in-flight flag + per-session tallies). */
+	/** Live auto-thinking classifier activity (pending marker + session-tree tallies). */
 	autoThinkingActivity(): AutoThinkingActivity {
 		return this.#models.autoThinkingActivity;
 	}

@@ -1270,6 +1270,8 @@ export class SessionAdvisors {
 			tier,
 			scope,
 			includeReasoning,
+			cfgAdvisorIncludeThinking.get(this.#host.settings),
+			cfgAdvisorProjectContext.get(this.#host.settings),
 		].join("\u001f");
 	}
 
