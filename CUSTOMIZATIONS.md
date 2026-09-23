@@ -372,14 +372,15 @@ does what I wanted".
 - **What it does:** With thinking set to `auto`, the status line and footer show a live
   `⟳ auto` marker while the classifier decides how hard to think about the turn, plus a
   running count of turns it decided (`8`) versus turns that fell back to a guess after
-  a timeout or error (`8·2!`). The marker is held for at least a second so it is
-  actually visible.
+  a timeout or error (`8·2⚠`; icon, separator and warning come from the symbol preset,
+  `IQ 8-2[!]` under `ascii`). The marker is held for at least a second so it is
+  actually visible. `omp gallery --surface segment --segment auto_thinking` previews it.
 - **Why:** With `auto` on there was no way to see whether the classifier was working,
   what it picked, or how often it was silently failing.
 - **Files:** `packages/coding-agent/src/session/model-controls.ts`,
-  `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/agent-session-events.ts`,
+  `packages/coding-agent/src/session/agent-session.ts`,
   `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/footer.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/component.ts`,
-  `packages/tui/src/theme/theme-class.ts`,
+  `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`, `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`,
   `docs/settings.md` (the `auto_thinking` segment description).
 - **Depends on upstream:** the `StatusLineSegment` / `StatusLineSegmentId` shape and the
   `SEGMENTS` registry. **Three hardcoded lists are NOT derived from each other and each
@@ -392,13 +393,21 @@ does what I wanted".
   `status-line/component.ts` (the tally object identity is stable by design, so the
   three numeric fields must stay in the cache key); `thinking.autoPending` across all
   three symbol presets; `thinkingLevelGlyph`'s `auto → autoPending` branch; the
-  `AgentSessionEvent` union and the `satisfies`-checked handler map (a removed event
-  member is a compile error — that is the safety property); `classifyDifficulty`, its
+  `icon.intelligence`, `sep.dot` and `status.warning` symbols in every preset, read
+  through `Theme.symbol()`, `Theme.sep` and `Theme.status`; `classifyDifficulty`, its
   4 s timeout, and `promptGeneration()`; shared activity notifications after counter
-  increments and at pending-state transitions; `statusLine.invalidate()` plus
-  `ui.requestRender(true)` for prompt refresh even when the parent is idle. Counter
-  values also participate in the render cache, so ordinary renders can refresh them.
-- **Tripwire paths:** `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/glyph-bundle.json`, `packages/tui/src/render/render-utils.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`
+  increments and at pending-state transitions. The repaint is a UI-only subscription,
+  not a session event: `AgentSession.subscribeAutoThinkingActivity` is attached in
+  `EventController`'s constructor and detached in its `dispose()`, so it never reaches
+  RPC clients or parent sessions. The constructor tolerates a session without the
+  hook, so upstream reshaping `EventController` construction would drop the idle
+  repaint silently. The callback is `statusLine.invalidate()` plus an ordinary
+  `ui.requestRender()`: the TUI's row diff rewrites the changed marker, and a forced
+  render would only add rewriting unchanged rows and skipping the render cadence.
+  Counter values also participate in the render cache, so ordinary renders can
+  refresh them. The gallery variant rides on `variantsFor` in
+  `cli/gallery-fixtures/segments.ts` and the `GallerySessionOptions` session double.
+- **Tripwire paths:** `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/theme-class.ts`, `packages/tui/src/theme/glyph-bundle.json`, `packages/tui/src/render/render-utils.ts`, `packages/tui/src/tui.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`, `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`
 - **Must still be true:**
   - While a classification is in flight, the bar shows the pending marker, not the
     previous turn's resolved level.
@@ -408,7 +417,10 @@ does what I wanted".
   - Child-only activity repaints an idle parent's pending marker and counters,
     including the final hold-expiry repaint after the child has been disposed.
   - Nothing renders when `auto` is off, when both counters are zero, or when the host
-    exposes no accessor; the `·N!` part appears only after a real fallback.
+    exposes no accessor; the fallback part appears only after a real fallback.
+  - Under the `ascii` symbol preset the readout is plain ASCII (`IQ 8-2[!]`).
+  - Classifier activity is never an `AgentSessionEvent`, so RPC clients and parent
+    sessions receive nothing for it.
 - **Check:** `bun test packages/coding-agent/test/status-line-auto-thinking.test.ts packages/coding-agent/test/auto-thinking-tally.test.ts`
 
 ### Subagent auto-thinking rolls into the parent's tally
@@ -437,7 +449,8 @@ does what I wanted".
   `AgentSessionConfig.autoThinkingActivity` feeds `ModelControls`' `activity?` option:
   absent means a fresh tally. A private shared activity object owns `inFlight`
   notifications and one visibility deadline/timer per tally. `AgentSession.beginDispose()`
-  must detach only its own notification subscription, not the surviving tree's hold.
+  must only stop counting its own classifications, never clear the surviving tree's
+  hold or its UI subscribers.
 - **Tripwire paths:** `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/workpool.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`, `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`
 - **Must still be true:**
   - A classification inside a subagent increments its root session's `classified`
