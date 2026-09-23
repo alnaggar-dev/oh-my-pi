@@ -238,7 +238,7 @@ describe("persisted subagent revival", () => {
 	it("rolls real cold-revived classifications into the live owner's tree after a session switch", async () => {
 		const cwd = makeTempDir("@pi-revive-auto-thinking-");
 		const authStorage = createInMemoryAuthStorage();
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected bundled test model");

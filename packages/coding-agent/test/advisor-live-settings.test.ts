@@ -22,7 +22,7 @@ describe("advisor live request settings", () => {
 	beforeAll(() => {
 		tempDir = TempDir.createSync("@pi-advisor-live-settings-");
 		authStorage = createInMemoryAuthStorage();
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 	});
 
 	afterEach(async () => {
