@@ -154,6 +154,7 @@
 - Fixed an advisor set to `auto` thinking staying at its last level when the main session's thinking was turned off; it now uses the same default level a freshly built advisor gets.
 - Fixed an advisor set to `auto` thinking running its first review after a retry fallback at its old level; it now rejoins the main session's current level.
 - Fixed advisor repeat-call de-duplication reporting a changed file as `[Unchanged since your earlier identical call]` when the only change was text that looks like `read`'s repeat hint (for example in a `:raw` read).
+- Fixed secrets leaking into advisor prompts when a one-line preview (a tool command or other main argument, a tool intent, a user `!`/`$` command, or a branch/compaction/custom one-liner) was cut in the middle of a secret; previews are now redacted before they are cut.
 
 ## [18.2.11] - 2026-09-23
 

@@ -2326,6 +2326,61 @@ describe("advisor", () => {
 			expect(rendered).toContain("elided");
 			expect(leakedSecretPieces(rendered, secret)).toEqual([]);
 		});
+
+		it("redacts one-line command previews before truncating them", async () => {
+			// Both secrets start inside the ~120-char preview and end past its cut.
+			const toolSecret = distinctSecret(120);
+			const userSecret = distinctSecret(240).slice(120);
+			const obfuscator = new SecretObfuscator([
+				{ type: "plain", content: toolSecret },
+				{ type: "plain", content: userSecret },
+			]);
+			const promptInputs: Array<string | AgentMessage[]> = [];
+			const agent = makeAgent(promptInputs);
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "c1",
+							name: "bash",
+							arguments: {
+								command: `cd /srv/app/releases/current && env DEPLOY_TOKEN=${toolSecret} ./deploy.sh`,
+							},
+						},
+					],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+				{
+					role: "toolResult",
+					toolCallId: "c1",
+					toolName: "bash",
+					content: "deployed",
+					isError: false,
+					timestamp: 2,
+				} as unknown as AgentMessage,
+				{
+					role: "bashExecution",
+					command: `curl -sS https://api.example.com/v1/rotate -H "Authorization: Bearer ${userSecret}"`,
+					output: "rotated",
+					exitCode: 0,
+					cancelled: false,
+					truncated: false,
+					timestamp: 3,
+				} as unknown as AgentMessage,
+			];
+			const runtime = new AdvisorRuntime(agent, { snapshotMessages: () => messages, obfuscator });
+
+			runtime.onTurnEnd();
+			await runtime.waitForCatchup(1_000, 1);
+
+			const rendered = promptText(promptInputs[0]);
+			expect(rendered).toContain("→ bash(cd /srv/app/releases/current && env DEPLOY_TOKEN=");
+			expect(rendered).toContain("→ user-bash! curl -sS https://api.example.com/v1/rotate");
+			expect(leakedSecretPieces(rendered, toolSecret)).toEqual([]);
+			expect(leakedSecretPieces(rendered, userSecret)).toEqual([]);
+		});
 		it("does not scan tool-call arguments hidden by the primary-argument preview", async () => {
 			const obfuscator = new SecretObfuscator([
 				{ type: "plain", content: "OTHERSECRET", friendlyName: "TOKABC123" },
