@@ -30,7 +30,8 @@ does what I wanted".
 - **Why:** One review per step on a long turn was the biggest advisor bill; a review
   averages ~$0.11.
 - **Files:** `packages/coding-agent/src/config/settings-schema.ts`,
-  `packages/coding-agent/src/advisor/review-cadence.ts` (`reviewGate`),
+  `packages/coding-agent/src/advisor/review-cadence.ts` (`reviewGate`, including its
+  `default:` fallback to `step` for an unrecognized value),
   `packages/coding-agent/src/advisor/runtime.ts` (the `shouldReview` option on
   `onTurnEnd`, the `includeThinking` host flag),
   `packages/coding-agent/src/session/session-advisors.ts` (per-step gate in
@@ -56,6 +57,8 @@ does what I wanted".
     `projectContext: false` keeps the `<project-context>` block out of its prompt.
   - Changing `includeThinking` or `projectContext` mid-session rebuilds the advisors;
     changing `reviewOn` does not need a rebuild.
+  - An unrecognized `reviewOn` value (a hand-edited typo; `Settings.get` does not
+    validate enums) behaves like the schema default `step`: every step is reviewed.
   - With `projectContext: false`, a context-file change does not rebuild the advisors,
     and turning the setting on later uses the latest context prompt.
 - **Check:** `bun test packages/coding-agent/test/advisor-live-settings.test.ts packages/coding-agent/test/advisor-review-cadence.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
@@ -107,7 +110,8 @@ does what I wanted".
   (`HUB_ADVISOR_EXEMPT_OPS`, `isHubReviewExempt`, checked in `hasReviewWorthyToolCall`).
 - **Depends on upstream:** the `hub` op union in `packages/coding-agent/src/tools/hub/index.ts`. **`HUB_ADVISOR_EXEMPT_OPS`
   must keep covering the complete union** — an op upstream adds is treated as worth a
-  review (safe, but costs money), and an inspection op upstream renames stops being
+  review (safe, but costs money) and fails the schema-union test until it is
+  classified; an inspection op upstream renames stops being
   exempt. Also `hubApproval` in the same file (private there; the exempt list is
   deliberately narrower than that approval tier; do not let a refactor collapse the
   two), and the `op` field on the `hub` tool call's arguments.
@@ -117,7 +121,9 @@ does what I wanted".
     trigger a review.
   - `hub` with `start` / `stop` / `restart` / `cancel` / `send` does trigger one.
   - A `hub` call with a missing, non-string or unrecognized `op` triggers one.
-  - Every op in the `hub` schema union is covered by one of those two behaviors.
+  - Every op in the `hub` schema union is covered by one of those two behaviors;
+    `advisor-review-cadence.test.ts` reads the union from the live `HubTool` schema, so
+    an op upstream adds fails that test until it is classified here.
 - **Check:** `bun test packages/coding-agent/test/advisor-review-cadence.test.ts`
 
 ### Advise-only turn ends the review
