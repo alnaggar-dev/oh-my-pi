@@ -68,6 +68,7 @@ import {
 	resolveAdvisorDeliveryChannel,
 	slugifyAdvisorName,
 } from "../advisor";
+import { reviewGate } from "../advisor/review-cadence";
 import { AdvisorToolResultDedupe } from "../advisor/tool-result-dedupe";
 import { evictStaleToolResults } from "../advisor/tool-result-eviction";
 import type { ModelRegistry } from "../config/model-registry";
@@ -534,8 +535,8 @@ export class SessionAdvisors {
 			this.#retuneAutoThinkingAdvisors();
 			this.#advisorPrimaryTurnsCompleted++;
 			// Re-read per step so a cadence change applies immediately (no rebuild).
-			// Left `undefined` at the terminal boundary: that step is always reviewed.
-			const cadence = terminalBoundary ? undefined : cfgAdvisorReviewOn.get(this.#host.settings);
+			// No gate at the terminal boundary: that step is always reviewed.
+			const shouldReview = terminalBoundary ? undefined : reviewGate(cfgAdvisorReviewOn.get(this.#host.settings));
 			for (const advisor of this.#advisors) {
 				if (advisor.runtime.disposed) continue;
 				// Only the terminal primary boundary owns the deferred flush. Continuing
@@ -543,7 +544,7 @@ export class SessionAdvisors {
 				// resets the per-update budget — no new advisor update starts here.
 				if (willContinue !== true) advisor.adviseTool.flushDeferredNotes();
 				try {
-					advisor.runtime.onTurnEnd(messages, { willContinue, cadence });
+					advisor.runtime.onTurnEnd(messages, { willContinue, shouldReview });
 				} catch (error) {
 					logger.warn("advisor onTurnEnd threw; delta dropped", { advisor: advisor.name, err: String(error) });
 				}
@@ -2416,6 +2417,9 @@ export class SessionAdvisors {
 		if (contextPrompt === this.#advisorContextPrompt) return;
 		this.#advisorContextPrompt = contextPrompt;
 		if (!this.#advisorEnabled || this.#advisors.length === 0) return;
+		// Stored above so a later `advisor.projectContext: true` rebuild picks it
+		// up; with it off, the prompt never reaches the advisor, so no rebuild.
+		if (!cfgAdvisorProjectContext.get(this.#host.settings)) return;
 		this.#stopAdvisorRuntime();
 		this.#buildAdvisorRuntime(true);
 	}

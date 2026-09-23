@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type AdvisorAgent, AdvisorRuntime, type AdvisorRuntimeHost } from "../src/advisor";
+import { reviewGate } from "../src/advisor/review-cadence";
 
 /**
- * `advisor.reviewOn` decides, inside `AdvisorRuntime.onTurnEnd`, whether a
- * mid-turn primary step is worth an advisor request. Skipped steps must stay
+ * `advisor.reviewOn`, as the `reviewGate` handed to `AdvisorRuntime.onTurnEnd`,
+ * decides whether a mid-turn primary step is worth an advisor request. Skipped steps must stay
  * queued — the review cursor only advances when a delta is actually rendered —
  * and the terminal boundary must always review.
  */
@@ -82,7 +83,7 @@ describe("advisor review cadence", () => {
 
 		for (const marker of ["step-alpha", "step-beta", "step-gamma"]) {
 			pushStep(messages, marker, "edit");
-			runtime.onTurnEnd(messages, { willContinue: true, cadence: "turn" });
+			runtime.onTurnEnd(messages, { willContinue: true, shouldReview: reviewGate("turn") });
 			await settle();
 			expect(promptInputs).toHaveLength(0);
 			// A skipped step must not enqueue work either: the primary never parks
@@ -90,7 +91,7 @@ describe("advisor review cadence", () => {
 			expect(runtime.backlog).toBe(0);
 		}
 
-		runtime.onTurnEnd(messages, { willContinue: false, cadence: undefined });
+		runtime.onTurnEnd(messages, { willContinue: false });
 		await runtime.waitForCatchup(1_000, 1);
 
 		expect(promptInputs).toHaveLength(1);
@@ -106,13 +107,13 @@ describe("advisor review cadence", () => {
 		const { runtime, messages, promptInputs } = newRuntime();
 
 		pushStep(messages, "just-reading", "read");
-		runtime.onTurnEnd(messages, { willContinue: true, cadence: "mutation" });
+		runtime.onTurnEnd(messages, { willContinue: true, shouldReview: reviewGate("mutation") });
 		await settle();
 		expect(promptInputs).toHaveLength(0);
 		expect(runtime.backlog).toBe(0);
 
 		pushStep(messages, "now-writing", "edit");
-		runtime.onTurnEnd(messages, { willContinue: true, cadence: "mutation" });
+		runtime.onTurnEnd(messages, { willContinue: true, shouldReview: reviewGate("mutation") });
 		await runtime.waitForCatchup(1_000, 1);
 
 		expect(promptInputs).toHaveLength(1);
@@ -135,7 +136,7 @@ describe("advisor review cadence", () => {
 		let expected = 0;
 		for (const tool of ["task", "mcp__deploy_release", "lsp", "memory_edit"]) {
 			pushStep(messages, `via-${tool}`, tool);
-			runtime.onTurnEnd(messages, { willContinue: true, cadence: "mutation" });
+			runtime.onTurnEnd(messages, { willContinue: true, shouldReview: reviewGate("mutation") });
 			await runtime.waitForCatchup(1_000, 1);
 			expected++;
 			expect(promptInputs).toHaveLength(expected);
@@ -150,13 +151,13 @@ describe("advisor review cadence", () => {
 		const { runtime, messages, promptInputs } = newRuntime();
 
 		pushStep(messages, "hub-jobs", "hub", { op: "jobs" });
-		runtime.onTurnEnd(messages, { willContinue: true, cadence: "mutation" });
+		runtime.onTurnEnd(messages, { willContinue: true, shouldReview: reviewGate("mutation") });
 		await settle();
 		expect(promptInputs).toHaveLength(0);
 		expect(runtime.backlog).toBe(0);
 
 		pushStep(messages, "hub-start", "hub", { op: "start", name: "web", application: "bun" });
-		runtime.onTurnEnd(messages, { willContinue: true, cadence: "mutation" });
+		runtime.onTurnEnd(messages, { willContinue: true, shouldReview: reviewGate("mutation") });
 		await runtime.waitForCatchup(1_000, 1);
 		expect(promptInputs).toHaveLength(1);
 		const text = promptText(promptInputs[0]);
@@ -174,7 +175,7 @@ describe("advisor review cadence", () => {
 			{ op: "send", to: "Peer", message: "stop" },
 		]) {
 			pushStep(messages, `hub-${args.op}`, "hub", args);
-			runtime.onTurnEnd(messages, { willContinue: true, cadence: "mutation" });
+			runtime.onTurnEnd(messages, { willContinue: true, shouldReview: reviewGate("mutation") });
 			await runtime.waitForCatchup(1_000, 1);
 			expected++;
 			expect(promptInputs).toHaveLength(expected);
