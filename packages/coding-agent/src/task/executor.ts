@@ -87,7 +87,6 @@ import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
 import type { AuthStorage } from "../session/auth-storage";
 import type { CostGateApi } from "../session/cost-gate";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
-import type { AutoThinkingTally } from "../session/model-controls";
 import { hasConversationalHistory, SessionManager } from "../session/session-manager";
 import { truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import {
@@ -475,11 +474,6 @@ export interface ExecutorOptions {
 	/** Set for a per-call `model`; every model the child sends to must stay approved by these grants. */
 	perCallModelGrants?: PerCallModelGrants;
 	thinkingLevel?: ConfiguredThinkingLevel;
-	/**
-	 * The spawning session's shared auto-thinking tally, so this subagent's
-	 * classifications count toward the parent's status-line readout.
-	 */
-	autoThinkingActivity?: AutoThinkingTally;
 	/** Caller-requested coarse effort (`lo`/`med`/`hi`); maps onto the resolved model's supported thinking range and wins over {@link thinkingLevel}. */
 	effort?: TaskEffort;
 	/** Caller's description of how open-ended the work is; rides the initial prompt into the child's `auto` thinking classifier. */
@@ -4910,9 +4904,6 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					thinkingLevelCeiling: spawnEffortCeiling,
 					// Subagents are short-lived; never schedule background warm requests.
 					cacheWarming: false,
-					// Shared with the whole spawn tree (revival included): a revived
-					// worker keeps tallying into the session that spawned it.
-					autoThinkingActivity: options.autoThinkingActivity,
 					toolNames,
 					outputSchema,
 					outputSchemaMode: options.outputSchemaMode,

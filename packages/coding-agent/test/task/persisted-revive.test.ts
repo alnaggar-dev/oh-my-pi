@@ -268,7 +268,6 @@ afterEach(async () => {
 });
 
 describe("persisted subagent revival", () => {
-
 	it("initializes the extension runtime on cold revival so tool_call handlers are not fail-closed blocked", async () => {
 		const cwd = makeTempDir("@pi-revive-ext-init-");
 		const sessionFile = await createPersistedSession(cwd);

@@ -188,7 +188,6 @@ import {
 } from "./secrets";
 import {
 	AgentSession,
-	type AutoThinkingTally,
 	type InitialRetryFallbackState,
 	MCP_DISCOVERY_TURN_WAIT_MS,
 	type PlanYolo,
@@ -221,6 +220,7 @@ import {
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
 } from "./session/messages";
+import { type AutoThinkingTally, autoThinkingTallyFor } from "./session/model-controls";
 import {
 	capArchiveFrameBytes,
 	clampProviderContextImageBytes,
@@ -654,9 +654,9 @@ export interface CreateAgentSessionOptions {
 	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); retry-fallback recovery re-clamps to it. */
 	thinkingLevelCeiling?: Effort;
 	/**
-	 * Auto-thinking tally shared by a whole spawn tree. Subagent spawns pass the
-	 * spawning session's tally so child classifications roll up into the parent's
-	 * status-line counter; omitted → the session owns its own tally.
+	 * Auto-thinking tally to count this session's classifications into. Omitted →
+	 * the tally of this session's `subagentEventBus`, shared by its whole spawn tree.
+	 * Set by `/tan`, whose tangent runs on a fresh bus but counts toward its owner.
 	 */
 	autoThinkingActivity?: AutoThinkingTally;
 	/** OpenAI service-tier override for this session. `null` omits `service_tier`. */
@@ -2701,7 +2701,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setTodoPhases: phases => session.setTodoPhases(phases),
 			commitTodoPhases: phases => session.commitTodoPhases(phases),
 			getWorkPoolYieldItems: () => session?.getWorkPoolYieldItems() ?? [],
-			autoThinkingTally: () => session.autoThinkingTally(),
 			getLastAssistantText: () => session?.getLastAssistantText(),
 			getYieldReportText: toolCallId => resolveYieldReportText(session?.messages ?? [], toolCallId),
 			getToolCallIntent: toolCallId => resolveToolCallIntent(session?.messages ?? [], toolCallId),
@@ -5098,7 +5097,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
 			thinkingLevelCeiling: options.thinkingLevelCeiling,
 			disableModelFallback: options.disableModelFallback,
-			autoThinkingActivity: options.autoThinkingActivity,
+			autoThinkingActivity: autoThinkingTallyFor(subagentEventBus, options.autoThinkingActivity),
 			initialRetryFallback,
 			deferRetryFallbackValidation: options.deferRetryFallbackValidation,
 			prewalk,
