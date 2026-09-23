@@ -1,6 +1,7 @@
 import type { AfterToolCallResult, AgentMessage, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { toolCallSignature } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
+import { formatOutputNotice, type OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 
 /** Ceiling on tracked signatures so a long advisor session cannot grow the registry without bound. */
 const MAX_TRACKED_SIGNATURES = 4096;
@@ -8,17 +9,40 @@ const MAX_TRACKED_SIGNATURES = 4096;
 /** Stands in for a tool result the advisor already has verbatim, earlier in its own context. */
 export const DEDUPED_RESULT_NOTICE = "[Unchanged since your earlier identical call]";
 
-/**
- * The hint upstream `read` appends from the 3rd byte-identical read of a path
- * (`appendRepeatReadHint` in `tools/read.ts`), with a count that rises on every
- * repeat. The advisors share one tool session, so the count pools across them
- * and two identical reads would otherwise never compare equal. Not anchored at
- * the end: output notices are appended after it.
- */
-const REPEAT_READ_HINT =
-	/\n\n\[You have received this identical output \d+ times\. Re-reading '[^\n]*?' will not change it — use a narrower selector \(path:A-B\), or proceed with the edit\.\]/g;
+/** Opening of the hint upstream `read` appends (`appendRepeatReadHint` in `tools/read.ts`); the count follows. */
+const REPEAT_READ_HINT_HEAD = "\n\n[You have received this identical output ";
 
-function comparableText(toolName: string, content: readonly (TextContent | ImageContent)[]): string | undefined {
+/**
+ * Drops the repeat hint upstream `read` appended to `text` for a call whose
+ * `path` argument is `readPath`. From the 3rd byte-identical read of a selector
+ * `read` appends it to the end of its first text block, quoting that argument,
+ * with a count that rises on every repeat; the advisors share one tool session,
+ * so the count pools across them and two identical reads would otherwise never
+ * compare equal. The meta-notice wrapper then appends `notice` to the last
+ * text block. Only a hint ending exactly there and naming exactly `readPath`
+ * is dropped: anything else hint-shaped is content and must still compare.
+ */
+function stripRepeatReadHint(text: string, readPath: string, notice: string): string {
+	const end = notice && text.endsWith(notice) ? text.length - notice.length : text.length;
+	const tail = ` times. Re-reading '${readPath}' will not change it — use a narrower selector (path:A-B), or proceed with the edit.]`;
+	const countEnd = end - tail.length;
+	if (countEnd < 0 || !text.startsWith(tail, countEnd)) return text;
+	let countStart = countEnd;
+	while (countStart > 0) {
+		const code = text.charCodeAt(countStart - 1);
+		if (code < 48 || code > 57) break;
+		countStart--;
+	}
+	const start = countStart - REPEAT_READ_HINT_HEAD.length;
+	if (countStart === countEnd || start < 0 || !text.startsWith(REPEAT_READ_HINT_HEAD, start)) return text;
+	return text.slice(0, start) + text.slice(end);
+}
+
+function comparableText(
+	toolCall: { name: string; arguments: Record<string, unknown> },
+	content: readonly (TextContent | ImageContent)[],
+	details: unknown,
+): string | undefined {
 	const parts: string[] = [];
 	for (const block of content) {
 		// An image cannot be compared byte-for-byte cheaply, and eliding one
@@ -26,8 +50,14 @@ function comparableText(toolName: string, content: readonly (TextContent | Image
 		if (block.type !== "text") return undefined;
 		parts.push(block.text);
 	}
-	const text = parts.join("\n");
-	return toolName === "read" ? text.replace(REPEAT_READ_HINT, "") : text;
+	const readPath = toolCall.arguments.path;
+	if (toolCall.name === "read" && typeof readPath === "string" && parts.length > 0) {
+		// Every block is text here: the hint went on the first, the notice on the last.
+		const meta = (details as { meta?: OutputMeta } | undefined)?.meta;
+		const notice = parts.length === 1 ? formatOutputNotice(meta) : "";
+		parts[0] = stripRepeatReadHint(parts[0]!, readPath, notice);
+	}
+	return parts.join("\n");
 }
 
 /**
@@ -64,7 +94,7 @@ export class AdvisorToolResultDedupe {
 	): AfterToolCallResult | undefined {
 		const signature = toolCallSignature(toolCall.name, toolCall.arguments);
 		const priorId = this.#seen.get(signature);
-		if (priorId !== undefined && this.#matchesLive(priorId, toolCall.name, result, messages)) {
+		if (priorId !== undefined && this.#matchesLive(priorId, toolCall, result, messages)) {
 			// Keep pointing at the original: this stub is `useless`, so a later
 			// pass may elide it, and a pointer at an elided stub is a dead end.
 			return { content: [{ type: "text", text: DEDUPED_RESULT_NOTICE }], useless: true };
@@ -75,17 +105,18 @@ export class AdvisorToolResultDedupe {
 
 	#matchesLive(
 		priorId: string,
-		toolName: string,
+		toolCall: { name: string; arguments: Record<string, unknown> },
 		result: AgentToolResult<unknown>,
 		messages: readonly AgentMessage[],
 	): boolean {
-		const text = comparableText(toolName, result.content);
+		const text = comparableText(toolCall, result.content, result.details);
 		if (text === undefined) return false;
 		for (let i = messages.length - 1; i >= 0; i--) {
 			const message = messages[i]!;
 			if (message.role !== "toolResult" || message.toolCallId !== priorId) continue;
 			if (message.prunedAt !== undefined || message.isError) return false;
-			return comparableText(toolName, message.content) === text;
+			// Same signature, so the same `path` argument: one `toolCall` serves both.
+			return comparableText(toolCall, message.content, message.details) === text;
 		}
 		return false;
 	}
