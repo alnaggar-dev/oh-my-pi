@@ -35,7 +35,8 @@ does what I wanted".
   `packages/coding-agent/src/advisor/runtime.ts` (the `shouldReview` option on
   `onTurnEnd`, the `includeThinking` host flag),
   `packages/coding-agent/src/session/session-advisors.ts` (per-step gate in
-  `onPrimaryTurnEnd`, the two build-time settings, the `setContextPrompt` skip),
+  `onPrimaryTurnEnd`, the two build-time settings, the `setContextPrompt` skip, which
+  applies only while the live runtimes match the current config),
   `packages/coding-agent/src/modes/controllers/selector-controller.ts`,
   `docs/advisor-watchdog.md` (the "Controlling token spend" section, except its
   runaway-tool-loop bullet, which the loop-bound entry owns),
@@ -59,8 +60,10 @@ does what I wanted".
     changing `reviewOn` does not need a rebuild.
   - An unrecognized `reviewOn` value (a hand-edited typo; `Settings.get` does not
     validate enums) behaves like the schema default `step`: every step is reviewed.
-  - With `projectContext: false`, a context-file change does not rebuild the advisors,
-    and turning the setting on later uses the latest context prompt.
+  - With `projectContext: false`, a context-file change does not rebuild advisors that
+    were built with the setting off, and turning the setting on later uses the latest
+    context prompt — even when the setting was flipped off without the selector's
+    rebuild (for example `Settings.reloadFromDisk()`).
 - **Check:** `bun test packages/coding-agent/test/advisor-live-settings.test.ts packages/coding-agent/test/advisor-review-cadence.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
 
 ### Read-only tools skipped by the `mutation` cadence
