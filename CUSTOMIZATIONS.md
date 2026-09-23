@@ -4,17 +4,16 @@ What this fork changes, why, and what must still be true after an upstream sync.
 
 **Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `legacy-pi`, `Accounts`), one
 `###` per feature under it, seven fields per feature: **What it does**, **Why**, **Files**
-(the files the feature *owns* — no other field may list them; a file several features
-share is listed by each, naming the symbols or section that entry owns, and a symbol has
-exactly one owner), **Depends on upstream**,
+(the files the feature *owns* — every changed file is in exactly one entry's **Files**;
+an entry whose code sits in a file another entry owns names that file and its symbols
+under **Depends on upstream** instead), **Depends on upstream**,
 **Tripwire paths** (upstream files the sync probe reads), **Must still be true**, **Check**.
 Paths are always full repo-relative paths. No line numbers anywhere; they rot on every rebase.
 
 **Keeping it current.** After a change, run `fork-commit`: it places the change in the
 right entry (or writes a new one) and commits code and ledger together. When upstream
-moves, `sync-upstream` rebases, re-checks that every changed file is owned by an entry
-(a shared file by one entry per portion), and probes each entry's tripwire paths — a hit
-sends that entry's **Must still be
+moves, `sync-upstream` rebases, re-checks that every changed file is owned by exactly one
+entry, and probes each entry's tripwire paths — a hit sends that entry's **Must still be
 true** list to a subagent to verify against the rebased code. A clean rebase proves
 nothing about intent; this file is the difference between "it compiled" and "it still
 does what I wanted".
@@ -33,17 +32,12 @@ does what I wanted".
 - **Why:** One review per step on a long turn was the biggest advisor bill; a review
   averages ~$0.11.
 - **Files:** `packages/coding-agent/src/config/settings-schema.ts`,
-  `packages/coding-agent/src/advisor/review-cadence.ts` (`reviewGate`, including its
-  `default:` fallback to `step` for an unrecognized value),
-  `packages/coding-agent/src/advisor/runtime.ts` (the `shouldReview` option on
-  `onTurnEnd`, the `includeThinking` host flag),
-  `packages/coding-agent/src/session/session-advisors.ts` (per-step gate in
-  `onPrimaryTurnEnd`, the two build-time settings, the `setContextPrompt` skip, which
-  applies only while the live runtimes match the current config),
   `packages/coding-agent/src/modes/controllers/selector-controller.ts`,
-  `docs/advisor-watchdog.md` (the "Controlling token spend" section, except its
-  runaway-tool-loop bullet, which the loop-bound entry owns),
-  `docs/settings.md` (the three `advisor.*` rows and the reworded advisor intro).
+  `docs/advisor-watchdog.md` (its "Controlling token spend" section; the other fork
+  paragraphs are named under the read-only, context-slimming, loop-bound and prune
+  entries' **Depends on upstream**),
+  `docs/settings.md` (the three `advisor.*` rows and the reworded advisor intro; the
+  `auto_thinking` segment description is named under the status-line entry).
 - **Depends on upstream:** `AdvisorRuntime.onTurnEnd(messages, { willContinue })` and
   its `willContinue` flag — the gate must run after `#latestMessages` is set and
   before `#renderDelta`, which advances the review cursor; the settings-schema entry
@@ -52,7 +46,14 @@ does what I wanted".
   runtime signature in `session-advisors.ts`, which includes both build-time content
   settings; `formatSessionHistoryMarkdown`'s `includeThinking` option; the advisor
   system-prompt assembly, `#advisorContextPrompt` and `setContextPrompt`.
-- **Tripwire paths:** `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`
+  Fork code it relies on in files other entries own: `reviewGate` in
+  `packages/coding-agent/src/advisor/review-cadence.ts` (hub entry), including its
+  `default:` fallback to `step`; the `shouldReview` option on `onTurnEnd` and the
+  `includeThinking` host flag in `packages/coding-agent/src/advisor/runtime.ts` (prune
+  entry); the per-step gate in `onPrimaryTurnEnd`, the two build-time settings and the
+  `setContextPrompt` skip (only while the live runtimes match the current config) in
+  `packages/coding-agent/src/session/session-advisors.ts` (advise-only entry).
+- **Tripwire paths:** `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
 - **Must still be true:**
   - With `reviewOn: turn`, no advisor request is made for any mid-turn step, and that
     work still appears in the single end-of-turn review — nothing is dropped.
@@ -77,11 +78,8 @@ does what I wanted".
   change stored state (`retain`, `memory_edit`, `checkpoint`, `rewind`).
 - **Why:** Reviewing a step that only read files spends a full advisor request on work
   that cannot break anything.
-- **Files:** `packages/coding-agent/src/advisor/review-cadence.ts`
-  (`ADVISOR_STATEFUL_READ_TIER_TOOLS`, `ADVISOR_REVIEW_EXEMPT_TOOLS`,
-  `hasReviewWorthyToolCall`), `packages/coding-agent/src/advisor/config.ts` (only the
-  `filterAdvisorTools` comment, kept accurate about which legacy tool aliases exist),
-  `docs/advisor-watchdog.md` (the `advisors[].tools` legacy-alias sentence).
+- **Files:** `packages/coding-agent/src/advisor/config.ts` (only the
+  `filterAdvisorTools` comment, kept accurate about which legacy tool aliases exist).
 - **Depends on upstream:** `READ_ONLY_TOOL_NAMES` in
   `packages/coding-agent/src/task/read-only-policy.ts`. **The exempt table is DERIVED
   from it at module load, never hardcoded — that is the safety property.** A new
@@ -92,6 +90,10 @@ does what I wanted".
   the `toolCall` block shape on assistant messages. Ordering constraint:
   `ADVISOR_STATEFUL_READ_TIER_TOOLS` must stay declared *before* the derived table or
   module load throws.
+  Fork code it relies on in files other entries own: `ADVISOR_STATEFUL_READ_TIER_TOOLS`,
+  `ADVISOR_REVIEW_EXEMPT_TOOLS` and `hasReviewWorthyToolCall` in
+  `packages/coding-agent/src/advisor/review-cadence.ts` (hub entry); the
+  `advisors[].tools` legacy-alias sentence in `docs/advisor-watchdog.md` (cadence entry).
 - **Tripwire paths:** `packages/coding-agent/src/task/read-only-policy.ts`, `packages/coding-agent/src/tools/builtin-names.ts`, `packages/coding-agent/src/tools/jfind/index.ts`, `packages/coding-agent/src/advisor/config.ts`
 - **Must still be true:**
   - A mid-turn step whose only tool calls are read-only ones does not trigger a review
@@ -112,8 +114,9 @@ does what I wanted".
 - **Why:** One tool name covers both "show me the peers" and "kill that job", so a
   name-only list would either hide job kills from the advisor or bill a review for
   every status check.
-- **Files:** `packages/coding-agent/src/advisor/review-cadence.ts`
-  (`HUB_ADVISOR_EXEMPT_OPS`, `isHubReviewExempt`, checked in `hasReviewWorthyToolCall`).
+- **Files:** `packages/coding-agent/src/advisor/review-cadence.ts` (`HUB_ADVISOR_EXEMPT_OPS`,
+  `isHubReviewExempt`, checked in `hasReviewWorthyToolCall`; the module's other exports
+  are named under the cadence and read-only entries' **Depends on upstream**).
 - **Depends on upstream:** the `hub` op union in `packages/coding-agent/src/tools/hub/index.ts`. **`HUB_ADVISOR_EXEMPT_OPS`
   must keep covering the complete union** — an op upstream adds is treated as worth a
   review (safe, but costs money) and fails the schema-union test until it is
@@ -139,7 +142,9 @@ does what I wanted".
 - **Why:** That closing round-trip re-sent the whole advisor prefix and produced no
   advice — about 6% of advisor spend.
 - **Files:** `packages/coding-agent/src/session/session-advisors.ts` (the
-  `afterToolCall` hook and `TERMINAL_TOOL_RESULT_ABORT_REASON` wiring).
+  `afterToolCall` hook and `TERMINAL_TOOL_RESULT_ABORT_REASON` wiring; the file's other
+  fork hunks are named under the cadence, context-slimming, prune and `auto` thinking
+  entries' **Depends on upstream**).
 - **Depends on upstream:** `TERMINAL_TOOL_RESULT_ABORT_REASON` and the graceful-yield
   handling around it — the abort must still persist the finished tool batch and still
   run `onTurnEnd`, exactly like the primary's `yield` tool; the `afterToolCall` hook
@@ -181,13 +186,7 @@ does what I wanted".
   and 13% of its investigation calls were byte-identical repeats that would re-inflate
   exactly what the eviction just trimmed.
 - **Files:** `packages/coding-agent/src/advisor/tool-result-eviction.ts`,
-  `packages/coding-agent/src/advisor/tool-result-dedupe.ts`, `packages/coding-agent/src/session/session-advisors.ts`
-  (`evictedSinceAnchor`, the eviction step at the top of `#maintainAdvisorContext`, the
-  dedupe call in the advisor `afterToolCall` hook), `docs/advisor-watchdog.md` (maintenance
-  step 1 and the repeat-call paragraph),
-  `packages/ai/src/utils/tool-call-loop-guard.ts` (`toolCallSignature`, fork-added; must keep
-  ignoring the agent-authored `intent` field and key order, and must keep argument
-  values verbatim).
+  `packages/coding-agent/src/advisor/tool-result-dedupe.ts`.
 - **Depends on upstream:** the in-place rewrite contract for tool results — `prunedAt`
   on `ToolResultMessage` and `invalidateMessageCache`; `Tokenizer.countMessage`;
   `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts` (not exported —
@@ -202,6 +201,14 @@ does what I wanted".
   `formatOutputNotice` in `packages/tui/src/tools/output-meta.ts`) and the agent loop
   keeping `details` on the `ToolResultMessage`; the `AfterToolCallResult` shape
   including `useless`; `isTranscriptUsageAnchor` and `estimateTranscriptTokens`.
+  Fork code it relies on in files other entries own: in
+  `packages/coding-agent/src/session/session-advisors.ts` (advise-only entry),
+  `evictedSinceAnchor`, the eviction step at the top of `#maintainAdvisorContext` and
+  the dedupe call in the advisor `afterToolCall` hook; `toolCallSignature` in
+  `packages/ai/src/utils/tool-call-loop-guard.ts` (loop-bound entry), which must keep
+  ignoring the agent-authored `intent` field and key order and keep argument values
+  verbatim; maintenance step 1 and the repeat-call paragraph in
+  `docs/advisor-watchdog.md` (cadence entry).
 - **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/message-cache.ts`, `packages/agent/src/compaction/compaction.ts`, `packages/agent/src/compaction/transcript-tokens.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/tools/read.ts`, `packages/coding-agent/src/tools/output-meta.ts`, `packages/tui/src/tools/output-meta.ts`
 - **Must still be true:**
   - After a review finishes, the next request carries a short elision stub in place of
@@ -274,19 +281,20 @@ does what I wanted".
   again".
 - **Files:** `packages/coding-agent/src/advisor/loop-guard.ts` (`cumulative: true`),
   `packages/ai/src/utils/tool-call-loop-guard.ts` (the `cumulative` option,
-  `#recordCumulative`, `RepeatedToolCallDetection.mode`, and the two fork lines in
-  `recordTurn`),
-  `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md` (the
+  `#recordCumulative`, `RepeatedToolCallDetection.mode`, the two fork lines in
+  `recordTurn`, and the exported `toolCallSignature` the tally and the advisor dedupe
+  key on), `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md` (the
   `{{#if consecutive}}` guard), `packages/coding-agent/src/session/tool-call-loop-redirect.ts`
-  (passes `consecutive`), `docs/advisor-watchdog.md` (the runaway-tool-loop bullet).
+  (passes `consecutive`).
 - **Depends on upstream:** `AdvisorLoopGuard` and its "one corrective, then abort",
   "reset each update" and "disabled means unbounded" rules; `ToolCallLoopGuard.recordTurn`
   (upstream's body with two fork lines: the below-threshold branch returns
   `#recordCumulative(...)`, and the consecutive detection carries `mode:
-  "consecutive"`); `toolCallSignature`, which the tally keys on (owned by the context
-  slimming entry); the shared settings `model.toolCallLoopGuard.enabled` /
+  "consecutive"`); the shared settings `model.toolCallLoopGuard.enabled` /
   `.threshold` / `.exemptTools`; `renderToolCallLoopRedirect`, shared by the main
   session's `LoopGuards` and the advisor.
+  Fork text it relies on in a file another entry owns: the runaway-tool-loop bullet in
+  `docs/advisor-watchdog.md` (cadence entry).
 - **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md`, `packages/coding-agent/src/session/stream-guards.ts`, `packages/coding-agent/src/config/settings-schema.ts`
 - **Must still be true:**
   - An advisor alternating two identical calls gets one corrective once either call
@@ -314,10 +322,8 @@ does what I wanted".
   paths call `rebaseAdvisorPrefix` where upstream calls `resetAdvisorRuntimes`, so a
   sync that brings the reset back conflicts instead of silently restoring the old
   cost; the `rebaseAdvisorPrefix` host member), `packages/coding-agent/src/advisor/runtime.ts`
-  (`rebaseDeliveredPrefix`, `EVAL_STATE_CONTEXT_TYPE`),
-  `packages/coding-agent/src/session/session-advisors.ts` (`rebaseDeliveredPrefixes`),
-  `packages/coding-agent/src/session/agent-session.ts` (the `rebaseAdvisorPrefix`
-  wiring), `docs/advisor-watchdog.md` (the per-turn prune paragraph).
+  (`rebaseDeliveredPrefix`, `EVAL_STATE_CONTEXT_TYPE`; the cadence entry's hunks here
+  are named under its **Depends on upstream**).
 - **Depends on upstream:** the prune passes only rewrite tool results, in place, marking
   them with `prunedAt` — the rebase accepts a changed slot only when it is the same
   tool result (`toolCallId`) now carrying `prunedAt`; `#deliveredPrefix` / `#lastCount`
@@ -331,6 +337,11 @@ does what I wanted".
   clone-tolerant fingerprint check in `#renderDelta` and its `advisor delivered prefix
   changed` log (index, role, differing fields), which keep an unexpected replay
   diagnosable.
+  Fork code it relies on in files other entries own: `rebaseDeliveredPrefixes` in
+  `packages/coding-agent/src/session/session-advisors.ts` (advise-only entry); the
+  `rebaseAdvisorPrefix` wiring in `packages/coding-agent/src/session/agent-session.ts`
+  (`auto` thinking entry); the per-turn prune paragraph in `docs/advisor-watchdog.md`
+  (cadence entry).
 - **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/coding-agent/src/session/session-maintenance.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/message-fingerprint.ts`, `packages/coding-agent/src/advisor/runtime.ts`
 - **Must still be true:**
   - A per-turn prune of an already-delivered primary tool result does not re-prime the
@@ -393,14 +404,9 @@ does what I wanted".
   to the fixed `medium` default.
 - **Why:** `auto` is a session-level selector with no per-advisor classifier, so
   building an advisor erased it and the advisor reviewed hard turns at medium effort.
-- **Files:** `packages/coding-agent/src/session/session-advisors.ts`
-  (`#autoAdvisorThinkingLevel`, the one source for build, retune and fallback restore;
-  `#retuneAutoThinkingAdvisors`; the `autoThinking` branch in
-  `#maybeRestoreAdvisorRetryFallbackPrimary`; the `autoThinking` descriptor/advisor
-  flag; the `AUTO_THINKING` substitution in the runtime signature; the host's
-  `primaryThinkingLevel`),
-  `packages/coding-agent/src/session/agent-session.ts` (the `primaryThinkingLevel`
-  wiring).
+- **Files:** `packages/coding-agent/src/session/agent-session.ts` (the
+  `primaryThinkingLevel` host wiring; the file's other fork hunks are named under the
+  prune, status-line and tally entries' **Depends on upstream**).
 - **Depends on upstream:** the advisor host interface — `primaryThinkingLevel()` is
   implemented as a live getter, and the inherited level is **derived from the
   primary's live level each time, never snapshotted at build time**;
@@ -418,6 +424,13 @@ does what I wanted".
   `compat.supportsPerMessageEffort` the effort change rides in the message tail, so the
   cached prefix survives the re-tune; elsewhere the top-level effort changes, which
   re-writes the prefix once on providers whose cache keys on it (Anthropic).
+  Fork code it relies on in a file another entry owns, all in
+  `packages/coding-agent/src/session/session-advisors.ts` (advise-only entry):
+  `#autoAdvisorThinkingLevel`, the one source for build, retune and fallback restore;
+  `#retuneAutoThinkingAdvisors`; the `autoThinking` branch in
+  `#maybeRestoreAdvisorRetryFallbackPrimary`; the `autoThinking` descriptor/advisor flag;
+  the `AUTO_THINKING` substitution in the runtime signature; the host's
+  `primaryThinkingLevel` member.
 - **Tripwire paths:** `packages/tui/src/thinking.ts`, `packages/coding-agent/src/session/role-models.ts`, `packages/coding-agent/src/session/session-advisors.ts`
 - **Must still be true:**
   - With the primary on `auto`, an `auto` advisor runs at the primary's current
@@ -447,15 +460,8 @@ does what I wanted".
   actually visible. `omp gallery --surface segment --segment auto_thinking` previews it.
 - **Why:** With `auto` on there was no way to see whether the classifier was working,
   what it picked, or how often it was silently failing.
-- **Files:** `packages/coding-agent/src/session/model-controls.ts` (`AutoThinkingActivity`,
-  `MIN_CLASSIFYING_VISIBLE_MS`, the `autoThinkingActivity` getter,
-  `subscribeAutoThinkingActivity`; the hold timer itself lives in
-  `AutoThinkingTreeActivity`, which the tally entry owns),
-  `packages/coding-agent/src/session/agent-session.ts` (`autoThinkingActivity()`,
-  `subscribeAutoThinkingActivity`),
-  `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/footer.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/component.ts`,
-  `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`, `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`,
-  `docs/settings.md` (the `auto_thinking` segment description).
+- **Files:** `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/footer.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/component.ts`,
+  `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`, `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`.
 - **Depends on upstream:** the `StatusLineSegment` / `StatusLineSegmentId` shape and the
   `SEGMENTS` registry. **Three hardcoded lists are NOT derived from each other and each
   needs the segment id by hand — upstream rewriting any of them drops the segment
@@ -481,6 +487,13 @@ does what I wanted".
   Counter values also participate in the render cache, so ordinary renders can
   refresh them. The gallery variant rides on `variantsFor` in
   `cli/gallery-fixtures/segments.ts` and the `GallerySessionOptions` session double.
+  Fork code it relies on in files other entries own: `AutoThinkingActivity`,
+  `MIN_CLASSIFYING_VISIBLE_MS`, the `autoThinkingActivity` getter and
+  `subscribeAutoThinkingActivity` in `packages/coding-agent/src/session/model-controls.ts`
+  (tally entry, which also owns the pending hold timer in `AutoThinkingTreeActivity`);
+  `autoThinkingActivity()` and `subscribeAutoThinkingActivity` in
+  `packages/coding-agent/src/session/agent-session.ts` (`auto` thinking entry); the
+  `auto_thinking` segment description in `docs/settings.md` (cadence entry).
 - **Tripwire paths:** `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/status-line/footer.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/theme-class.ts`, `packages/tui/src/theme/glyph-bundle.json`, `packages/tui/src/render/render-utils.ts`, `packages/tui/src/tui.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`, `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`
 - **Must still be true:**
   - While a classification is in flight, the bar shows the pending marker, not the
@@ -509,10 +522,9 @@ does what I wanted".
   parent's status line showed almost nothing during a busy multi-agent turn.
 - **Files:** `packages/coding-agent/src/session/model-controls.ts` (`AutoThinkingTally`,
   `AutoThinkingTreeActivity` including its pending hold timer, `autoThinkingTallyFor`,
-  the `activity` option, `dispose`),
-  `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/agent-session.ts`
-  (the `activity: config.autoThinkingActivity` pass-through, `autoThinkingTally()`, the
-  type re-exports, `#models.dispose()`),
+  the `activity` option, `dispose`; the status-line entry's hunks here are named under
+  its **Depends on upstream**),
+  `packages/coding-agent/src/session/agent-session-types.ts`,
   `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`.
 - **Depends on upstream:** every spawn path forwarding the parent's `subagentEventBus`
   into `createAgentSession` (task executor spawn and in-turn revival, structured
@@ -529,6 +541,10 @@ does what I wanted".
   notifications and one visibility deadline/timer per tally. `AgentSession.beginDispose()`
   must only stop counting its own classifications, never clear the surviving tree's
   hold or its UI subscribers.
+  Fork code it relies on in a file another entry owns: the
+  `activity: config.autoThinkingActivity` pass-through, `autoThinkingTally()`, the type
+  re-exports and `#models.dispose()` in `packages/coding-agent/src/session/agent-session.ts`
+  (`auto` thinking entry).
 - **Tripwire paths:** `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/workpool.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`, `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`
 - **Must still be true:**
   - A classification inside a subagent increments its root session's `classified`
