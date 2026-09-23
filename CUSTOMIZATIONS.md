@@ -313,16 +313,19 @@ does what I wanted".
 
 ### Advisor `auto` thinking tracks the primary turn's effort
 
-- **What it does:** An advisor set to `auto` runs at whatever effort the primary
-  session's classifier picked for the current turn, re-tuned at each review boundary.
-  Previously `auto` on an advisor silently collapsed to the fixed `medium` default.
+- **What it does:** An advisor set to `auto` runs at the primary session's live effort —
+  the classifier's pick for the current turn under `auto`, the pinned level otherwise —
+  re-tuned at each review boundary. Previously `auto` on an advisor silently collapsed
+  to the fixed `medium` default.
 - **Why:** `auto` is a session-level selector with no per-advisor classifier, so
   building an advisor erased it and the advisor reviewed hard turns at medium effort.
-- **Files:** `packages/coding-agent/src/session/session-advisors.ts`,
-  `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`.
-- **Depends on upstream:** the advisor host interface — `isAutoThinking()` and
-  `primaryThinkingLevel()` are implemented as live getters, and the inherited level is
-  **derived from the primary's live level each time, never snapshotted at build time**;
+- **Files:** `packages/coding-agent/src/session/session-advisors.ts`
+  (`#inheritedAutoThinkingLevel`, `#retuneAutoThinkingAdvisors`, the host's
+  `primaryThinkingLevel`), `packages/coding-agent/src/session/agent-session.ts` (its
+  wiring).
+- **Depends on upstream:** the advisor host interface — `primaryThinkingLevel()` is
+  implemented as a live getter, and the inherited level is **derived from the
+  primary's live level each time, never snapshotted at build time**;
   `AUTO_THINKING`, `concreteThinkingLevel`, `resolveThinkingLevelForModel`,
   `clampAutoThinkingEffort`, `toReasoningEffort`, `shouldDisableReasoning`;
   `resolveModelOverride` / `formatModelSelectorValue`. **The advisor runtime signature
@@ -330,16 +333,20 @@ does what I wanted".
   level into that signature, every per-turn effort change rebuilds the advisor and
   destroys its accumulated context.** Also the review-boundary hook
   `#retuneAutoThinkingAdvisors()` (re-tunes via `setThinkingLevel` only — no rebuild,
-  no model change) and the model-hub role assignment in `selector-controller.ts`.
-- **Tripwire paths:** `packages/tui/src/thinking.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `packages/coding-agent/src/session/role-models.ts`
+  no model change; skipped while `retryFallback` holds a fallback selector's effort).
+  The provider-side cached prefix survives the re-tune only on models with
+  `compat.supportsPerMessageEffort` (the effort change rides in the message tail);
+  elsewhere the top-level effort changes and the prefix is re-written once.
+- **Tripwire paths:** `packages/tui/src/thinking.ts`, `packages/coding-agent/src/session/role-models.ts`
 - **Must still be true:**
   - With the primary on `auto`, an `auto` advisor runs at the primary's current
     resolved effort, not `medium`.
-  - With the primary pinned to a concrete level, an `auto` advisor falls back to its own
-    configured level and is unaffected.
+  - With the primary pinned to a concrete level (including a mid-session switch off
+    `auto`), an `auto` advisor follows that level at the next review boundary; with the
+    primary `off` it falls back to its own configured level.
   - When the classifier resolves a different level, the live advisor's effort changes at
-    the next review boundary and it is the same instance — model, context and cached
-    prefix survive.
+    the next review boundary and it is the same instance — model and context survive,
+    and so does the cached prefix on `supportsPerMessageEffort` models.
   - An `auto` advisor's runtime signature does not change when the resolved effort does.
 - **Check:** `bun test packages/coding-agent/test/advisor-auto-thinking.test.ts packages/coding-agent/test/advisor-devin-thinking.test.ts`
 
