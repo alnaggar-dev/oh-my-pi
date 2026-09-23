@@ -129,7 +129,7 @@ import {
 	cfgAdvisorReviewMode,
 	cfgAdvisorSyncBacklog,
 } from "../advisor/settings";
-import { cfgCompaction } from "./context-settings";
+import { cfgCompaction, cfgContextPromotionEnabled } from "./context-settings";
 import { cfgRetry, cfgTierAdvisor } from "./settings";
 
 const ADVISOR_CODEX_SSE_MAX_ATTEMPTS = 1;
@@ -492,6 +492,11 @@ export interface SessionAdvisorsHost {
 	hasPendingNextTurnMessages(): boolean;
 	convertToLlmForSideRequest(messages: AgentMessage[]): Message[];
 	effectiveServiceTier(model: Model): ServiceTier | undefined;
+	resolveContextPromotionTarget(
+		currentModel: Model,
+		contextWindow: number,
+		signal: AbortSignal,
+	): Promise<Model | undefined>;
 	resolveCompactionModelCandidates(preferredModel: Model | null | undefined, availableModels: Model[]): Model[];
 	resolveRetryFallbackRole(
 		currentSelector: string,
@@ -2278,6 +2283,39 @@ export class SessionAdvisors {
 		return true;
 	}
 
+	async #promoteAdvisorContextModel(
+		advisor: ActiveAdvisor,
+		currentModel: Model,
+		signal: AbortSignal,
+	): Promise<boolean> {
+		if (!cfgContextPromotionEnabled.get(this.#host.settings)) return false;
+		const contextWindow = currentModel.contextWindow ?? 0;
+		if (contextWindow <= 0) return false;
+		const targetModel = await this.#host.resolveContextPromotionTarget(currentModel, contextWindow, signal);
+		if (!targetModel || !this.#canReplayAdvisorHistory(advisor, targetModel)) return false;
+		signal.throwIfAborted();
+
+		// Preserve this advisor's own thinking level (a configured `model:...:high`
+		// keeps its suffix across a promotion); only the model changes.
+		const advisorThinkingLevel = advisor.thinkingLevel;
+		try {
+			this.#setAdvisorModel(advisor, targetModel, advisorThinkingLevel);
+			logger.debug("Advisor context promotion switched model on overflow", {
+				advisor: advisor.name,
+				from: `${currentModel.provider}/${currentModel.id}`,
+				to: `${targetModel.provider}/${targetModel.id}`,
+			});
+			return true;
+		} catch (error) {
+			logger.warn("Advisor context promotion failed", {
+				advisor: advisor.name,
+				from: `${currentModel.provider}/${currentModel.id}`,
+				to: `${targetModel.provider}/${targetModel.id}`,
+				error: String(error),
+			});
+			return false;
+		}
+	}
 
 	async #maintainAdvisorContext(
 		advisor: ActiveAdvisor,
@@ -2319,7 +2357,7 @@ export class SessionAdvisors {
 			methods.includes("remote") ? "remote" : "soft",
 		);
 
-		const advisorModel = agent.state.model;
+		let advisorModel = agent.state.model;
 		const contextWindow = advisorModel.contextWindow ?? 0;
 		if (contextWindow <= 0) return false;
 
@@ -2342,6 +2380,17 @@ export class SessionAdvisors {
 			return false;
 		}
 
+		// 1. Try promotion first
+		if (await this.#promoteAdvisorContextModel(advisor, advisorModel, signal)) {
+			// Promotion succeeded, check if new model has enough space
+			const newModel = agent.state.model;
+			const newWindow = newModel.contextWindow ?? 0;
+			if (newWindow > 0) {
+				const stillNeedsCompaction = shouldCompact(contextTokens, newWindow, compactionSettings);
+				if (!stillNeedsCompaction) return false;
+			}
+		}
+		advisorModel = agent.state.model;
 		const previousSummary = messages.findLast(
 			(message): message is AdvisorCompactionSummaryMessage => message.role === "compactionSummary",
 		);
