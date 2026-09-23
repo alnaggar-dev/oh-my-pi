@@ -4,14 +4,17 @@ What this fork changes, why, and what must still be true after an upstream sync.
 
 **Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `legacy-pi`, `Accounts`), one
 `###` per feature under it, seven fields per feature: **What it does**, **Why**, **Files**
-(the files the feature *owns* — nothing else may list my files), **Depends on upstream**,
+(the files the feature *owns* — no other field may list them; a file several features
+share is listed by each, naming the symbols or section that entry owns, and a symbol has
+exactly one owner), **Depends on upstream**,
 **Tripwire paths** (upstream files the sync probe reads), **Must still be true**, **Check**.
 Paths are always full repo-relative paths. No line numbers anywhere; they rot on every rebase.
 
 **Keeping it current.** After a change, run `fork-commit`: it places the change in the
 right entry (or writes a new one) and commits code and ledger together. When upstream
-moves, `sync-upstream` rebases, re-checks that every changed file is owned by exactly one
-entry, and probes each entry's tripwire paths — a hit sends that entry's **Must still be
+moves, `sync-upstream` rebases, re-checks that every changed file is owned by an entry
+(a shared file by one entry per portion), and probes each entry's tripwire paths — a hit
+sends that entry's **Must still be
 true** list to a subagent to verify against the rebased code. A clean rebase proves
 nothing about intent; this file is the difference between "it compiled" and "it still
 does what I wanted".
@@ -89,7 +92,7 @@ does what I wanted".
   the `toolCall` block shape on assistant messages. Ordering constraint:
   `ADVISOR_STATEFUL_READ_TIER_TOOLS` must stay declared *before* the derived table or
   module load throws.
-- **Tripwire paths:** `packages/coding-agent/src/task/read-only-policy.ts`, `packages/coding-agent/src/tools/builtin-names.ts`, `packages/coding-agent/src/tools/jfind/index.ts`
+- **Tripwire paths:** `packages/coding-agent/src/task/read-only-policy.ts`, `packages/coding-agent/src/tools/builtin-names.ts`, `packages/coding-agent/src/tools/jfind/index.ts`, `packages/coding-agent/src/advisor/config.ts`
 - **Must still be true:**
   - A mid-turn step whose only tool calls are read-only ones does not trigger a review
     under `mutation`.
@@ -145,6 +148,11 @@ does what I wanted".
   upstream's advisor `Agent` has no `afterToolCall` of its own today; if upstream ever
   adds one, the fork's hook replaces it — re-check this feature (and the dedupe it
   shares the hook with) against upstream's intent.**
+  **Deliberate test flip:** upstream's
+  `packages/coding-agent/test/agent-session-advisor-suppression.test.ts` expects two
+  advisor requests where the advise-only turn now makes one (`toHaveLength(2)` became
+  `toHaveLength(1)`, and its canned follow-up reply became a silent handler); an
+  upstream edit to that test is a conflict to resolve in the fork's favor.
 - **Tripwire paths:** `packages/agent/src/agent-loop.ts`, `packages/agent/src/agent.ts`, `packages/agent/src/types.ts`, `packages/coding-agent/src/session/session-advisors.ts`
 - **Must still be true:**
   - An advisor turn whose only tool call is `advise` makes exactly one provider request
@@ -155,7 +163,7 @@ does what I wanted".
     `advise` tool result is real, not a skipped placeholder.
   - The advisor's transcript ends on the `advise` tool result, so the next review
     resumes cleanly and `advisor.state.error` is unset.
-- **Check:** `bun test packages/coding-agent/test/advisor-advise-terminal.test.ts`
+- **Check:** `bun test packages/coding-agent/test/advisor-advise-terminal.test.ts packages/coding-agent/test/agent-session-advisor-suppression.test.ts`
 
 ### Advisor context slimming: stale-result eviction and repeat-call de-duplication
 
@@ -239,16 +247,17 @@ does what I wanted".
   subtracts from; the merge path that collapses consecutive tool results into one wire
   message; Anthropic's 20-position lookback, encoded as
   `ANTHROPIC_REWRITE_BOUNDARY_POSITIONS = 16`.
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/ai/src/providers/anthropic.ts`
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/ai/src/providers/anthropic.ts`, `packages/ai/src/utils/block-symbols.ts`
 - **Must still be true:**
   - A rewrite deeper than the lookback window gets a breakpoint before it plus the
     usual trailing one, and the request never exceeds 4 breakpoints.
   - A shallow rewrite near the tail changes nothing.
   - Once a later assistant turn postdates the rewrite, the extra breakpoint disappears.
   - With several rewrites, the boundary comes from the newest batch only.
-  - When the head already spends 3 of the 4 breakpoints (OAuth identity block, a
-    `<memories>` recall suffix anchor, and the tool anchor), the one remaining message
-    breakpoint stays on the trailing message and the boundary anchor is dropped.
+  - When the head already spends 3 of the 4 breakpoints (OAuth identity block, the
+    stable-system anchor in front of a `<memories>` recall suffix, and the tool
+    anchor), the one remaining message breakpoint stays on the trailing message and the
+    boundary anchor is dropped.
 - **Check:** `bun test packages/ai/test/anthropic-rewrite-boundary-caching.test.ts`
 
 ### Bounded repeated tool calls inside one advisor review
@@ -265,15 +274,17 @@ does what I wanted".
   again".
 - **Files:** `packages/coding-agent/src/advisor/loop-guard.ts` (`cumulative: true`),
   `packages/ai/src/utils/tool-call-loop-guard.ts` (the `cumulative` option,
-  `#recordCumulative`, `RepeatedToolCallDetection.mode`, and the exported
-  `toolCallSignature` the tally keys on),
+  `#recordCumulative`, `RepeatedToolCallDetection.mode`, and the two fork lines in
+  `recordTurn`),
   `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md` (the
   `{{#if consecutive}}` guard), `packages/coding-agent/src/session/tool-call-loop-redirect.ts`
   (passes `consecutive`), `docs/advisor-watchdog.md` (the runaway-tool-loop bullet).
 - **Depends on upstream:** `AdvisorLoopGuard` and its "one corrective, then abort",
   "reset each update" and "disabled means unbounded" rules; `ToolCallLoopGuard.recordTurn`
-  (the only fork line in its body hands the below-threshold case to
-  `#recordCumulative`); the shared settings `model.toolCallLoopGuard.enabled` /
+  (upstream's body with two fork lines: the below-threshold branch returns
+  `#recordCumulative(...)`, and the consecutive detection carries `mode:
+  "consecutive"`); `toolCallSignature`, which the tally keys on (owned by the context
+  slimming entry); the shared settings `model.toolCallLoopGuard.enabled` /
   `.threshold` / `.exemptTools`; `renderToolCallLoopRedirect`, shared by the main
   session's `LoopGuards` and the advisor.
 - **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md`, `packages/coding-agent/src/session/stream-guards.ts`, `packages/coding-agent/src/config/settings-schema.ts`
@@ -316,8 +327,11 @@ does what I wanted".
   rebase give up and the advisor replay); the `AgentMessage` top-level field names
   hashed by `fingerprintMessage` (an upstream rename or a newly rendered field makes the
   fingerprint blind); the renderer field list in `session-history-format.ts` that the
-  fingerprint mirrors; `AppendOnlyContextManager.#messageDigest`.
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/coding-agent/src/session/session-maintenance.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/message-fingerprint.ts`
+  fingerprint mirrors; `AppendOnlyContextManager.#messageDigest`; upstream's own
+  clone-tolerant fingerprint check in `#renderDelta` and its `advisor delivered prefix
+  changed` log (index, role, differing fields), which keep an unexpected replay
+  diagnosable.
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/coding-agent/src/session/session-maintenance.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/message-fingerprint.ts`, `packages/coding-agent/src/advisor/runtime.ts`
 - **Must still be true:**
   - A per-turn prune of an already-delivered primary tool result does not re-prime the
     advisor and does not replay the transcript.
@@ -326,10 +340,9 @@ does what I wanted".
     untouched when any slot fails to align or the transcript got shorter.
   - After two prunes in a session that used `eval`, the next review is still
     incremental.
-  - A message re-delivered as an equivalent clone (same rendered content, different id
-    or timestamp) does not count as a change.
-  - When the prefix does change, the reason is recorded — which index, which fields —
-    so an unexpected replay is diagnosable.
+  - After a prune, a later equal clone of a pruned result does not count as a change:
+    the rebase refreshed the stored fingerprints, so upstream's fingerprint check
+    compares against the post-prune message.
 - **Check:** `bun test packages/coding-agent/test/agent-session-prune-persistence.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
 
 ### Bounded diffs and tool output inside advisor deltas
@@ -383,7 +396,9 @@ does what I wanted".
 - **Files:** `packages/coding-agent/src/session/session-advisors.ts`
   (`#autoAdvisorThinkingLevel`, the one source for build, retune and fallback restore;
   `#retuneAutoThinkingAdvisors`; the `autoThinking` branch in
-  `#maybeRestoreAdvisorRetryFallbackPrimary`; the host's `primaryThinkingLevel`),
+  `#maybeRestoreAdvisorRetryFallbackPrimary`; the `autoThinking` descriptor/advisor
+  flag; the `AUTO_THINKING` substitution in the runtime signature; the host's
+  `primaryThinkingLevel`),
   `packages/coding-agent/src/session/agent-session.ts` (the `primaryThinkingLevel`
   wiring).
 - **Depends on upstream:** the advisor host interface — `primaryThinkingLevel()` is
@@ -394,15 +409,16 @@ does what I wanted".
   `resolveModelOverride` / `formatModelSelectorValue`. **The advisor runtime signature
   signs the `auto` selector, not the resolved level — if upstream folds the concrete
   level into that signature, every per-turn effort change rebuilds the advisor and
-  destroys its accumulated context.** Also the review-boundary hook
-  `#retuneAutoThinkingAdvisors()` (re-tunes via `setThinkingLevel` only — no rebuild,
-  no model change; skipped while `retryFallback` holds a fallback selector's effort),
-  and upstream's `#maybeRestoreAdvisorRetryFallbackPrimary` restore-level ternary,
-  which an `auto` advisor bypasses to restore at `#autoAdvisorThinkingLevel()`.
-  The provider-side cached prefix survives the re-tune only on models with
-  `compat.supportsPerMessageEffort` (the effort change rides in the message tail);
-  elsewhere the top-level effort changes and the prefix is re-written once.
-- **Tripwire paths:** `packages/tui/src/thinking.ts`, `packages/coding-agent/src/session/role-models.ts`
+  destroys its accumulated context.** Also upstream's `onPrimaryTurnEnd` review
+  boundary, where the fork's retune runs before the review (re-tuning via
+  `setThinkingLevel` only — no rebuild, no model change; skipped while `retryFallback`
+  holds a fallback selector's effort), and upstream's
+  `#maybeRestoreAdvisorRetryFallbackPrimary` restore-level ternary, which an `auto`
+  advisor bypasses to restore at `#autoAdvisorThinkingLevel()`. On models with
+  `compat.supportsPerMessageEffort` the effort change rides in the message tail, so the
+  cached prefix survives the re-tune; elsewhere the top-level effort changes, which
+  re-writes the prefix once on providers whose cache keys on it (Anthropic).
+- **Tripwire paths:** `packages/tui/src/thinking.ts`, `packages/coding-agent/src/session/role-models.ts`, `packages/coding-agent/src/session/session-advisors.ts`
 - **Must still be true:**
   - With the primary on `auto`, an `auto` advisor runs at the primary's current
     resolved effort, not `medium`.
@@ -432,7 +448,9 @@ does what I wanted".
 - **Why:** With `auto` on there was no way to see whether the classifier was working,
   what it picked, or how often it was silently failing.
 - **Files:** `packages/coding-agent/src/session/model-controls.ts` (`AutoThinkingActivity`,
-  `MIN_CLASSIFYING_VISIBLE_MS`, the pending hold, `subscribeAutoThinkingActivity`),
+  `MIN_CLASSIFYING_VISIBLE_MS`, the `autoThinkingActivity` getter,
+  `subscribeAutoThinkingActivity`; the hold timer itself lives in
+  `AutoThinkingTreeActivity`, which the tally entry owns),
   `packages/coding-agent/src/session/agent-session.ts` (`autoThinkingActivity()`,
   `subscribeAutoThinkingActivity`),
   `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/footer.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/component.ts`,
@@ -463,7 +481,7 @@ does what I wanted".
   Counter values also participate in the render cache, so ordinary renders can
   refresh them. The gallery variant rides on `variantsFor` in
   `cli/gallery-fixtures/segments.ts` and the `GallerySessionOptions` session double.
-- **Tripwire paths:** `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/theme-class.ts`, `packages/tui/src/theme/glyph-bundle.json`, `packages/tui/src/render/render-utils.ts`, `packages/tui/src/tui.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`, `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`
+- **Tripwire paths:** `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/status-line/footer.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/theme-class.ts`, `packages/tui/src/theme/glyph-bundle.json`, `packages/tui/src/render/render-utils.ts`, `packages/tui/src/tui.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`, `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`
 - **Must still be true:**
   - While a classification is in flight, the bar shows the pending marker, not the
     previous turn's resolved level.
@@ -490,7 +508,8 @@ does what I wanted".
 - **Why:** Most classifications happen inside subagents, so without roll-up the
   parent's status line showed almost nothing during a busy multi-agent turn.
 - **Files:** `packages/coding-agent/src/session/model-controls.ts` (`AutoThinkingTally`,
-  `AutoThinkingTreeActivity`, `autoThinkingTallyFor`, the `activity` option, `dispose`),
+  `AutoThinkingTreeActivity` including its pending hold timer, `autoThinkingTallyFor`,
+  the `activity` option, `dispose`),
   `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/agent-session.ts`
   (the `activity: config.autoThinkingActivity` pass-through, `autoThinkingTally()`, the
   type re-exports, `#models.dispose()`),
@@ -569,10 +588,10 @@ does what I wanted".
 - **What it does:** When several accounts of one provider can serve a request, the
   usage-based ranking picks the one whose long (weekly) window resets soonest, as long
   as that window still has headroom. Resets that `compareUsageRankingMetric` treats as
-  equal fall back to upstream's required-drain order. Applies to Claude, Codex and
-  API-key ranking. **Not Antigravity:** its `findWindowLimits` deliberately returns no
-  secondary window, so every Antigravity account gets `secondaryResetAt = ∞` and the
-  new rule never separates them.
+  equal fall back to upstream's required-drain order. Applies to Claude, Codex, Kimi
+  Code (its `7d` window) and API-key ranking. **Not Antigravity:** its
+  `findWindowLimits` deliberately returns no secondary window, so every Antigravity
+  account gets `secondaryResetAt = ∞` and the new rule never separates them.
 - **Why:** Upstream's required-drain score (`headroom / hours left`) could prefer a
   barely-used account resetting in 6 days over a half-used one resetting in 3, so quota
   on the sooner-resetting account expired unused.
@@ -596,7 +615,7 @@ does what I wanted".
   weekly/secondary drain rate") are renamed and inverted to expect the
   soonest-resetting account; an upstream edit to either is a conflict to resolve in
   the fork's favor.
-- **Tripwire paths:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`, `packages/ai/src/auth/usage-report.ts`, `packages/ai/src/auth/affinity.ts`, `packages/ai/src/usage.ts`, `packages/ai/src/usage/claude.ts`, `packages/ai/src/usage/openai-codex.ts`, `packages/ai/src/usage/google-antigravity.ts`
+- **Tripwire paths:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`, `packages/ai/src/auth/usage-report.ts`, `packages/ai/src/auth/affinity.ts`, `packages/ai/src/usage.ts`, `packages/ai/src/usage/claude.ts`, `packages/ai/src/usage/openai-codex.ts`, `packages/ai/src/usage/google-antigravity.ts`, `packages/ai/src/usage/kimi.ts`, `packages/ai/src/usage/registry.ts`
 - **Must still be true:**
   - Among unblocked, measured accounts below the 5h hot threshold, the one whose weekly
     window resets earliest is selected, regardless of how much of it is already used.
