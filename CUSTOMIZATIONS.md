@@ -125,8 +125,11 @@ does what I wanted".
   handling around it — the abort must still persist the finished tool batch and still
   run `onTurnEnd`, exactly like the primary's `yield` tool; the `afterToolCall` hook
   contract and its `ctx.toolCall` / `ctx.isError` / `ctx.assistantMessage` shape;
-  `Agent.abort(reason)` passing the reason through to the loop's signal.
-- **Tripwire paths:** `packages/agent/src/agent-loop.ts`, `packages/agent/src/agent.ts`, `packages/agent/src/types.ts`
+  `Agent.abort(reason)` passing the reason through to the loop's signal. **Tripwire:
+  upstream's advisor `Agent` has no `afterToolCall` of its own today; if upstream ever
+  adds one, the fork's hook replaces it — re-check this feature (and the dedupe it
+  shares the hook with) against upstream's intent.**
+- **Tripwire paths:** `packages/agent/src/agent-loop.ts`, `packages/agent/src/agent.ts`, `packages/agent/src/types.ts`, `packages/coding-agent/src/session/session-advisors.ts`
 - **Must still be true:**
   - An advisor turn whose only tool call is `advise` makes exactly one provider request
     for that review, and the note still reaches the main transcript.
@@ -459,8 +462,13 @@ does what I wanted".
   maps to itself and has no registered override, letting Bun resolve it normally.
   Before, the shim re-resolved such a specifier through `Bun.resolveSync`, Bun
   re-entered the same hook, and the import died with `NameTooLong`.
-- **Why:** Once any legacy-pi plugin was installed, the first
-  `require("@oh-my-pi/pi-*")` crashed — most visibly `/login`, which took down the app.
+- **Why:** The first `require("@oh-my-pi/pi-*")` crashed — most visibly `/login`, which
+  took down the app. The shim is effectively always installed:
+  `packages/coding-agent/src/extensibility/extensions/loader.ts` and
+  `packages/coding-agent/src/extensibility/plugins/loader.ts` both call
+  `installLegacyPiSpecifierShim()` at module load, not only once a legacy plugin is
+  installed. A real upstream bug on Bun 1.3.14; a "stop re-entry" guard does not work
+  instead (it fails with `ENOENT "file:/…"`), so declining is the fix.
 - **Files:** `packages/coding-agent/src/extensibility/plugins/legacy-pi-compat.ts`.
 - **Depends on upstream:** `CANONICAL_PI_SCOPE` and `PI_SCOPE_ALIASES` — the canonical
   scope is **intentionally** in the alias list, which is why the hook can be handed a
@@ -471,8 +479,9 @@ does what I wanted".
   an override is registered", so how that map is populated decides whether the hook
   still answers in compiled builds); `resolveCanonicalPiSpecifier`; the process-global
   `Bun.plugin` `onResolve` filter (which is why the test runs in a child process); and
-  Bun's re-entrancy behavior for `Bun.resolveSync` inside an `onResolve` hook.
-- **Tripwire paths:** `packages/coding-agent/src/extensibility/plugins/legacy-pi-compat.ts`
+  Bun's re-entrancy behavior for `Bun.resolveSync` inside an `onResolve` hook; the
+  module-load `installLegacyPiSpecifierShim()` calls in both loaders.
+- **Tripwire paths:** `packages/coding-agent/src/extensibility/plugins/legacy-pi-compat.ts`, `packages/coding-agent/src/extensibility/extensions/loader.ts`, `packages/coding-agent/src/extensibility/plugins/loader.ts`
 - **Must still be true:**
   - After the shim installs, `require("@oh-my-pi/pi-ai/index.js")` loads and never
     produces `NameTooLong`.
@@ -489,9 +498,11 @@ does what I wanted".
 
 - **What it does:** When several accounts of one provider can serve a request, the
   usage-based ranking picks the one whose long (weekly) window resets soonest, as long
-  as that window still has headroom. Resets within the metric tolerance (~30 min) fall
-  back to upstream's required-drain order. Applies to every provider using the shared
-  comparator (Claude, Codex, Antigravity, and API-key ranking).
+  as that window still has headroom. Resets that `compareUsageRankingMetric` treats as
+  equal fall back to upstream's required-drain order. Applies to Claude, Codex and
+  API-key ranking. **Not Antigravity:** its `findWindowLimits` deliberately returns no
+  secondary window, so every Antigravity account gets `secondaryResetAt = ∞` and the
+  new rule never separates them.
 - **Why:** Upstream's required-drain score (`headroom / hours left`) could prefer a
   barely-used account resetting in 6 days over a half-used one resetting in 3, so quota
   on the sooner-resetting account expired unused.
@@ -505,7 +516,16 @@ does what I wanted".
   `compareUsageRankingMetric`'s relative tolerance; each provider strategy's
   `findWindowLimits` choosing the secondary window (for Claude, the more pressured of the
   shared and model-tier weekly rows); session affinity pins (a pinned session skips
-  ranking until the pin is evicted).
+  ranking until the pin is evicted). **The tie window is not a designed constant:** it
+  is `compareUsageRankingMetric`'s relative 1e-6 tolerance applied to epoch
+  milliseconds — about 30 minutes in 2026, growing slowly as the epoch grows.
+  **Known interaction:** with `retry.usageAwareFallback` on (off by default), the
+  reserve release may re-pick the same nearly empty account, because it now ranks
+  first on reset time. **Deliberate test flips:** two upstream tests in
+  `packages/ai/test/auth-storage-codex-selection.test.ts` ("weights 3 accounts by
+  weekly/secondary drain rate") are renamed and inverted to expect the
+  soonest-resetting account; an upstream edit to either is a conflict to resolve in
+  the fork's favor.
 - **Tripwire paths:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`, `packages/ai/src/auth/usage-report.ts`, `packages/ai/src/auth/affinity.ts`, `packages/ai/src/usage.ts`, `packages/ai/src/usage/claude.ts`, `packages/ai/src/usage/openai-codex.ts`, `packages/ai/src/usage/google-antigravity.ts`
 - **Must still be true:**
   - Among unblocked, measured accounts below the 5h hot threshold, the one whose weekly
