@@ -162,9 +162,13 @@ does what I wanted".
 - **What it does:** Before each advisor request, file contents the advisor read during
   *finished* reviews are blanked to `[Stale result elided - N tokens]`, with the cut
   point chosen so the tokens freed beat the bytes that must be re-sent. Inside a
-  review, a `read`/`grep`/`glob` call identical to an earlier one whose result is still
-  in context returns `[Unchanged since your earlier identical call]`. The comparison
-  ignores the repeat hint upstream `read` appends from the 3rd identical read.
+  review, a call identical to an earlier one whose result is still in context returns
+  `[Unchanged since your earlier identical call]`. This covers every advisor tool
+  except `advise`: by default `read`/`grep`/`glob` (plus `recall` when the memory
+  backend provides it), and any built-in granted through a `WATCHDOG.yml` `tools:`
+  list. For `read`, the comparison ignores the repeat hint upstream `read` appends from
+  the 3rd identical read, but only at the exact spot `read` puts it and only when it
+  names this call's `path`.
 - **Why:** Old investigation output was ~48% of what the advisor re-sent every request,
   and 13% of its investigation calls were byte-identical repeats that would re-inflate
   exactly what the eviction just trimmed.
@@ -174,17 +178,23 @@ does what I wanted".
   dedupe call in the advisor `afterToolCall` hook), `docs/advisor-watchdog.md` (maintenance
   step 1 and the repeat-call paragraph),
   `packages/ai/src/utils/tool-call-loop-guard.ts` (`toolCallSignature`, fork-added; must keep
-  ignoring the agent-authored `intent` field and key order).
+  ignoring the agent-authored `intent` field and key order, and must keep argument
+  values verbatim).
 - **Depends on upstream:** the in-place rewrite contract for tool results — `prunedAt`
   on `ToolResultMessage` and `invalidateMessageCache`; `Tokenizer.countMessage`;
   `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts` (not exported —
-  `MIN_EVICT_TOKENS = 50` is a hand-kept copy); the exact text of the repeat-read hint
-  `appendRepeatReadHint` adds in `packages/coding-agent/src/tools/read.ts` (matched by
-  `REPEAT_READ_HINT` in `packages/coding-agent/src/advisor/tool-result-dedupe.ts`; the
-  advisors' shared tool session pools its count across advisors); the
-  `AfterToolCallResult` shape including `useless`; `isTranscriptUsageAnchor` and
-  `estimateTranscriptTokens`.
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/message-cache.ts`, `packages/agent/src/compaction/compaction.ts`, `packages/agent/src/compaction/transcript-tokens.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/tools/read.ts`
+  `MIN_EVICT_TOKENS = 50` is a hand-kept copy); `appendRepeatReadHint` in
+  `packages/coding-agent/src/tools/read.ts` — its exact hint text, that it goes at the
+  end of the first text block, and that it quotes the call's `path` argument verbatim
+  (matched by `stripRepeatReadHint` in
+  `packages/coding-agent/src/advisor/tool-result-dedupe.ts`; the advisors' shared tool
+  session pools its count across advisors); the meta-notice wrapper appending
+  `formatOutputNotice(details.meta)` to the last text block after the tool returns
+  (`appendOutputNotice` in `packages/coding-agent/src/tools/output-meta.ts`,
+  `formatOutputNotice` in `packages/tui/src/tools/output-meta.ts`) and the agent loop
+  keeping `details` on the `ToolResultMessage`; the `AfterToolCallResult` shape
+  including `useless`; `isTranscriptUsageAnchor` and `estimateTranscriptTokens`.
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/message-cache.ts`, `packages/agent/src/compaction/compaction.ts`, `packages/agent/src/compaction/transcript-tokens.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/tools/read.ts`, `packages/coding-agent/src/tools/output-meta.ts`, `packages/tui/src/tools/output-meta.ts`
 - **Must still be true:**
   - After a review finishes, the next request carries a short elision stub in place of
     that review's large file output, while the primary deltas and the advisor's notes
@@ -196,7 +206,10 @@ does what I wanted".
     held an image, or the file changed.
   - `MIN_EVICT_TOKENS` equals upstream `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts`.
   - The 3rd and later identical `read` calls still return the "unchanged" stub even
-    though upstream `read` appends a repeat hint with a rising count.
+    though upstream `read` appends a repeat hint with a rising count, including when an
+    output notice such as `[Showing lines …]` follows the hint.
+  - A `read` whose content changed is served in full even when the change is
+    hint-shaped text: a hint naming another path, or one not where `read` appends it.
   - Right after an eviction, no compaction fires that only the pre-eviction token count
     would have triggered.
   - Eviction runs before the compaction gate, and runs even when compaction is off.
