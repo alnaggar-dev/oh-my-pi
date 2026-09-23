@@ -108,6 +108,25 @@
 - Terminal OAuth behavior is now consistent between `omp login` and `omp auth-broker login`.
 - Judgment fallback now uses only native candidates, preventing prompted models from replacing failed native judges.
 - Browser screenshot comparisons now tolerate minor rasterizer differences.
+- Updated session compaction logic to support native Anthropic snapshot branches and rewinds
+- Changed browser screenshot pixel comparison to ignore minor rasterizer noise
+- Changed subagents to exclude the wait tool, preventing blocking on wait in nested agents
+- Changed default `bash.autoBackground.strategy` to `catalog`
+- Renamed `Launch` configuration group to `Services`
+- Improved terminal output for pipe-backed shells by normalizing line endings
+- Updated edit mode syntax to use `*** Edit File:`, `*** Find`, and `*** Replace` instead of `SM:` prefixed headers
+- Unified terminal OAuth flow logic across `omp login` and `omp auth-broker login`
+- Included identity account/organization info in terminal login success messages
+- Changed judgment fallback to consider only native candidates, preventing prompted models from replacing failed natives
+- An unrecognized `advisor.reviewOn` value (for example a typo in a hand-edited config) now explicitly reviews every step, like the `step` default.
+
+### Deprecated
+
+- Deprecated `hub` tool in favor of `wait`, `write`, and `proc://` protocols
+
+### Removed
+
+- Removed `irc.timeoutMs` configuration setting
 
 ### Fixed
 

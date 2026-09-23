@@ -2,6 +2,9 @@ import { describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type AdvisorAgent, AdvisorRuntime, type AdvisorRuntimeHost } from "../src/advisor";
 import { reviewGate } from "../src/advisor/review-cadence";
+import { Settings } from "../src/config/settings";
+import type { ToolSession } from "../src/tools";
+import { HubTool } from "../src/tools/hub";
 
 /**
  * `advisor.reviewOn`, as the `reviewGate` handed to `AdvisorRuntime.onTurnEnd`,
@@ -166,20 +169,48 @@ describe("advisor review cadence", () => {
 		expect(text).toContain("hub-jobs");
 	});
 
-	it("reviews hub cancel and peer send even though they need no user confirmation", async () => {
+	it("classifies every op in the real hub schema: inspection skipped, everything else reviewed", () => {
+		// Read from the live tool schema so an op upstream adds fails here until
+		// it is deliberately classified.
+		const skipped = ["list", "jobs", "inbox", "logs", "ps", "describe", "wait"];
+		const reviewed = ["start", "stop", "restart", "cancel", "send"];
+		const hubJsonSchema = new HubTool({} as ToolSession).parameters.toJsonSchema() as {
+			properties?: { op?: { enum?: string[] } };
+		};
+		const schemaOps = hubJsonSchema.properties?.op?.enum ?? [];
+		expect([...schemaOps].sort()).toEqual([...skipped, ...reviewed].sort());
+
+		const gate = reviewGate("mutation");
+		if (!gate) throw new Error("mutation cadence must gate mid-turn steps");
+		for (const op of schemaOps) {
+			const messages: AgentMessage[] = [];
+			pushStep(messages, `hub-${op}`, "hub", { op });
+			expect({ op, reviewed: gate(messages, 0) }).toEqual({ op, reviewed: reviewed.includes(op) });
+		}
+	});
+
+	it("reviews a hub call whose op is missing, non-string or unrecognized", () => {
+		const gate = reviewGate("mutation");
+		if (!gate) throw new Error("mutation cadence must gate mid-turn steps");
+		for (const args of [{ to: "Peer" }, { op: 7 }, { op: "kill" }]) {
+			const messages: AgentMessage[] = [];
+			pushStep(messages, "hub-malformed", "hub", args);
+			expect({ args, reviewed: gate(messages, 0) }).toEqual({ args, reviewed: true });
+		}
+	});
+
+	it("treats an unrecognized reviewOn value as the `step` default and reviews a read-only mid-turn step", async () => {
+		// Settings.get does not validate enum values from a hand-edited config;
+		// the fail-safe reading of a typo is "review every step", not a cheaper cadence.
+		const cadence = Settings.isolated({ "advisor.reviewOn": "mutations" }).get("advisor.reviewOn");
+		expect(cadence as string).toBe("mutations");
 		const { runtime, messages, promptInputs } = newRuntime();
 
-		let expected = 0;
-		for (const args of [
-			{ op: "cancel", ids: ["job_1"] },
-			{ op: "send", to: "Peer", message: "stop" },
-		]) {
-			pushStep(messages, `hub-${args.op}`, "hub", args);
-			runtime.onTurnEnd(messages, { willContinue: true, shouldReview: reviewGate("mutation") });
-			await runtime.waitForCatchup(1_000, 1);
-			expected++;
-			expect(promptInputs).toHaveLength(expected);
-			expect(promptText(promptInputs[expected - 1])).toContain(`hub-${args.op}`);
-		}
+		pushStep(messages, "typo-read", "read");
+		runtime.onTurnEnd(messages, { willContinue: true, shouldReview: reviewGate(cadence) });
+		await runtime.waitForCatchup(1_000, 1);
+
+		expect(promptInputs).toHaveLength(1);
+		expect(promptText(promptInputs[0])).toContain("typo-read");
 	});
 });

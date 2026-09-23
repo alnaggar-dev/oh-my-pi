@@ -87,6 +87,9 @@ function hasReviewWorthyToolCall(all: readonly AgentMessage[], from: number): bo
 	return false;
 }
 
+/** `turn` gate: defer every mid-turn step to the always-reviewed terminal boundary. */
+const neverReviewMidTurn = (): boolean => false;
+
 /**
  * Mid-turn review gate for `AdvisorRuntime.onTurnEnd`'s `shouldReview` option
  * under the given `advisor.reviewOn` cadence. `undefined` for `step` (review
@@ -101,8 +104,12 @@ export function reviewGate(
 		case "step":
 			return undefined;
 		case "turn":
-			return () => false;
+			return neverReviewMidTurn;
 		case "mutation":
 			return hasReviewWorthyToolCall;
+		default:
+			// `Settings.get` does not validate hand-edited enums: an unknown value falls back to the `step` default.
+			cadence satisfies never;
+			return undefined;
 	}
 }
