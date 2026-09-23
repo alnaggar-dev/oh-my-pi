@@ -31,6 +31,8 @@ export interface ToolCallLoopTurn {
 /** Details needed to steer the model away from a repeated tool call. */
 export interface RepeatedToolCallDetection {
 	readonly kind: "repeated_tool_call";
+	/** Which bound tripped: a back-to-back run, or the opt-in lifetime tally. */
+	readonly mode: "consecutive" | "cumulative";
 	readonly toolName: string;
 	readonly count: number;
 	readonly resultSummary: string;
@@ -84,7 +86,7 @@ function summarizeToolResult(toolResults: readonly ToolResultMessage[], toolCall
 	return summarizeText(textParts.join("\n"), RESULT_SUMMARY_LIMIT);
 }
 
-/** Detects identical assistant tool calls repeated across model turns. */
+/** Detects consecutive identical assistant tool calls across model turns. */
 export class ToolCallLoopGuard {
 	#threshold: number;
 	#cumulativeThreshold: number | undefined;
@@ -114,8 +116,10 @@ export class ToolCallLoopGuard {
 			return null;
 		}
 
-		const signatures = toolCalls.map(tc => toolCallSignature(tc.name, tc.arguments));
-		const turnHash = JSON.stringify([...signatures].sort());
+		const canonicalCalls = toolCalls
+			.map(tc => JSON.stringify([tc.name, canonicalizeToolCallValue(tc.arguments)]))
+			.sort();
+		const turnHash = JSON.stringify(canonicalCalls);
 		if (turnHash === this.#lastHash) {
 			this.#count++;
 		} else {
@@ -123,25 +127,48 @@ export class ToolCallLoopGuard {
 			this.#count = 1;
 		}
 
-		if (this.#count >= this.#threshold) {
-			const reportCall = toolCalls.find(tc => !this.#exemptTools.has(tc.name)) ?? toolCalls[0]!;
-			return this.#detection(reportCall, this.#count, turn);
-		}
+		if (this.#count < this.#threshold) return this.#recordCumulative(toolCalls, turn);
+		const reportCall = toolCalls.find(tc => !this.#exemptTools.has(tc.name)) ?? toolCalls[0]!;
+		return {
+			kind: "repeated_tool_call",
+			mode: "consecutive",
+			toolName: reportCall.name,
+			count: this.#count,
+			resultSummary: summarizeToolResult(turn.toolResults, reportCall.id),
+			argumentsSummary: summarizeText(
+				JSON.stringify(canonicalizeToolCallValue(reportCall.arguments)),
+				ARGUMENT_SUMMARY_LIMIT,
+			),
+		};
+	}
 
-		// A call the model alternates with others never forms a run, so the
-		// consecutive bound above never sees it. Tally each signature over the
-		// guard's lifetime and trip on the same corrective at a looser bound.
+	/**
+	 * A call the model alternates with others never forms a run, so the
+	 * consecutive bound never sees it. With `cumulative` set, tally each
+	 * signature over the guard's lifetime and trip at a looser bound.
+	 */
+	#recordCumulative(toolCalls: readonly ToolCall[], turn: ToolCallLoopTurn): RepeatedToolCallDetection | null {
 		const cumulativeThreshold = this.#cumulativeThreshold;
 		if (cumulativeThreshold === undefined) return null;
-		for (const [index, signature] of signatures.entries()) {
-			const call = toolCalls[index]!;
+		for (const call of toolCalls) {
 			if (this.#exemptTools.has(call.name)) continue;
+			const signature = toolCallSignature(call.name, call.arguments);
 			const total = (this.#repeats.get(signature) ?? 0) + 1;
 			if (total >= cumulativeThreshold) {
 				// Drop the tally so the next corrective costs another full bound
 				// instead of firing on every subsequent call.
 				this.#repeats.delete(signature);
-				return this.#detection(call, total, turn);
+				return {
+					kind: "repeated_tool_call",
+					mode: "cumulative",
+					toolName: call.name,
+					count: total,
+					resultSummary: summarizeToolResult(turn.toolResults, call.id),
+					argumentsSummary: summarizeText(
+						JSON.stringify(canonicalizeToolCallValue(call.arguments)),
+						ARGUMENT_SUMMARY_LIMIT,
+					),
+				};
 			}
 			if (!this.#repeats.has(signature) && this.#repeats.size >= MAX_TRACKED_SIGNATURES) {
 				this.#repeats.clear();
@@ -149,18 +176,5 @@ export class ToolCallLoopGuard {
 			this.#repeats.set(signature, total);
 		}
 		return null;
-	}
-
-	#detection(call: ToolCall, count: number, turn: ToolCallLoopTurn): RepeatedToolCallDetection {
-		return {
-			kind: "repeated_tool_call",
-			toolName: call.name,
-			count,
-			resultSummary: summarizeToolResult(turn.toolResults, call.id),
-			argumentsSummary: summarizeText(
-				JSON.stringify(canonicalizeToolCallValue(call.arguments)),
-				ARGUMENT_SUMMARY_LIMIT,
-			),
-		};
 	}
 }
