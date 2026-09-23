@@ -7,7 +7,6 @@ import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/ex
 import { resolveThresholdTokens, shouldCompact } from "@oh-my-pi/pi-agent-core/compaction";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Agent } from "@oh-my-pi/pi-agent-core";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -26,7 +25,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { registerPersistedSubagents } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
-import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -217,7 +216,6 @@ interface ReviveOwnerOptions {
 
 function createFactory(cwd: string, eventBus?: EventBus, owner: ReviveOwnerOptions = {}) {
 	const parentSession = {
-		autoThinkingTally: vi.fn(),
 		sessionManager: {
 			getCwd: () => cwd,
 			getArtifactManager: () => undefined,
@@ -256,7 +254,7 @@ afterEach(async () => {
 });
 
 describe("persisted subagent revival", () => {
-	it("rolls real cold-revived classifications into the live owner's tree after a session switch", async () => {
+	it("rolls real cold-revived classifications into the tree whose subagent bus it revives on", async () => {
 		const cwd = makeTempDir("@pi-revive-auto-thinking-");
 		const authStorage = createInMemoryAuthStorage();
 		authStorage.keys.setRuntime("anthropic", "test-key");
@@ -270,48 +268,56 @@ describe("persisted subagent revival", () => {
 			"todo.enabled": false,
 		});
 		const sessions: AgentSession[] = [];
-		const makeOwner = () => {
-			const session = new AgentSession({
-				agent: new Agent({ initialState: { model, systemPrompt: ["parent"], tools: [], messages: [] } }),
-				sessionManager: SessionManager.inMemory(cwd),
-				settings,
-				modelRegistry,
+		const createAgentSession = sdkModule.createAgentSession;
+		const create = async (options?: CreateAgentSessionOptions) => {
+			const result = await createAgentSession({
+				agentDir: cwd,
+				skills: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				skipPythonPreflight: true,
 				disableExtensionDiscovery: true,
+				...options,
 			});
-			sessions.push(session);
-			return session;
+			sessions.push(result.session);
+			return result;
+		};
+		const rootOptions: CreateAgentSessionOptions = {
+			cwd,
+			authStorage,
+			modelRegistry,
+			settings,
+			model,
+			hasUI: false,
+			enableMCP: false,
+			enableLsp: false,
 		};
 		try {
-			const previousOwner = makeOwner();
-			const currentOwner = makeOwner();
-			const ctx = {
-				session: previousOwner,
+			const treeBus = new EventBus();
+			const { session: root } = await create({
+				...rootOptions,
+				sessionManager: SessionManager.inMemory(cwd),
+				subagentEventBus: treeBus,
+			});
+			const { session: otherRoot } = await create({
+				...rootOptions,
+				sessionManager: SessionManager.inMemory(cwd),
+				subagentEventBus: new EventBus(),
+			});
+			const sessionFile = await createPersistedSession(cwd, true, "default");
+			const ref = AgentRegistry.global().register(createRef(sessionFile));
+			const reviver = await createPersistedSubagentReviverFactory({
+				session: root,
 				authStorage,
 				modelRegistry,
 				settings,
 				enableLsp: false,
-			};
-			const sessionFile = await createPersistedSession(cwd, true, "default");
-			const ref = AgentRegistry.global().register(createRef(sessionFile));
-			const reviver = await createPersistedSubagentReviverFactory(ctx)(ref);
+				subagentEventBus: treeBus,
+			})(ref);
 			if (!reviver) throw new Error("Expected a persisted reviver");
-			// The owner is live, unlike a tangent's dispatch-time snapshot.
-			ctx.session = currentOwner;
-			const createAgentSession = sdkModule.createAgentSession;
-			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(options =>
-				createAgentSession({
-					agentDir: cwd,
-					skills: [],
-					contextFiles: [],
-					promptTemplates: [],
-					slashCommands: [],
-					skipPythonPreflight: true,
-					disableExtensionDiscovery: true,
-					...options,
-				}),
-			);
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(create);
 			const child = await reviver(ref);
-			sessions.push(child);
 			child.setThinkingLevel(AUTO_THINKING);
 			const stream = createMockModel({ handler: { content: ["revived complete"] } });
 			child.agent.streamFn = stream.stream;
@@ -320,12 +326,12 @@ describe("persisted subagent revival", () => {
 				.mockRejectedValueOnce(new Error("classifier unavailable"));
 
 			await child.prompt("Classify the revived task", { attribution: "user" });
-			expect(currentOwner.autoThinkingActivity()).toMatchObject({ classified: 1, fallback: 0 });
-			expect(previousOwner.autoThinkingActivity()).toMatchObject({ classified: 0, fallback: 0 });
+			expect(root.autoThinkingActivity()).toMatchObject({ classified: 1, fallback: 0 });
+			expect(otherRoot.autoThinkingActivity()).toMatchObject({ classified: 0, fallback: 0 });
 
 			await child.prompt("Continue after the classifier fails", { attribution: "user" });
-			expect(currentOwner.autoThinkingActivity()).toMatchObject({ classified: 1, fallback: 1 });
-			expect(previousOwner.autoThinkingActivity()).toMatchObject({ classified: 0, fallback: 0 });
+			expect(root.autoThinkingActivity()).toMatchObject({ classified: 1, fallback: 1 });
+			expect(otherRoot.autoThinkingActivity()).toMatchObject({ classified: 0, fallback: 0 });
 			expect(child.getLastAssistantMessage()?.content).toEqual([{ type: "text", text: "revived complete" }]);
 		} finally {
 			for (const session of sessions.reverse()) await session.dispose();
