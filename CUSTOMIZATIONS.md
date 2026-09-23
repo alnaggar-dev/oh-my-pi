@@ -297,7 +297,8 @@ does what I wanted".
 - **Must still be true:**
   - A 400-line diff keeps head and tail, drops the middle, and carries a marker.
   - A small diff renders byte-identically, with no marker.
-  - Truncation happens after secret obfuscation, so redaction is never bypassed.
+  - Truncation happens after secret obfuscation — for the expanded diff as well as tool
+    input/output — so redaction is never bypassed by a cut through a secret.
   - Fenced output containing backticks still gets a wrapper the content cannot break.
 - **Check:** `bun test packages/coding-agent/test/session/session-history-format.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
 
