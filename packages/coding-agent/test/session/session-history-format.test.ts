@@ -429,4 +429,28 @@ describe("formatSessionHistoryMarkdown", () => {
 		expect(mid).toContain(`\`\`\`diff\n${midDiff}\n\`\`\``);
 		expect(mid).not.toContain("elided");
 	});
+
+	it("redacts an expanded diff before middle truncation", () => {
+		const secret = `BEGIN_SECRET_${"x".repeat(5_000)}_END_SECRET`;
+		const diff = `--- a/big.ts\n+++ b/big.ts\n@@ -1 +1 @@\n+${"head".repeat(1_000)}${secret}${"tail".repeat(1_000)}`;
+		const output = formatSessionHistoryMarkdown(
+			[
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "c1", name: "edit", arguments: { path: "big.ts" } }],
+					timestamp: 1,
+				},
+				{ role: "toolResult", toolCallId: "c1", toolName: "edit", content: "ok", details: { diff }, timestamp: 2 },
+			],
+			{
+				expandEditDiffs: true,
+				watchedRoles: true,
+				transformExpandedToolIO: text => text.replaceAll(secret, "#REDACTED#"),
+			},
+		);
+
+		expect(output).toContain("#REDACTED#");
+		expect(output).not.toContain("BEGIN_SECRET_");
+		expect(output).not.toContain("_END_SECRET");
+	});
 });
