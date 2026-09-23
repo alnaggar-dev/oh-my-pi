@@ -263,26 +263,41 @@ does what I wanted".
 
 - **What it does:** When the main agent's per-turn prune blanks old tool results in its
   own transcript, the advisor does not treat that as "history was rewritten" and does
-  not throw its context away. Every other rewrite (rollback, branch, edited message,
-  compaction, session switch) still resets it.
+  not throw its context away: the prune rebases the advisor's delivered prefix onto the
+  rewritten messages instead of resetting it. Every other rewrite (rollback, branch,
+  edited message, compaction, session switch) still resets it.
 - **Why:** A reset makes the advisor replay the entire primary transcript and refill
   the provider cache from scratch — pure cost, since it already holds the result.
-- **Files:** `packages/coding-agent/src/advisor/runtime.ts` (the delivered-prefix
-  identity check),
-  `packages/coding-agent/src/session/session-maintenance.ts` (both
-  `resetAdvisorRuntimes` calls removed from the prune paths — that removal *is* the
-  feature; a sync that reinstates either one silently restores the old cost).
-- **Depends on upstream:** the primary's per-turn prune must keep mutating the *same*
-  message object in place rather than replacing it in the array — the cheap path is the
-  reference check `delivered.message === current`; the `AgentMessage` top-level field
-  names hashed by `fingerprintMessage` (an upstream rename or a newly rendered field
-  makes the fingerprint blind); the renderer field list in `session-history-format.ts`
-  that the fingerprint mirrors; `AppendOnlyContextManager.#messageDigest`.
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/coding-agent/src/session/session-maintenance.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/message-fingerprint.ts`
+  Merely skipping the reset left stale pre-prune fingerprints behind, so a later equal
+  clone of an elided result, or the synthetic `eval-state-context` message moving to
+  the new tail, still triggered a full replay one turn later.
+- **Files:** `packages/coding-agent/src/session/session-maintenance.ts` (the prune
+  paths call `rebaseAdvisorPrefix` where upstream calls `resetAdvisorRuntimes`, so a
+  sync that brings the reset back conflicts instead of silently restoring the old
+  cost; the `rebaseAdvisorPrefix` host member), `packages/coding-agent/src/advisor/runtime.ts`
+  (`rebaseDeliveredPrefix`, `EVAL_STATE_CONTEXT_TYPE`),
+  `packages/coding-agent/src/session/session-advisors.ts` (`rebaseDeliveredPrefixes`),
+  `packages/coding-agent/src/session/agent-session.ts` (the `rebaseAdvisorPrefix`
+  wiring), `docs/advisor-watchdog.md` (the per-turn prune paragraph).
+- **Depends on upstream:** the prune passes only rewrite tool results, in place, marking
+  them with `prunedAt` — the rebase accepts a changed slot only when it is the same
+  tool result (`toolCallId`) now carrying `prunedAt`; `#deliveredPrefix` / `#lastCount`
+  staying one positional cursor that `#renderDelta` checks by reference then
+  fingerprint; `AgentSession.#withEvalStateContext` appending its
+  `eval-state-context` message at the tail (a rename of that custom type makes the
+  rebase give up and the advisor replay); the `AgentMessage` top-level field names
+  hashed by `fingerprintMessage` (an upstream rename or a newly rendered field makes the
+  fingerprint blind); the renderer field list in `session-history-format.ts` that the
+  fingerprint mirrors; `AppendOnlyContextManager.#messageDigest`.
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/coding-agent/src/session/session-maintenance.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/message-fingerprint.ts`
 - **Must still be true:**
   - A per-turn prune of an already-delivered primary tool result does not re-prime the
     advisor and does not replay the transcript.
-  - Replacing a delivered message with a genuinely different one still resets it.
+  - Replacing a delivered message with a genuinely different one still resets it, even
+    in the same turn as a prune: the rebase is all-or-nothing and leaves the prefix
+    untouched when any slot fails to align or the transcript got shorter.
+  - After two prunes in a session that used `eval`, the next review is still
+    incremental.
   - A message re-delivered as an equivalent clone (same rendered content, different id
     or timestamp) does not count as a change.
   - When the prefix does change, the reason is recorded — which index, which fields —
