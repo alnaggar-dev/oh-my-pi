@@ -4,7 +4,14 @@
 // notice while the earlier result is still live and verbatim in the advisor's
 // own context.
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { AgentMessage, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
 import { AdvisorToolResultDedupe, DEDUPED_RESULT_NOTICE } from "../../src/advisor/tool-result-dedupe";
 
@@ -96,5 +103,40 @@ describe("AdvisorToolResultDedupe", () => {
 		dedupe.check(call("t1"), textResult("ENOENT"), []);
 		const messages = [liveResult("t1", "ENOENT", { isError: true })];
 		expect(dedupe.check(call("t2"), textResult("ENOENT"), messages)).toBeUndefined();
+	});
+
+	it("keeps collapsing repeat reads once the read tool starts appending its repeat hint", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "advisor-dedupe-"));
+		try {
+			fs.writeFileSync(path.join(cwd, "a.ts"), "export const a = 1;\n");
+			const session: ToolSession = {
+				cwd,
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated({}),
+			};
+			const tool = new ReadTool(session);
+			const dedupe = new AdvisorToolResultDedupe();
+			const messages: AgentMessage[] = [];
+			const served: string[] = [];
+			const rawTexts: string[] = [];
+			for (let n = 1; n <= 4; n++) {
+				const id = `t${n}`;
+				const result = await tool.execute(id, { path: "a.ts" });
+				const raw = result.content.map(block => (block.type === "text" ? block.text : "")).join("\n");
+				rawTexts.push(raw);
+				const override = dedupe.check(call(id), result, messages);
+				const text = override ? DEDUPED_RESULT_NOTICE : raw;
+				served.push(text);
+				messages.push(liveResult(id, text));
+			}
+			// The read tool's own hint really is on the 3rd and 4th raw results.
+			expect(rawTexts[2]).not.toBe(rawTexts[0]);
+			expect(rawTexts[3]).not.toBe(rawTexts[2]);
+			expect(served.slice(1)).toEqual([DEDUPED_RESULT_NOTICE, DEDUPED_RESULT_NOTICE, DEDUPED_RESULT_NOTICE]);
+		} finally {
+			removeSyncWithRetries(cwd);
+		}
 	});
 });
