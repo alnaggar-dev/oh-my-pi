@@ -149,6 +149,25 @@ describe("advisor live request settings", () => {
 		expectContent(await runTurn("project_restored"), "project_restored", true, true);
 	});
 
+	it("keeps the advisor conversation across a context-file change while projectContext is off", async () => {
+		const { live, settings, requests, runTurn } = createSession();
+		settings.set("advisor.projectContext", false);
+		expect(live.setAdvisorEnabled(true)).toBe(true);
+		await runTurn("project_off");
+
+		const updated = "<project-context>UPDATED_CONTEXT_SENTINEL</project-context>";
+		live.setAdvisorContextPrompt(updated);
+		const after = await runTurn("project_off_after_change");
+		expect(JSON.stringify(after.messages)).toContain(ADVISOR_HISTORY);
+		expect(JSON.stringify(after.systemPrompt)).not.toContain("UPDATED_CONTEXT_SENTINEL");
+
+		// The skipped rebuild still stored the prompt: turning the setting on uses it.
+		settings.set("advisor.projectContext", true);
+		expect(live.setAdvisorEnabled(true)).toBe(true);
+		await runTurn("project_on");
+		expect(JSON.stringify(requests[requests.length - 1].systemPrompt)).toContain(updated);
+	});
+
 	it("applies reviewOn dynamically without discarding the advisor conversation", async () => {
 		const { live, settings, requests, runTurn } = createSession();
 		await runTurn("turn_cadence");
