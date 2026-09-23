@@ -415,7 +415,7 @@ The advisor has its own append-only context. Before each advisor prompt, `AgentS
 3. if promotion cannot fit enough context, compact the advisor's own message history
 4. for readable history, re-prime from the current bounded primary transcript if compaction has no candidates or still cannot fit
 
-Inside a review, a `read`/`grep`/`glob` call that byte-matches an earlier call whose result is still in the advisor's context returns `[Unchanged since your earlier identical call]` instead of the full output again (13% of advisor investigation calls were such repeats). An evicted, rolled-back, or errored earlier result does not count — the full result is served again.
+Inside a review, a call to any advisor tool except `advise` (by default `read`/`grep`/`glob`) that byte-matches an earlier call whose result is still in the advisor's context returns `[Unchanged since your earlier identical call]` instead of the full output again (13% of advisor investigation calls were such repeats). An evicted, rolled-back, or errored earlier result does not count — the full result is served again.
 
 Native compaction replaces advisor history only when the active model can replay its provider and Responses API format. A foreign native-enabled summarizer uses portable text summarization for readable history instead. Once the advisor holds native history, incompatible summarizers, retry fallbacks, cooldown restorations, and context promotions are skipped. Maintenance failure preserves that history rather than re-priming it away; normal advisor request-failure handling still applies.
 

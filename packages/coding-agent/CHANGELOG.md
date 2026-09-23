@@ -151,6 +151,9 @@
 - Fixed reader-mode `fetch` output passing inline SVG icons and base64 `data:` images to the model as unreadable payloads; they are now dropped and their alt text is kept ([#13006](https://github.com/can1357/oh-my-pi/pull/13006) by [@H4vC](https://github.com/H4vC)).
 - Fixed judged TTSR rules failing with `max_tokens_exceeded` on long non-Latin outputs: judged content was capped at 60,000 characters, which is ~60k Jev tokens of Chinese against Jev's ~33k-token branch limit. It is now cut to 32,000 Jev tokens counted locally, so long English outputs are also no longer truncated early.
 - Fixed an advisor keeping an outdated project context after `advisor.projectContext` was switched off by a settings reload and then back on in `/settings`.
+- Fixed an advisor set to `auto` thinking staying at its last level when the main session's thinking was turned off; it now uses the same default level a freshly built advisor gets.
+- Fixed an advisor set to `auto` thinking running its first review after a retry fallback at its old level; it now rejoins the main session's current level.
+- Fixed advisor repeat-call de-duplication reporting a changed file as `[Unchanged since your earlier identical call]` when the only change was text that looks like `read`'s repeat hint (for example in a `:raw` read).
 
 ## [18.2.11] - 2026-09-23
 
