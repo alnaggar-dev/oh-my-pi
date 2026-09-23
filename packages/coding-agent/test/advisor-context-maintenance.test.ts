@@ -22,7 +22,6 @@ import {
 	cfgCompaction,
 	cfgCompactionKeepRecentTokens,
 	cfgCompactionThresholdTokens,
-	cfgContextPromotionEnabled,
 } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 
 const CONTEXT_WINDOW = 372_000;
@@ -63,7 +62,7 @@ describe("AgentSession advisor context maintenance", () => {
 		await tempDir.remove();
 	});
 
-	function createHarness(): MaintenanceHarness {
+	function createHarness(contextPromotionTarget?: string, contextPromotionEnabled = false): MaintenanceHarness {
 		const primaryMock = createMockModel({
 			provider: "anthropic",
 			responses: [{ content: ["primary complete"] }],
@@ -73,12 +72,13 @@ describe("AgentSession advisor context maintenance", () => {
 			contextWindow: CONTEXT_WINDOW,
 			responses: [{ content: ["advisor reviewed current update"] }],
 		});
+		Object.assign(advisorMock, { contextPromotionTarget });
 		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 		const settings = Settings.isolated({
 			"advisor.syncBacklog": "1",
 			"compaction.enabled": true,
 			"compaction.methodOrder": ["soft"],
-			"contextPromotion.enabled": false,
+			"contextPromotion.enabled": contextPromotionEnabled,
 			modelRoles: { advisor: "anthropic/claude-sonnet-4-5" },
 		});
 		const agent = new Agent({
@@ -159,7 +159,11 @@ describe("AgentSession advisor context maintenance", () => {
 		};
 	}
 
-	function createAdvisorFallbackHarness(options?: { sameProviderNativeEnabled?: boolean; remoteEnabled?: boolean }) {
+	function createAdvisorFallbackHarness(options?: {
+		sameProviderNativeEnabled?: boolean;
+		contextPromotionEnabled?: boolean;
+		remoteEnabled?: boolean;
+	}) {
 		const primaryMock = createMockModel({
 			provider: "anthropic",
 			responses: [{ content: ["primary complete"] }],
@@ -185,7 +189,7 @@ describe("AgentSession advisor context maintenance", () => {
 			"advisor.syncBacklog": "1",
 			"compaction.enabled": true,
 			"compaction.methodOrder": options?.remoteEnabled === false ? ["soft"] : ["remote", "soft"],
-			"contextPromotion.enabled": false,
+			"contextPromotion.enabled": options?.contextPromotionEnabled ?? false,
 		});
 		settings.setModelRole("advisor", `${nativeModel.provider}/${nativeModel.id}`);
 		settings.setModelRole("smol", `${sameProviderModel.provider}/${sameProviderModel.id}`);
@@ -248,6 +252,42 @@ describe("AgentSession advisor context maintenance", () => {
 		expect(JSON.stringify(advisorCall.context.messages)).toContain("small current update");
 		expect(JSON.stringify(advisor.state.messages)).not.toContain("prior advisor output");
 		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+	});
+
+	it("ignores late context-promotion credentials after a session transition", async () => {
+		const promotion = createMockModel({
+			id: "advisor-promotion-target",
+			provider: "anthropic",
+			contextWindow: CONTEXT_WINDOW + 1,
+		});
+		const { advisor, advisorMock, modelRegistry } = createHarness(`${promotion.provider}/${promotion.id}`, true);
+		vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([advisor.state.model, promotion]);
+		const credentialStarted = Promise.withResolvers<void>();
+		const releaseCredential = Promise.withResolvers<void>();
+		const credentialReturned = Promise.withResolvers<void>();
+		let credentialSignal: AbortSignal | undefined;
+		vi.spyOn(modelRegistry, "getApiKey").mockImplementation(async (model, _sessionId, options) => {
+			if (model === promotion) {
+				credentialSignal = options?.signal;
+				credentialStarted.resolve();
+				await releaseCredential.promise;
+				credentialReturned.resolve();
+			}
+			return "test-key";
+		});
+		advisor.emitExternalEvent({
+			type: "message_end",
+			message: usageAnchor(advisorMock, Date.now() - 1_000),
+		});
+
+		const prompt = session.prompt("trigger advisor context promotion");
+		await credentialStarted.promise;
+		await session.newSession();
+		releaseCredential.resolve();
+		await credentialReturned.promise;
+		await prompt;
+		expect(credentialSignal?.aborted).toBe(true);
+		expect(session.getAdvisorAgent()?.state.model.id).toBe(advisorMock.id);
 	});
 
 	it("includes advisor system prompt and tool schemas in the local maintenance floor", async () => {
@@ -555,10 +595,10 @@ describe("AgentSession advisor context maintenance", () => {
 		},
 	);
 
-	it("compacts on the active model instead of promoting when the advisor overflows", async () => {
+	it("chooses compaction for the effective model after a promotion still overflows", async () => {
 		registerMockApi();
 		const { advisor, advisorMock, nativeModel, crossProviderModel, settings, apiKeySpy } =
-			createAdvisorFallbackHarness();
+			createAdvisorFallbackHarness({ contextPromotionEnabled: true });
 		const summarizer = createMockModel({
 			id: "promoted-model-summarizer",
 			provider: "openai",
@@ -573,30 +613,81 @@ describe("AgentSession advisor context maintenance", () => {
 		const active = {
 			...nativeModel,
 			contextWindow: 100_000,
-			compactionModel: `${summarizer.provider}/${summarizer.id}`,
 			contextPromotionTarget: `${promoted.provider}/${promoted.id}`,
 			remoteCompaction: { ...nativeModel.remoteCompaction, v2StreamingEnabled: false },
 		};
 		advisor.setModel(active);
-		cfgContextPromotionEnabled.set(settings, true);
 		cfgCompactionKeepRecentTokens.set(settings, 1);
 		apiKeySpy.mockResolvedValue("test-key");
 		vi.spyOn(session.modelRegistry, "getAvailable").mockReturnValue([active, promoted, summarizer]);
-		advisor.state.messages.push({ role: "user", content: "post-overflow-retained-tail", timestamp: Date.now() });
+		advisor.state.messages.push({ role: "user", content: "post-promotion-retained-tail", timestamp: Date.now() });
 		vi.spyOn(globalThis, "fetch").mockImplementation(
 			asGlobalFetch(async () =>
 				Response.json({ output: [{ type: "compaction", encrypted_content: "stale-model" }] }),
 			),
 		);
 
-		await session.prompt("overflow the advisor");
+		await session.prompt("promote and compact the advisor");
 
-		// A promotion would move the oversized context to the larger, pricier
-		// model; maintenance must shed context on the configured model instead.
-		expect(advisor.state.model.id).toBe(active.id);
-		const wire = JSON.stringify(advisorMock.calls[0].context.messages);
-		expect(wire).toContain("Remote compaction preserved provider-native history");
+		expect(advisor.state.model.id).toBe(promoted.id);
+		const wire = JSON.stringify(convertAnthropicMessages(advisorMock.calls[0].context.messages, promoted, false));
+		expect(wire).toContain("portable promoted-model summary");
+		expect(wire.match(/post-promotion-retained-tail/g)).toHaveLength(1);
 	});
+
+	it.each(["foreign", "enabled", "remote-disabled", "model-disabled"])(
+		"preserves native replay across a context promotion with %s compaction",
+		async policy => {
+			const compatible = policy !== "foreign";
+			const { advisor, advisorMock, nativeModel, crossProviderModel, sameProviderModel } =
+				createAdvisorFallbackHarness({
+					contextPromotionEnabled: true,
+					remoteEnabled: policy !== "remote-disabled",
+					sameProviderNativeEnabled: policy !== "model-disabled",
+				});
+			const target = { ...(compatible ? sameProviderModel : crossProviderModel), contextWindow: 1_000_000 };
+			const active = {
+				...nativeModel,
+				contextPromotionTarget: `${target.provider}/${target.id}`,
+				remoteCompaction: { ...nativeModel.remoteCompaction, v2StreamingEnabled: false },
+				compactionModel: `${target.provider}/${target.id}`,
+			};
+			advisor.setModel(active);
+			advisor.replaceMessages([
+				nativeSummary(nativeModel.provider),
+				usageAnchor(advisorMock, Date.now() - 1_000),
+				usageAnchor(advisorMock, Date.now()),
+			]);
+			vi.spyOn(session.modelRegistry, "getAvailable").mockReturnValue([active, target]);
+			const compactionRequests: string[] = [];
+			vi.spyOn(globalThis, "fetch").mockImplementation(
+				asGlobalFetch(async (_url, init) => {
+					compactionRequests.push(String(init?.body));
+					return Response.json({ output: nativeSummary(nativeModel.provider).providerPayload.items });
+				}),
+			);
+
+			await session.prompt("review after native context promotion");
+
+			expect(advisor.state.model.id).toBe(compatible ? target.id : active.id);
+			const wire = JSON.stringify(
+				buildParams(
+					advisor.state.model as Model<"openai-responses">,
+					advisorMock.calls[0].context,
+					undefined,
+					undefined,
+				).params.input,
+			);
+			expect(wire.match(/native-retained-decision/g)).toHaveLength(1);
+			expect(wire.match(/advisor-native-state/g)).toHaveLength(1);
+			if (!compatible) {
+				expect(compactionRequests).toHaveLength(1);
+				expect(compactionRequests[0].match(/advisor-native-state/g)).toHaveLength(1);
+			} else {
+				expect(compactionRequests).toHaveLength(0);
+			}
+		},
+	);
 
 	it("keeps native history when only an incompatible summarizer has credentials", async () => {
 		const { advisor, advisorMock, nativeModel, crossProviderModel, settings, apiKeySpy } =
