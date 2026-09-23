@@ -641,9 +641,10 @@ const contextPctSegment: StatusLineSegment = {
 };
 
 /**
- * Auto-thinking classifier tally for this session: how many turns resolved a
- * level, and (after a `!`) how many fell back to a guess. Hidden unless the
- * session runs the classifier and has classified at least one turn.
+ * Auto-thinking classifier tally for this session tree (subagents roll up into
+ * the root): how many turns resolved a level, and (after the preset's warning
+ * separator) how many fell back to a guess. Hidden unless the session runs the
+ * classifier and has classified at least one turn.
  */
 const autoThinkingSegment: StatusLineSegment = {
 	id: "auto_thinking",

@@ -4006,8 +4006,9 @@ function countLookbackPositions(messages: readonly MessageParam[], start: number
  *
  * The anchor spends a message breakpoint, and the message budget is 4 minus
  * the head breakpoints. When the head already spends 3 (OAuth identity block,
- * a `<memories>` recall suffix anchor, and the tool anchor), the single
- * remaining breakpoint goes to the trailing message and the anchor is dropped.
+ * the stable-system anchor in front of a `<memories>` recall suffix, and the
+ * tool anchor), the single remaining breakpoint goes to the trailing message
+ * and the anchor is dropped.
  */
 function findRewriteBoundary(messages: readonly MessageParam[], messageEnd: number): number {
 	let latestRewriteAt: number | undefined;

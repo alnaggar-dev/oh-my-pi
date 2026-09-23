@@ -21,7 +21,8 @@ export interface ActiveRepoContext {
 
 /**
  * Live auto-thinking classifier activity: whether a classification is in
- * flight, and this session's resolved/guessed turn tallies.
+ * flight anywhere in the session tree, and the tree's resolved/guessed turn
+ * tallies.
  */
 export interface StatusLineAutoThinkingActivity {
 	readonly classifying: boolean;
