@@ -411,16 +411,17 @@ Advisor usage is separate model usage. `/advisor status` reports advisor token c
 The advisor has its own append-only context. Before each advisor prompt, `AgentSession` estimates incoming tokens and may maintain advisor context:
 
 1. evict the oversized tool results (`read`/`grep`/`glob` output) of finished reviews from the advisor's own history. Measured over 895 transcripts, that output was ~48% of the context the advisor re-sent on every request; the deltas it reviewed and the notes it wrote are never touched. Each evicted result is blanked to `[Stale result elided - N tokens]`. The cut is cache-aware: it is placed where the tokens it frees outweigh the bytes the provider must re-write behind it, so a small result deep in the history is left alone rather than paying to reach it.
-2. compact the advisor's own message history (the advisor never switches to a larger model: a promotion keeps the oversized context, moves it to a pricier model, and drops the prompt cache)
-3. for readable history, re-prime from the current bounded primary transcript if compaction has no candidates or still cannot fit
+2. try model-level context promotion when enabled and a larger compatible model is available
+3. if promotion cannot fit enough context, compact the advisor's own message history
+4. for readable history, re-prime from the current bounded primary transcript if compaction has no candidates or still cannot fit
 
 Inside a review, a `read`/`grep`/`glob` call that byte-matches an earlier call whose result is still in the advisor's context returns `[Unchanged since your earlier identical call]` instead of the full output again (13% of advisor investigation calls were such repeats). An evicted, rolled-back, or errored earlier result does not count — the full result is served again.
 
-Native compaction replaces advisor history only when the active model can replay its provider and Responses API format. A foreign native-enabled summarizer uses portable text summarization for readable history instead. Once the advisor holds native history, incompatible summarizers, retry fallbacks, and cooldown restorations are skipped. Maintenance failure preserves that history rather than re-priming it away; normal advisor request-failure handling still applies.
+Native compaction replaces advisor history only when the active model can replay its provider and Responses API format. A foreign native-enabled summarizer uses portable text summarization for readable history instead. Once the advisor holds native history, incompatible summarizers, retry fallbacks, cooldown restorations, and context promotions are skipped. Maintenance failure preserves that history rather than re-priming it away; normal advisor request-failure handling still applies.
 
-Replay compatibility does not require new native compaction to be enabled. Same-provider Responses models can receive existing native history during fallback or cooldown restoration even when their own compaction endpoint is disabled. Creating a new native result still requires `remote` in `compaction.methodOrder` and an eligible writer; a separate compatible writer can maintain a reader whose native endpoint is disabled.
+Replay compatibility does not require new native compaction to be enabled. Same-provider Responses models can receive existing native history during fallback, cooldown restoration, or promotion even when their own compaction endpoint is disabled. Creating a new native result still requires `remote` in `compaction.methodOrder` and an eligible writer; a separate compatible writer can maintain a reader whose native endpoint is disabled.
 
-The advisor's live context is in-memory and append-only; it is retained while the session runs so `/advisor dump` can inspect it, and is independently compacted/re-primed (above). It is not a replacement for the primary persisted transcript.
+The advisor's live context is in-memory and append-only; it is retained while the session runs so `/advisor dump` can inspect it, and is independently promoted/compacted/re-primed (above). It is not a replacement for the primary persisted transcript.
 
 ## Transcript persistence and observability
 

@@ -180,6 +180,7 @@ does what I wanted".
     though upstream `read` appends a repeat hint with a rising count.
   - Right after an eviction, no compaction fires that only the pre-eviction token count
     would have triggered.
+  - Eviction runs before the compaction gate, and runs even when compaction is off.
 - **Check:** `bun test packages/coding-agent/test/advisor/tool-result-eviction.test.ts packages/coding-agent/test/advisor/tool-result-dedupe.test.ts packages/coding-agent/test/advisor-tool-result-eviction.test.ts packages/coding-agent/test/advisor-context-maintenance.test.ts`
 
 ### Cache breakpoint in front of a rewritten region (Anthropic)
@@ -217,28 +218,6 @@ does what I wanted".
     `<memories>` recall suffix anchor, and the tool anchor), the one remaining message
     breakpoint stays on the trailing message and the boundary anchor is dropped.
 - **Check:** `bun test packages/ai/test/anthropic-rewrite-boundary-caching.test.ts`
-
-### Advisor shrinks its context instead of moving to a bigger model
-
-- **What it does:** When the advisor's context nears its window it compacts or
-  re-primes on the model it is configured with. It never switches to a larger sibling.
-- **Why:** Promotion keeps the same oversized context, moves it to a pricier model, and
-  throws away the prompt cache — the worst of both.
-- **Files:** `packages/coding-agent/src/session/session-advisors.ts`
-  (`#maintainAdvisorContext`), `docs/advisor-watchdog.md`.
-- **Depends on upstream:** `resolveContextPromotionConfiguredTarget` and
-  `Model.contextPromotionTarget` — the tripwire is an upstream change that
-  re-introduces promote-first behavior into shared maintenance code the advisor calls;
-  also `resolveCompactionMethodOrder` / `resolveMethodSettings` and
-  `prepareCompaction` / `compact`.
-- **Tripwire paths:** `packages/coding-agent/src/session/role-models.ts`, `packages/coding-agent/src/session/compaction-methods.ts`, `packages/agent/src/compaction/compaction.ts`
-- **Must still be true:**
-  - An advisor whose context overflows finishes maintenance still on its configured
-    model, having compacted or re-primed.
-  - Eviction runs before the compaction gate, and runs even when compaction is off.
-  - A failed maintenance attempt leaves the existing history in place rather than
-    wiping it.
-- **Check:** `bun test packages/coding-agent/test/advisor-context-maintenance.test.ts`
 
 ### Bounded repeated tool calls inside one advisor review
 
@@ -533,10 +512,6 @@ does what I wanted".
 
 ## Known follow-ups
 
-- **Stale comment: the advisor no longer promotes models.**
-  the `maintainContext` doc comment in `packages/coding-agent/src/advisor/runtime.ts` still describes promoting to a
-  larger sibling. That was dropped; the doc and the tests are already correct, only the
-  comment is wrong.
 - **Hand-copied constant (accepted).** `MIN_EVICT_TOKENS = 50` in
   `packages/coding-agent/src/advisor/tool-result-eviction.ts` mirrors upstream's unexported
   `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts`. Exporting it would
