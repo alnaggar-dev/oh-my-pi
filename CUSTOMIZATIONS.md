@@ -147,20 +147,25 @@ does what I wanted".
   *finished* reviews are blanked to `[Stale result elided - N tokens]`, with the cut
   point chosen so the tokens freed beat the bytes that must be re-sent. Inside a
   review, a `read`/`grep`/`glob` call identical to an earlier one whose result is still
-  in context returns `[Unchanged since your earlier identical call]`.
+  in context returns `[Unchanged since your earlier identical call]`. The comparison
+  ignores the repeat hint upstream `read` appends from the 3rd identical read.
 - **Why:** Old investigation output was ~48% of what the advisor re-sent every request,
   and 13% of its investigation calls were byte-identical repeats that would re-inflate
   exactly what the eviction just trimmed.
 - **Files:** `packages/coding-agent/src/advisor/tool-result-eviction.ts`,
-  `packages/coding-agent/src/advisor/tool-result-dedupe.ts`, `packages/coding-agent/src/session/session-advisors.ts`.
+  `packages/coding-agent/src/advisor/tool-result-dedupe.ts`, `packages/coding-agent/src/session/session-advisors.ts`,
+  `packages/ai/src/utils/tool-call-loop-guard.ts` (`toolCallSignature`, fork-added; must keep
+  ignoring the agent-authored `intent` field and key order).
 - **Depends on upstream:** the in-place rewrite contract for tool results — `prunedAt`
   on `ToolResultMessage` and `invalidateMessageCache`; `Tokenizer.countMessage`;
-  compaction's `MIN_PRUNE_TOKENS` (**not exported — `MIN_EVICT_TOKENS = 50` is a
-  hand-kept copy that drifts silently if upstream changes it**); `toolCallSignature`
-  in `packages/ai/src/utils/tool-call-loop-guard.ts` (must keep ignoring the
-  agent-authored `intent` field and key order); the `AfterToolCallResult` shape
-  including `useless`; `isTranscriptUsageAnchor` and `estimateTranscriptTokens`.
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/message-cache.ts`, `packages/agent/src/compaction/compaction.ts`, `packages/agent/src/compaction/transcript-tokens.ts`, `packages/ai/src/utils/tool-call-loop-guard.ts`
+  `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts` (not exported —
+  `MIN_EVICT_TOKENS = 50` is a hand-kept copy); the exact text of the repeat-read hint
+  `appendRepeatReadHint` adds in `packages/coding-agent/src/tools/read.ts` (matched by
+  `REPEAT_READ_HINT` in `packages/coding-agent/src/advisor/tool-result-dedupe.ts`; the
+  advisors' shared tool session pools its count across advisors); the
+  `AfterToolCallResult` shape including `useless`; `isTranscriptUsageAnchor` and
+  `estimateTranscriptTokens`.
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/message-cache.ts`, `packages/agent/src/compaction/compaction.ts`, `packages/agent/src/compaction/transcript-tokens.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/tools/read.ts`
 - **Must still be true:**
   - After a review finishes, the next request carries a short elision stub in place of
     that review's large file output, while the primary deltas and the advisor's notes
@@ -170,6 +175,9 @@ does what I wanted".
   - A repeated identical investigation call returns the "unchanged" stub, but the full
     output is served again if the earlier result was evicted, rolled back, errored,
     held an image, or the file changed.
+  - `MIN_EVICT_TOKENS` equals upstream `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts`.
+  - The 3rd and later identical `read` calls still return the "unchanged" stub even
+    though upstream `read` appends a repeat hint with a rising count.
   - Right after an eviction, no compaction fires that only the pre-eviction token count
     would have triggered.
 - **Check:** `bun test packages/coding-agent/test/advisor/tool-result-eviction.test.ts packages/coding-agent/test/advisor/tool-result-dedupe.test.ts packages/coding-agent/test/advisor-tool-result-eviction.test.ts packages/coding-agent/test/advisor-context-maintenance.test.ts`
@@ -529,6 +537,9 @@ does what I wanted".
   the `maintainContext` doc comment in `packages/coding-agent/src/advisor/runtime.ts` still describes promoting to a
   larger sibling. That was dropped; the doc and the tests are already correct, only the
   comment is wrong.
-- **Hand-copied constant.** `MIN_EVICT_TOKENS = 50` mirrors compaction's unexported
-  `MIN_PRUNE_TOKENS`. If upstream changes its value, nothing breaks loudly — the two
-  just drift.
+- **Hand-copied constant (accepted).** `MIN_EVICT_TOKENS = 50` in
+  `packages/coding-agent/src/advisor/tool-result-eviction.ts` mirrors upstream's unexported
+  `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts`. Exporting it would
+  edit an upstream file, so the copy stays. It is a known drift risk, not resolved:
+  the pruning.ts tripwire in the advisor context slimming entry flags any upstream
+  change for a manual re-check.
