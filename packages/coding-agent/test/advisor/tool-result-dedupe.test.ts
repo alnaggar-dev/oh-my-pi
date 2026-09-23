@@ -10,6 +10,7 @@ import * as path from "node:path";
 import type { AgentMessage, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
@@ -33,6 +34,62 @@ function liveResult(toolCallId: string, text: string, overrides: Partial<AgentMe
 		timestamp: 1,
 		...overrides,
 	} as AgentMessage;
+}
+
+/** A real `read` in a fresh temp dir, wrapped like the advisors' tools in `sdk.ts`. */
+async function withReadTool(run: (cwd: string, tool: ReadTool) => Promise<void>): Promise<void> {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "advisor-dedupe-"));
+	try {
+		const session: ToolSession = {
+			cwd,
+			hasUI: false,
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
+			settings: Settings.isolated({}),
+		};
+		await run(cwd, wrapToolWithMetaNotice(new ReadTool(session)));
+	} finally {
+		removeSyncWithRetries(cwd);
+	}
+}
+
+/**
+ * One advisor `read` through the dedupe as its `afterToolCall` runs it; appends
+ * what the advisor is served to `messages` and returns it with the tool's raw text.
+ */
+async function advisorRead(
+	tool: ReadTool,
+	dedupe: AdvisorToolResultDedupe,
+	messages: AgentMessage[],
+	id: string,
+	selector: string,
+): Promise<{ raw: string; served: string }> {
+	const result = await tool.execute(id, { path: selector });
+	const raw = result.content.map(block => (block.type === "text" ? block.text : "")).join("\n");
+	const override = dedupe.check(call(id, { path: selector }), result, messages);
+	const served = override ? DEDUPED_RESULT_NOTICE : raw;
+	messages.push(liveResult(id, served, { details: result.details }));
+	return { raw, served };
+}
+
+function repeatHint(count: number, readPath: string): string {
+	return `[You have received this identical output ${count} times. Re-reading '${readPath}' will not change it — use a narrower selector (path:A-B), or proceed with the edit.]`;
+}
+
+const RAW_NOTES = "notes.md:raw";
+
+/** Writes each version to `notes.md` in turn; returns what one advisor is served reading it raw each time. */
+async function serveRawReads(versions: string[]): Promise<string[]> {
+	const served: string[] = [];
+	await withReadTool(async (cwd, tool) => {
+		const dedupe = new AdvisorToolResultDedupe();
+		const messages: AgentMessage[] = [];
+		for (const [n, content] of versions.entries()) {
+			fs.writeFileSync(path.join(cwd, "notes.md"), content);
+			served.push((await advisorRead(tool, dedupe, messages, `t${n}`, RAW_NOTES)).served);
+		}
+	});
+	return served;
 }
 
 describe("AdvisorToolResultDedupe", () => {
@@ -105,38 +162,37 @@ describe("AdvisorToolResultDedupe", () => {
 		expect(dedupe.check(call("t2"), textResult("ENOENT"), messages)).toBeUndefined();
 	});
 
-	it("keeps collapsing repeat reads once the read tool starts appending its repeat hint", async () => {
-		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "advisor-dedupe-"));
-		try {
+	it("keeps collapsing the 3rd and later identical reads though read appends its repeat hint", async () => {
+		await withReadTool(async (cwd, tool) => {
 			fs.writeFileSync(path.join(cwd, "a.ts"), "export const a = 1;\n");
-			const session: ToolSession = {
-				cwd,
-				hasUI: false,
-				getSessionFile: () => null,
-				getSessionSpawns: () => "*",
-				settings: Settings.isolated({}),
-			};
-			const tool = new ReadTool(session);
-			const dedupe = new AdvisorToolResultDedupe();
-			const messages: AgentMessage[] = [];
-			const served: string[] = [];
-			const rawTexts: string[] = [];
-			for (let n = 1; n <= 4; n++) {
-				const id = `t${n}`;
-				const result = await tool.execute(id, { path: "a.ts" });
-				const raw = result.content.map(block => (block.type === "text" ? block.text : "")).join("\n");
-				rawTexts.push(raw);
-				const override = dedupe.check(call(id), result, messages);
-				const text = override ? DEDUPED_RESULT_NOTICE : raw;
-				served.push(text);
-				messages.push(liveResult(id, text));
+			fs.writeFileSync(
+				path.join(cwd, "long.ts"),
+				Array.from({ length: 450 }, (_, i) => `const v${i} = ${i};`).join("\n"),
+			);
+			for (const file of ["a.ts", "long.ts"]) {
+				const dedupe = new AdvisorToolResultDedupe();
+				const messages: AgentMessage[] = [];
+				const reads: { raw: string; served: string }[] = [];
+				for (let n = 1; n <= 4; n++) {
+					reads.push(await advisorRead(tool, dedupe, messages, `${file}-${n}`, file));
+				}
+				// The read tool's own hint really is on the 3rd and 4th raw results...
+				expect(reads[2]!.raw).not.toBe(reads[0]!.raw);
+				expect(reads[3]!.raw).not.toBe(reads[2]!.raw);
+				// ...and on the long file the `[Showing lines …]` notice follows it.
+				if (file === "long.ts") expect(reads[2]!.raw).not.toEndWith("proceed with the edit.]");
+				expect(reads.slice(1).map(r => r.served)).toEqual(Array(3).fill(DEDUPED_RESULT_NOTICE));
 			}
-			// The read tool's own hint really is on the 3rd and 4th raw results.
-			expect(rawTexts[2]).not.toBe(rawTexts[0]);
-			expect(rawTexts[3]).not.toBe(rawTexts[2]);
-			expect(served.slice(1)).toEqual([DEDUPED_RESULT_NOTICE, DEDUPED_RESULT_NOTICE, DEDUPED_RESULT_NOTICE]);
-		} finally {
-			removeSyncWithRetries(cwd);
-		}
+		});
+	});
+
+	it("serves a change in full where read puts its hint when the hint names another path", async () => {
+		const versions = [`# Log\n\n${repeatHint(7, "other.ts")}`, `# Log\n\n${repeatHint(8, "other.ts")}`, "# Log"];
+		expect(await serveRawReads(versions)).toEqual(versions);
+	});
+
+	it("serves a change in full to a hint for this very read that sits mid-content", async () => {
+		const versions = [`# Log\n\n${repeatHint(7, RAW_NOTES)}\n\nend`, `# Log\n\n${repeatHint(8, RAW_NOTES)}\n\nend`];
+		expect(await serveRawReads(versions)).toEqual(versions);
 	});
 });
