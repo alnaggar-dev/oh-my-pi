@@ -204,7 +204,7 @@ describe("TanCommandController", () => {
 		const harness = createContext();
 		const cwd = harness.tempDir.path();
 		const authStorage = createInMemoryAuthStorage();
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
 		const reasoningModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!reasoningModel) throw new Error("Expected bundled test model");
