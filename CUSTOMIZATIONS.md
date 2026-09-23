@@ -351,7 +351,7 @@ does what I wanted".
 - **Files:** `packages/coding-agent/src/session/model-controls.ts`,
   `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/agent-session-events.ts`,
   `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/footer.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/component.ts`,
-  `packages/tui/src/theme/theme-class.ts`, `packages/tui/src/render/render-utils.ts`,
+  `packages/tui/src/theme/theme-class.ts`,
   `docs/settings.md` (the `auto_thinking` segment description).
 - **Depends on upstream:** the `StatusLineSegment` / `StatusLineSegmentId` shape and the
   `SEGMENTS` registry. **Three hardcoded lists are NOT derived from each other and each
@@ -421,38 +421,6 @@ does what I wanted".
     in-flight contribution; surviving sessions continue receiving activity updates.
   - A session created without a handed-down tally keeps its own independent counts.
 - **Check:** `bun test packages/coding-agent/test/auto-thinking-tally.test.ts packages/coding-agent/test/task/persisted-revive.test.ts packages/coding-agent/test/modes/controllers/tan-command-controller.test.ts`
-
-### Effort level shown in the pinned Subagents list
-
-- **What it does:** Each row of the pinned Subagents block names the effort that agent
-  runs at — a dim `⟨high⟩` badge after the id and role badge.
-- **Why:** The HUD showed which model each subagent used but not how hard it was told
-  to think, which is the more expensive half of the choice.
-- **Files:** `packages/coding-agent/src/modes/interactive-mode.ts`,
-  `packages/tui/src/render/render-utils.ts`.
-- **Depends on upstream:** `AgentProgress.resolvedThinkingLevel` and its settled twin
-  on `AgentResult` — **the badge is derived from this field, never computed
-  independently**, so it is correct as long as upstream keeps publishing it; if
-  upstream stops setting it the badge disappears quietly. `thinkingLevelBadge(level,
-  theme)` — contract: empty string for `undefined` and `Inherit`, leading-space dim
-  bracketed label otherwise. **`formatFeedModelBadge`'s exact argument list
-  `(modelIdentity, thinkingLevel, advisor, uiTheme, maxWidth)` — a reordered or added
-  parameter is a silent mis-render, not a type error.** Also
-  `isFeedModelBadgeEnabled()` / `FEED_MODEL_BADGE_WIDTH` and the
-  `task.showResolvedModelBadge` setting (the effort badge deliberately shares that one
-  gate), plus the row-budget helpers `truncateToWidth`, `visibleWidth`,
-  `renderTreeList`, `layoutPinnedHud`.
-- **Tripwire paths:** `packages/tui/src/tools/task.ts`, `packages/tui/src/render/render-utils.ts`, `packages/coding-agent/src/task/executor.ts`
-- **Must still be true:**
-  - A running subagent reporting a resolved effort shows it as a bracketed badge after
-    its id and role badge.
-  - A subagent with no explicit effort shows no badge, and its row is otherwise
-    unchanged.
-  - On a narrow terminal the row never overflows — the badge is truncated or dropped
-    first.
-  - The effort badge is hidden whenever the resolved-model badge is hidden; it never
-    appears on its own.
-- **Check:** `bun test packages/coding-agent/test/subagent-hud-render.test.ts`
 
 ## legacy-pi
 
