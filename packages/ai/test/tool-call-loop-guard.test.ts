@@ -46,6 +46,7 @@ describe("ToolCallLoopGuard", () => {
 
 		expect(detection).toEqual({
 			kind: "repeated_tool_call",
+			mode: "consecutive",
 			toolName: "bash",
 			count: 5,
 			resultSummary: "1263 passed, 4 skipped",
@@ -340,6 +341,7 @@ describe("ToolCallLoopGuard multi-call turns", () => {
 			),
 		).toEqual({
 			kind: "repeated_tool_call",
+			mode: "consecutive",
 			toolName: "bash",
 			count: 2,
 			resultSummary: "command output",
@@ -378,6 +380,7 @@ describe("ToolCallLoopGuard multi-call turns", () => {
 		}
 		expect(detection).toMatchObject({
 			kind: "repeated_tool_call",
+			mode: "cumulative",
 			toolName: "glob",
 			count: 10,
 			argumentsSummary: '{"path":".git/index.lock"}',
