@@ -499,7 +499,6 @@ function buildExecutorOptions(
 		compactionThresholdOverride: policy.compactionThresholdOverride,
 		parentActiveModelPattern: policy.parentActiveModelPattern,
 		thinkingLevel: policy.effectiveAgent.thinkingLevel,
-		autoThinkingActivity: session.autoThinkingTally?.(),
 		effort: request.effort,
 		...(policy.schema.source === "none"
 			? {}

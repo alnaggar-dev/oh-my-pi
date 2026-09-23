@@ -59,7 +59,6 @@ import { type ArtifactManager, writeArtifact } from "../session/artifacts";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
 import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
-import type { AutoThinkingTally } from "../session/model-controls";
 import { hasConversationalHistory, SessionManager } from "../session/session-manager";
 import { truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import {
@@ -467,11 +466,6 @@ export interface ExecutorOptions {
 	 */
 	parentActiveModelPattern?: string;
 	thinkingLevel?: ConfiguredThinkingLevel;
-	/**
-	 * The spawning session's shared auto-thinking tally, so this subagent's
-	 * classifications count toward the parent's status-line readout.
-	 */
-	autoThinkingActivity?: AutoThinkingTally;
 	/** Caller-requested coarse effort (`lo`/`med`/`hi`); maps onto the resolved model's supported thinking range and wins over {@link thinkingLevel}. */
 	effort?: TaskEffort;
 	/** Schema used to validate the final structured completion. */
@@ -3845,9 +3839,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					model || modelOverride === undefined ? undefined : inheritedRetryFallbackChain,
 				thinkingLevel: effectiveThinkingLevel,
 				thinkingLevelCeiling: spawnEffortCeiling,
-				// Shared with the whole spawn tree (revival included): a revived
-				// worker keeps tallying into the session that spawned it.
-				autoThinkingActivity: options.autoThinkingActivity,
 				// A revived session restores the tier history it persisted (including
 				// tiers a provider rejected or an extension changed since spawn); only
 				// the fresh spawn resolves the per-agent override.

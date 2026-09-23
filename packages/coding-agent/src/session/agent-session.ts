@@ -5596,8 +5596,8 @@ export class AgentSession implements SettingsScope {
 	}
 
 	/**
-	 * The same tally object, mutable: handed to subagent sessions so their
-	 * classifications roll up into this session's counters.
+	 * The same tally object, mutable: `/tan` hands it to its tangent, which runs
+	 * on a fresh subagent bus, so the tangent still counts toward this tree.
 	 */
 	autoThinkingTally(): AutoThinkingTally {
 		return this.#models.autoThinkingTally;

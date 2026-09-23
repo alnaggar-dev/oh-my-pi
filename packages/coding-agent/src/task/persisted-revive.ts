@@ -154,7 +154,6 @@ export function createPersistedSubagentReviverFactory(
 			const { session } = await createAgentSession({
 				cwd: ctx.session.sessionManager.getCwd(),
 				authStorage: ctx.authStorage,
-				autoThinkingActivity: ctx.session.autoThinkingTally(),
 				// Revived agents join the root session tree, so their observability
 				// frames ride the same bus the RPC/collab surfaces subscribed to.
 				subagentEventBus: ctx.subagentEventBus,

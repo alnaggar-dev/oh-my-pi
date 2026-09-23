@@ -38,6 +38,7 @@ import type { ModelCycleResult, ResolvedRoleModel, RoleModelCycle, RoleModelCycl
 import { formatRoleModelValue, resolveRoleModelFull } from "./role-models";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
 import type { SessionManager } from "./session-manager";
+import type { EventBus } from "../utils/event-bus";
 
 import { cfgDefaultThinkingLevel, cfgProvidersFireworksTier } from "./settings";
 import { cfgDisabledProviders, cfgEnabledModels } from "../config/model-settings";
@@ -153,6 +154,21 @@ class AutoThinkingTreeActivity {
 
 const autoThinkingTrees = new WeakMap<AutoThinkingTally, AutoThinkingTreeActivity>();
 
+/** One tally per spawn tree, keyed by the `subagentEventBus` every spawn path hands down. */
+const busTallies = new WeakMap<EventBus, AutoThinkingTally>();
+
+/**
+ * Tally for a new session on `bus`. A `handedDown` tally wins (`/tan` runs on a
+ * fresh bus but counts toward its dispatch owner) and, when `bus` has none yet,
+ * becomes the bus's tally so that session's own subagents roll up with it.
+ */
+export function autoThinkingTallyFor(bus: EventBus, handedDown?: AutoThinkingTally): AutoThinkingTally {
+	const own = busTallies.get(bus);
+	const tally = handedDown ?? own ?? { classifying: false, classified: 0, fallback: 0, inFlight: 0 };
+	if (!own) busTallies.set(bus, tally);
+	return tally;
+}
+
 /** Owns model selection, thinking effort, role cycling, and service tiers. */
 export class ModelControls {
 	readonly #host: ModelControlsHost;
@@ -256,7 +272,7 @@ export class ModelControls {
 		return this.#autoActivity;
 	}
 
-	/** Same object as {@link autoThinkingActivity}, mutable for subagent roll-up. */
+	/** Same object as {@link autoThinkingActivity}, mutable for `/tan` roll-up. */
 	get autoThinkingTally(): AutoThinkingTally {
 		return this.#autoActivity;
 	}

@@ -32,7 +32,6 @@ import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
 import type { ClientBridge } from "../session/client-bridge";
 import type { CustomMessage } from "../session/messages";
-import type { AutoThinkingTally } from "../session/model-controls";
 import type { UsageStatistics } from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
@@ -412,11 +411,6 @@ export interface ToolSession {
 		event: BeforeSubagentSpawnEvent,
 		signal?: AbortSignal,
 	): Promise<BeforeSubagentSpawnEventResult | undefined>;
-	/**
-	 * Live auto-thinking tally of this session, handed to subagent spawns so a
-	 * child's classifications land on the spawning session's status-line readout.
-	 */
-	autoThinkingTally?: () => AutoThinkingTally;
 	/** Auth storage for passing to subagents (avoids re-discovery) */
 	authStorage?: import("../session/auth-storage").AuthStorage;
 	/** Model registry for passing to subagents (avoids re-discovery) */
