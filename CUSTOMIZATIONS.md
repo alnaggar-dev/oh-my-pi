@@ -2,7 +2,7 @@
 
 What this fork changes, why, and what must still be true after an upstream sync.
 
-**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `legacy-pi`), one
+**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `legacy-pi`, `Accounts`), one
 `###` per feature under it, seven fields per feature: **What it does**, **Why**, **Files**
 (the files the feature *owns* — nothing else may list my files), **Depends on upstream**,
 **Tripwire paths** (upstream files the sync probe reads), **Must still be true**, **Check**.
@@ -481,6 +481,41 @@ does what I wanted".
     in-process copy of each pi package.
   - Legacy `@mariozechner/*` and `@earendil-works/*` specifiers still remap.
 - **Check:** `bun test packages/coding-agent/test/extensibility/legacy-pi-canonical-require.test.ts packages/coding-agent/test/pi-scope-aliases.test.ts`
+
+## Accounts
+
+### Soonest-reset account is used first
+
+- **What it does:** When several accounts of one provider can serve a request, the
+  usage-based ranking picks the one whose long (weekly) window resets soonest, as long
+  as that window still has headroom. Resets within the metric tolerance (~30 min) fall
+  back to upstream's required-drain order. Applies to every provider using the shared
+  comparator (Claude, Codex, Antigravity, and API-key ranking).
+- **Why:** Upstream's required-drain score (`headroom / hours left`) could prefer a
+  barely-used account resetting in 6 days over a half-used one resetting in 3, so quota
+  on the sooner-resetting account expired unused.
+- **Files:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`.
+- **Depends on upstream:** `compareUsageRankedCandidatePriority` in `auth/rank.ts` and its
+  order of checks (blocked, plan priority, reserve, priority boost, hot 5h guard,
+  measured-first, per-account policy priority) — the new rule is inserted after the
+  account-policy priority and before required drain; the `UsageRankedCandidate` shape
+  built in both `#rankOAuthSelections` and `#rankApiKeySelections` of
+  `CredentialSelector` in `auth/select.ts`; `windowResetAt` in `auth/usage-report.ts`;
+  `compareUsageRankingMetric`'s relative tolerance; each provider strategy's
+  `findWindowLimits` choosing the secondary window (for Claude, the more pressured of the
+  shared and model-tier weekly rows); session affinity pins (a pinned session skips
+  ranking until the pin is evicted).
+- **Tripwire paths:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`, `packages/ai/src/auth/usage-report.ts`, `packages/ai/src/auth/affinity.ts`, `packages/ai/src/usage.ts`, `packages/ai/src/usage/claude.ts`, `packages/ai/src/usage/openai-codex.ts`, `packages/ai/src/usage/google-antigravity.ts`
+- **Must still be true:**
+  - Among unblocked, measured accounts below the 5h hot threshold, the one whose weekly
+    window resets earliest is selected, regardless of how much of it is already used.
+  - An account whose weekly window is fully spent sorts behind accounts with headroom,
+    even if it resets first.
+  - An account with no known weekly reset time sorts after those with one.
+  - Blocked accounts, plan priority, reserve, the 85% 5h hot guard,
+    measured-before-unmeasured, and a user-set account priority still take precedence
+    over reset order.
+- **Check:** `bun test packages/ai/test/auth-storage-codex-selection.test.ts packages/ai/test/auth-storage-claude-fable-fallback.test.ts packages/ai/test/auth-storage-antigravity-selection.test.ts packages/coding-agent/test/auth-storage-rotation.test.ts`
 
 ---
 
