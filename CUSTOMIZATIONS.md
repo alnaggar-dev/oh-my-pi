@@ -35,7 +35,8 @@ does what I wanted".
   `onTurnEnd`, the `includeThinking` host flag),
   `packages/coding-agent/src/session/session-advisors.ts` (per-step gate in
   `onPrimaryTurnEnd`, the two build-time settings, the `setContextPrompt` skip),
-  `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `docs/advisor-watchdog.md`,
+  `packages/coding-agent/src/modes/controllers/selector-controller.ts`,
+  `docs/advisor-watchdog.md` (the "Controlling token spend" section),
   `docs/settings.md` (the three `advisor.*` rows and the reworded advisor intro).
 - **Depends on upstream:** `AdvisorRuntime.onTurnEnd(messages, { willContinue })` and
   its `willContinue` flag — the gate must run after `#latestMessages` is set and
@@ -69,7 +70,8 @@ does what I wanted".
 - **Files:** `packages/coding-agent/src/advisor/review-cadence.ts`
   (`ADVISOR_STATEFUL_READ_TIER_TOOLS`, `ADVISOR_REVIEW_EXEMPT_TOOLS`,
   `hasReviewWorthyToolCall`), `packages/coding-agent/src/advisor/config.ts` (only the
-  `filterAdvisorTools` comment, kept accurate about which legacy tool aliases exist).
+  `filterAdvisorTools` comment, kept accurate about which legacy tool aliases exist),
+  `docs/advisor-watchdog.md` (the `advisors[].tools` legacy-alias sentence).
 - **Depends on upstream:** `READ_ONLY_TOOL_NAMES` in
   `packages/coding-agent/src/task/read-only-policy.ts`. **The exempt table is DERIVED
   from it at module load, never hardcoded — that is the safety property.** A new
@@ -157,7 +159,10 @@ does what I wanted".
   and 13% of its investigation calls were byte-identical repeats that would re-inflate
   exactly what the eviction just trimmed.
 - **Files:** `packages/coding-agent/src/advisor/tool-result-eviction.ts`,
-  `packages/coding-agent/src/advisor/tool-result-dedupe.ts`, `packages/coding-agent/src/session/session-advisors.ts`,
+  `packages/coding-agent/src/advisor/tool-result-dedupe.ts`, `packages/coding-agent/src/session/session-advisors.ts`
+  (`evictedSinceAnchor`, the eviction step at the top of `#maintainAdvisorContext`, the
+  dedupe call in the advisor `afterToolCall` hook), `docs/advisor-watchdog.md` (maintenance
+  step 1 and the repeat-call paragraph),
   `packages/ai/src/utils/tool-call-loop-guard.ts` (`toolCallSignature`, fork-added; must keep
   ignoring the agent-authored `intent` field and key order).
 - **Depends on upstream:** the in-place rewrite contract for tool results — `prunedAt`
@@ -377,8 +382,10 @@ does what I wanted".
   actually visible. `omp gallery --surface segment --segment auto_thinking` previews it.
 - **Why:** With `auto` on there was no way to see whether the classifier was working,
   what it picked, or how often it was silently failing.
-- **Files:** `packages/coding-agent/src/session/model-controls.ts`,
-  `packages/coding-agent/src/session/agent-session.ts`,
+- **Files:** `packages/coding-agent/src/session/model-controls.ts` (`AutoThinkingActivity`,
+  `MIN_CLASSIFYING_VISIBLE_MS`, the pending hold, `subscribeAutoThinkingActivity`),
+  `packages/coding-agent/src/session/agent-session.ts` (`autoThinkingActivity()`,
+  `subscribeAutoThinkingActivity`),
   `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/footer.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/component.ts`,
   `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`, `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`,
   `docs/settings.md` (the `auto_thinking` segment description).
@@ -433,8 +440,11 @@ does what I wanted".
   which runs on a fresh bus, hands its owner's tally down explicitly.
 - **Why:** Most classifications happen inside subagents, so without roll-up the
   parent's status line showed almost nothing during a busy multi-agent turn.
-- **Files:** `packages/coding-agent/src/session/model-controls.ts`,
-  `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/agent-session.ts`,
+- **Files:** `packages/coding-agent/src/session/model-controls.ts` (`AutoThinkingTally`,
+  `AutoThinkingTreeActivity`, `autoThinkingTallyFor`, the `activity` option, `dispose`),
+  `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/agent-session.ts`
+  (the `activity: config.autoThinkingActivity` pass-through, `autoThinkingTally()`, the
+  type re-exports, `#models.dispose()`),
   `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`.
 - **Depends on upstream:** every spawn path forwarding the parent's `subagentEventBus`
   into `createAgentSession` (task executor spawn and in-turn revival, structured
