@@ -49,21 +49,20 @@ const TOOLS: Context["tools"] = [
 	},
 ];
 
-async function captureWireBody(messages: Message[]): Promise<MessageCreateParams> {
+async function captureWireBody(
+	messages: Message[],
+	{ apiKey = "sk-ant-api-test", systemPrompt = ["You are a precise assistant."] } = {},
+): Promise<MessageCreateParams> {
 	let body: MessageCreateParams | undefined;
 	const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
-		body = JSON.parse(String(init?.body ?? "{}")) as MessageCreateParams;
+		body = (await new Response(init?.body).json()) as MessageCreateParams;
 		return new Response(
 			JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "captured" } }),
 			{ status: 400, headers: { "Content-Type": "application/json" } },
 		);
 	}) as typeof fetch;
 
-	await streamAnthropic(
-		MODEL,
-		{ systemPrompt: ["You are a precise assistant."], messages, tools: TOOLS },
-		{ apiKey: "sk-ant-api-test", fetch: fetchMock },
-	)
+	await streamAnthropic(MODEL, { systemPrompt, messages, tools: TOOLS }, { apiKey, fetch: fetchMock })
 		.result()
 		.catch(() => undefined);
 
@@ -212,5 +211,17 @@ describe("anthropic rewrite-boundary caching", () => {
 		// The breakpoint falls back to the last cacheable block of that message.
 		expect(cachedMessageIndices(body)).toContain(3);
 		expect(countCacheBreakpoints(body)).toBeLessThanOrEqual(4);
+	});
+
+	it("yields the boundary to the trailing breakpoint when the head already spends three", async () => {
+		// OAuth identity block + `<memories>` suffix anchor + tool anchor leave
+		// one message breakpoint, and it stays on the trailing turn.
+		const body = await captureWireBody(history(10, new Map([[2, 1_000]])), {
+			apiKey: "sk-ant-oat-test",
+			systemPrompt: ["You are a precise assistant.", "<memories>recalled note</memories>"],
+		});
+
+		expect(countCacheBreakpoints(body)).toBe(4);
+		expect(cachedMessageIndices(body)).toEqual([21]);
 	});
 });
