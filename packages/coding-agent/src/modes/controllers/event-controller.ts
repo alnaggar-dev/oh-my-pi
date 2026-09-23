@@ -225,6 +225,7 @@ export class EventController {
 	#toolArgsReveal: ToolArgsRevealController;
 	#prevHideThinking = false;
 	#handlers: AgentSessionEventHandlers;
+	#detachAutoThinkingActivity: (() => void) | undefined;
 	#terminalProgressActive = false;
 	// Coalescing window for `message_update` events at the subscription boundary.
 	// `message_update` carries the CUMULATIVE assistant message (every update
@@ -266,6 +267,13 @@ export class EventController {
 					})
 				: null,
 		);
+		// The auto-thinking classifier runs before a turn streams (or inside an
+		// idle parent's subagent), so nothing else repaints the bar's live marker
+		// and counters while it works.
+		this.#detachAutoThinkingActivity = session?.subscribeAutoThinkingActivity?.(() => {
+			this.ctx.statusLine.invalidate();
+			this.ctx.ui.requestRender();
+		});
 		this.#streamingReveal = new StreamingRevealController({
 			getSmoothStreaming: () => cfgDisplaySmoothStreaming.get(this.ctx.settings),
 			getHideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
@@ -348,17 +356,6 @@ export class EventController {
 				}
 				this.ctx.ui.requestRender(true);
 			},
-			auto_thinking_activity: async () => {
-				// The auto-thinking classifier runs before the turn starts
-				// streaming, so nothing else repaints the bar while it is in
-				// flight — without this explicit nudge the live `⟳ auto` marker
-				// would never paint on an idle status line. Kept deliberately
-				// cheap: this fires twice per classification.
-				this.ctx.statusLine.invalidate();
-				// Forced: the bar's frame is byte-identical apart from this glyph, so
-				// an unforced render can diff it away and never reach the terminal.
-				this.ctx.ui.requestRender(true);
-			},
 			goal_updated: async () => {},
 		} satisfies AgentSessionEventHandlers;
 	}
@@ -381,6 +378,8 @@ export class EventController {
 	dispose(): void {
 		this.#detachToolApprovalPreviewWaiter?.();
 		this.#detachToolApprovalPreviewWaiter = undefined;
+		this.#detachAutoThinkingActivity?.();
+		this.#detachAutoThinkingActivity = undefined;
 		this.#clearApprovalPreviewGates();
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);

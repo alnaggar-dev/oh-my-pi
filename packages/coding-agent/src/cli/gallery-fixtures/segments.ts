@@ -205,6 +205,11 @@ function variantsFor(id: StatusLineSegmentId): readonly SegmentVariantSpec[] {
 					context: { contextPercent: 72, contextTokens: 144_000, compactionSpeculation: "armed" },
 				},
 			];
+		case "auto_thinking":
+			return [
+				{ label: "classified", session: { autoThinking: { classifying: false, classified: 8, fallback: 0 } } },
+				{ label: "with fallbacks", session: { autoThinking: { classifying: false, classified: 8, fallback: 2 } } },
+			];
 		case "time":
 			return [
 				{ label: "24-hour with seconds" },

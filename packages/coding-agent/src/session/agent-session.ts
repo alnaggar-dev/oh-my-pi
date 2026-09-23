@@ -5596,6 +5596,15 @@ export class AgentSession implements SettingsScope {
 	}
 
 	/**
+	 * UI repaint hook for {@link autoThinkingActivity}: pending-state changes and
+	 * counted classifications anywhere in this tree. Not a session event, so it
+	 * never reaches RPC clients or parent sessions.
+	 */
+	subscribeAutoThinkingActivity(listener: () => void): () => void {
+		return this.#models.subscribeAutoThinkingActivity(listener);
+	}
+
+	/**
 	 * The same tally object, mutable: `/tan` hands it to its tangent, which runs
 	 * on a fresh subagent bus, so the tangent still counts toward this tree.
 	 */

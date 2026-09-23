@@ -95,9 +95,10 @@ export function formatBillingSummary(options: BillingSummaryOptions, uiTheme: Th
 }
 
 /**
- * Shared auto-thinking tally: `<glyph> 8` while every turn resolved a level,
- * `<glyph> 8·2!` once the classifier timed out or errored and a guessed level
- * was used. Callers gate on `isAutoThinking`; a missing accessor or an
+ * Shared auto-thinking tally: `<icon> 8` while every turn resolved a level,
+ * `<icon> 8·2⚠` once the classifier timed out or errored and a guessed level
+ * was used. Separator and warning come from the symbol preset (`IQ 8-2[!]`
+ * under `ascii`). Callers gate on `isAutoThinking`; a missing accessor or an
  * all-zero tally renders nothing.
  */
 export function formatAutoThinkingActivity(
@@ -107,7 +108,9 @@ export function formatAutoThinkingActivity(
 	if (!activity) return undefined;
 	const { classified, fallback } = activity;
 	if (!classified && !fallback) return undefined;
-	const tally = fallback ? `${formatNumber(classified)}·${formatNumber(fallback)}!` : formatNumber(classified);
-	const icon = uiTheme.icon.intelligence;
+	const tally = fallback
+		? `${formatNumber(classified)}${uiTheme.sep.dot.trim()}${formatNumber(fallback)}${uiTheme.status.warning}`
+		: formatNumber(classified);
+	const icon = uiTheme.symbol("icon.intelligence");
 	return icon ? `${icon} ${tally}` : tally;
 }

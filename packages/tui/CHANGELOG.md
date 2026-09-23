@@ -105,7 +105,7 @@
 
 - Prevented magic keywords from triggering spelling autocorrect and underlining
 - Added kind-filtered image, web, speech, dictation, and judge role selection with editable default fallback chains in the model hub.
-- Added the `auto_thinking` status-line segment and footer counter, showing how many turns the automatic thinking-level classifier resolved (`8`) and how many fell back to a guessed level (`8·2!`), plus a live `auto` marker on the thinking display while a classification is in flight. Included in the `full` and `nerd` presets and in the Custom right-hand defaults, reusing the existing `icon.intelligence` symbol so every symbol preset (including `ascii`) has a glyph.
+- Added the `auto_thinking` status-line segment and footer counter, showing how many turns the automatic thinking-level classifier resolved (`8`) and how many fell back to a guessed level (`8·2⚠`), plus a live `auto` marker on the thinking display while a classification is in flight. Included in the `full` and `nerd` presets and in the Custom right-hand defaults, taking its icon, separator and warning from the symbol preset so `ascii` renders plain ASCII.
 
 ## [18.2.5] - 2026-09-17
 

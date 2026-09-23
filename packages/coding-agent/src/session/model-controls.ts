@@ -82,8 +82,8 @@ export interface AutoThinkingActivity {
 }
 
 /**
- * Mutable tally shared by a session tree: the spawning session's object is
- * handed to every subagent session, so child classifications land on it.
+ * Mutable tally shared by a session tree (see {@link autoThinkingTallyFor}), so
+ * child classifications land on the root's object.
  * `inFlight` counts concurrent requests; `classifying` also includes their
  * shared display-only visibility window.
  */
@@ -97,7 +97,7 @@ export interface AutoThinkingTally {
 /** One notification channel and visibility deadline per tally, never per child. */
 class AutoThinkingTreeActivity {
 	readonly #tally: AutoThinkingTally;
-	readonly #listeners = new Set<(classifying: boolean) => void>();
+	readonly #listeners = new Set<() => void>();
 	#visibleUntil = 0;
 	#lingerTimer: NodeJS.Timeout | undefined;
 
@@ -105,13 +105,13 @@ class AutoThinkingTreeActivity {
 		this.#tally = tally;
 	}
 
-	subscribe(listener: (classifying: boolean) => void): () => void {
+	subscribe(listener: () => void): () => void {
 		this.#listeners.add(listener);
 		return () => this.#listeners.delete(listener);
 	}
 
 	#notify(): void {
-		for (const listener of this.#listeners) listener(this.#tally.classifying);
+		for (const listener of this.#listeners) listener();
 	}
 
 	begin(): void {
@@ -180,12 +180,11 @@ export class ModelControls {
 	#autoResolvedLevel: Effort | undefined;
 	/**
 	 * Mutated in place: the status line reads it every frame, so it is never
-	 * copied. Shared with every subagent session spawned from this one, so a
-	 * child's classifications roll up into the spawning session's tally.
+	 * copied. Shared by every session on this tree's subagent bus, so a child's
+	 * classifications roll up into the root's tally.
 	 */
 	readonly #autoActivity: AutoThinkingTally;
 	readonly #autoActivityTree: AutoThinkingTreeActivity;
-	readonly #unsubscribeAutoActivity: () => void;
 	#disposed = false;
 	#serviceTierByFamily: ServiceTierByFamily;
 
@@ -227,15 +226,11 @@ export class ModelControls {
 			);
 		}
 		this.#applyThinkingLevelToAgent(this.#thinkingLevel);
-		this.#unsubscribeAutoActivity = tree.subscribe(classifying =>
-			host.emit({ type: "auto_thinking_activity", classifying }),
-		);
 	}
 
-	/** Detach this host without disturbing work or visibility owned by the tree. */
+	/** Stop counting this session's classifications without disturbing the tree's work or visibility. */
 	dispose(): void {
 		this.#disposed = true;
-		this.#unsubscribeAutoActivity();
 	}
 
 	get #model(): Model | undefined {
@@ -275,6 +270,14 @@ export class ModelControls {
 	/** Same object as {@link autoThinkingActivity}, mutable for `/tan` roll-up. */
 	get autoThinkingTally(): AutoThinkingTally {
 		return this.#autoActivity;
+	}
+
+	/**
+	 * Repaint hook for the UI: fires when the tree's pending state changes and on
+	 * every counted classification, including a subagent's while this session idles.
+	 */
+	subscribeAutoThinkingActivity(listener: () => void): () => void {
+		return this.#autoActivityTree.subscribe(listener);
 	}
 
 	/** Models explicitly scoped to the session's cycle command, minus currently disabled providers. */
