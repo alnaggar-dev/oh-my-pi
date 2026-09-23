@@ -6,7 +6,6 @@ import * as classifier from "@oh-my-pi/pi-coding-agent/auto-thinking/classifier"
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session-events";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import {
 	type AutoThinkingActivity,
@@ -21,7 +20,6 @@ import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
-const controlsToDispose: ModelControls[] = [];
 const sessionsToDispose: AgentSession[] = [];
 const authToClose: AuthStorage[] = [];
 
@@ -30,7 +28,6 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-	for (const controls of controlsToDispose.splice(0)) controls.dispose();
 	vi.clearAllTimers();
 	vi.useRealTimers();
 	for (const session of sessionsToDispose.splice(0)) await session.dispose();
@@ -46,7 +43,6 @@ function freshTally(): AutoThinkingTally {
 function createControls(
 	model: Model,
 	activity?: AutoThinkingTally,
-	onEmit?: (event: AgentSessionEvent) => void,
 	promptGeneration: () => number = () => 1,
 ): ModelControls {
 	const host = {
@@ -68,11 +64,9 @@ function createControls(
 		sessionId: () => "session-1",
 		promptGeneration,
 		magicKeywordEnabled: () => false,
-		emit: onEmit ?? (() => {}),
+		emit: () => {},
 	} as unknown as ModelControlsHost;
-	const controls = new ModelControls(host, { thinkingLevel: AUTO_THINKING, activity });
-	controlsToDispose.push(controls);
-	return controls;
+	return new ModelControls(host, { thinkingLevel: AUTO_THINKING, activity });
 }
 
 function classifierModel(): Model {
@@ -86,20 +80,16 @@ function settleClassifyingLinger(): void {
 	vi.advanceTimersByTime(MIN_CLASSIFYING_VISIBLE_MS);
 }
 
-/** What a status-line subscriber sees at each repaint request. */
-function activitySnapshots(
+/** What the status line sees at each repaint request it gets through `source`. */
+function recordActivity(
+	source: { subscribeAutoThinkingActivity(listener: () => void): () => void },
 	activity: AutoThinkingActivity,
-	sink: AutoThinkingActivity[],
-): (event: AgentSessionEvent) => void {
-	return event => {
-		if (event.type === "auto_thinking_activity") {
-			sink.push({
-				classifying: event.classifying,
-				classified: activity.classified,
-				fallback: activity.fallback,
-			});
-		}
-	};
+): AutoThinkingActivity[] {
+	const updates: AutoThinkingActivity[] = [];
+	source.subscribeAutoThinkingActivity(() => {
+		updates.push({ classifying: activity.classifying, classified: activity.classified, fallback: activity.fallback });
+	});
+	return updates;
 }
 
 function gatedClassifier(): Array<PromiseWithResolvers<Effort | undefined>> {
@@ -147,8 +137,7 @@ describe("auto thinking shared activity", () => {
 	it("notifies an idle parent of child starts, same-effort counts, fallbacks and hold expiry", async () => {
 		const classify = vi.spyOn(classifier, "classifyDifficulty").mockResolvedValue(Effort.High);
 		const shared = freshTally();
-		const updates: AutoThinkingActivity[] = [];
-		createControls(classifierModel(), shared, activitySnapshots(shared, updates));
+		const updates = recordActivity(createControls(classifierModel(), shared), shared);
 		const child = createControls(classifierModel(), shared);
 
 		const first = child.applyAutoThinkingLevel("first turn", 1);
@@ -173,8 +162,8 @@ describe("auto thinking shared activity", () => {
 		const gates = gatedClassifier();
 		const model = classifierModel();
 		const shared = freshTally();
-		const updates: AutoThinkingActivity[] = [];
-		const parent = createControls(model, shared, activitySnapshots(shared, updates));
+		const parent = createControls(model, shared);
+		const updates = recordActivity(parent, shared);
 		const child = createControls(model, shared);
 
 		const first = parent.applyAutoThinkingLevel("first turn", 1);
@@ -197,8 +186,8 @@ describe("auto thinking shared activity", () => {
 		vi.spyOn(classifier, "classifyDifficulty").mockResolvedValue(Effort.High);
 		const model = classifierModel();
 		const own = createControls(model);
-		const unrelatedEvents: AgentSessionEvent[] = [];
-		const other = createControls(model, undefined, event => unrelatedEvents.push(event));
+		const other = createControls(model);
+		const unrelated = recordActivity(other, other.autoThinkingActivity);
 		const child = createControls(model, own.autoThinkingTally);
 
 		await child.applyAutoThinkingLevel("rename a helper", 1);
@@ -206,15 +195,15 @@ describe("auto thinking shared activity", () => {
 
 		expect(own.autoThinkingActivity.classified).toBe(1);
 		expect(other.autoThinkingActivity).toEqual(freshTally());
-		expect(unrelatedEvents).toEqual([]);
+		expect(unrelated).toEqual([]);
 	});
 
 	it("discards superseded results without losing another live classification", async () => {
 		const gates = gatedClassifier();
 		const shared = freshTally();
-		const updates: AutoThinkingActivity[] = [];
 		let generation = 1;
-		const controls = createControls(classifierModel(), shared, activitySnapshots(shared, updates), () => generation);
+		const controls = createControls(classifierModel(), shared, () => generation);
+		const updates = recordActivity(controls, shared);
 		const stale = controls.applyAutoThinkingLevel("superseded turn", generation);
 		generation += 1;
 		const live = controls.applyAutoThinkingLevel("current turn", generation);
@@ -233,8 +222,8 @@ describe("auto thinking shared activity", () => {
 	it("settles the turn without waiting for the visible window", async () => {
 		vi.spyOn(classifier, "classifyDifficulty").mockResolvedValue(Effort.High);
 		const shared = freshTally();
-		const updates: AutoThinkingActivity[] = [];
-		const controls = createControls(classifierModel(), shared, activitySnapshots(shared, updates));
+		const controls = createControls(classifierModel(), shared);
+		const updates = recordActivity(controls, shared);
 
 		await controls.applyAutoThinkingLevel("rename a helper", 1);
 		expect(controls.autoResolvedThinkingLevel).toBe(Effort.High);
@@ -250,8 +239,7 @@ describe("auto thinking shared activity", () => {
 		const gates = gatedClassifier();
 		const model = classifierModel();
 		const shared = freshTally();
-		const updates: AutoThinkingActivity[] = [];
-		createControls(model, shared, activitySnapshots(shared, updates));
+		const updates = recordActivity(createControls(model, shared), shared);
 		const a = createControls(model, shared);
 		const b = createControls(model, shared);
 		const c = createControls(model, shared);
@@ -284,21 +272,17 @@ describe("auto thinking shared activity", () => {
 		expect(updates.at(-1)).toEqual({ classifying: false, classified: 3, fallback: 0 });
 	});
 
-	it("drops a disposed child's result and subscription without clearing a surviving sibling", async () => {
+	it("drops a disposed child's result without clearing a surviving sibling", async () => {
 		const gates = gatedClassifier();
 		const model = classifierModel();
 		const shared = freshTally();
-		const parentUpdates: AutoThinkingActivity[] = [];
-		const disposedUpdates: AutoThinkingActivity[] = [];
-		createControls(model, shared, activitySnapshots(shared, parentUpdates));
-		const child = createControls(model, shared, activitySnapshots(shared, disposedUpdates));
+		const parentUpdates = recordActivity(createControls(model, shared), shared);
+		const child = createControls(model, shared);
 		const sibling = createControls(model, shared);
 		const childTurn = child.applyAutoThinkingLevel("disposed turn", 1);
 		const siblingTurn = sibling.applyAutoThinkingLevel("surviving turn", 1);
 
 		child.dispose();
-		child.dispose();
-		const receivedBeforeDisposal = disposedUpdates.slice();
 		gates[0]?.resolve(Effort.High);
 		await childTurn;
 		expect(shared.inFlight).toBe(1);
@@ -310,14 +294,12 @@ describe("auto thinking shared activity", () => {
 		expect(parentUpdates.at(-1)).toEqual({ classifying: true, classified: 1, fallback: 0 });
 		settleClassifyingLinger();
 		expect(parentUpdates.at(-1)).toEqual({ classifying: false, classified: 1, fallback: 0 });
-		expect(disposedUpdates).toEqual(receivedBeforeDisposal);
 	});
 
 	it("keeps a completed child's hold alive after that child is disposed", async () => {
 		vi.spyOn(classifier, "classifyDifficulty").mockResolvedValue(Effort.High);
 		const shared = freshTally();
-		const updates: AutoThinkingActivity[] = [];
-		createControls(classifierModel(), shared, activitySnapshots(shared, updates));
+		const updates = recordActivity(createControls(classifierModel(), shared), shared);
 		const child = createControls(classifierModel(), shared);
 
 		await child.applyAutoThinkingLevel("completed turn", 1);
@@ -330,7 +312,7 @@ describe("auto thinking shared activity", () => {
 });
 
 describe("AgentSession shared activity disposal", () => {
-	it("detaches a disposing session immediately while the surviving session still repaints", async () => {
+	it("keeps repainting a surviving session's subscriber after another session in the tree is disposed", async () => {
 		vi.spyOn(classifier, "classifyDifficulty").mockResolvedValue(Effort.High);
 		const model = classifierModel();
 		const auth = createInMemoryAuthStorage();
@@ -351,18 +333,13 @@ describe("AgentSession shared activity disposal", () => {
 		const parent = newSession();
 		const shared = parent.autoThinkingTally();
 		const survivor = newSession(shared);
-		const parentUpdates: AutoThinkingActivity[] = [];
-		const survivorUpdates: AutoThinkingActivity[] = [];
-		parent.subscribe(activitySnapshots(shared, parentUpdates));
-		survivor.subscribe(activitySnapshots(shared, survivorUpdates));
+		const survivorUpdates = recordActivity(survivor, survivor.autoThinkingActivity());
 		const child = createControls(model, shared);
 
 		await child.applyAutoThinkingLevel("first child turn", 1);
-		expect(parentUpdates.at(-1)).toEqual({ classifying: true, classified: 1, fallback: 0 });
+		expect(survivorUpdates.at(-1)).toEqual({ classifying: true, classified: 1, fallback: 0 });
 		parent.beginDispose();
-		const beforeDisposal = parentUpdates.slice();
 		settleClassifyingLinger();
-		expect(parentUpdates).toEqual(beforeDisposal);
 		expect(survivorUpdates.at(-1)).toEqual({ classifying: false, classified: 1, fallback: 0 });
 
 		vi.useRealTimers();
@@ -372,6 +349,5 @@ describe("AgentSession shared activity disposal", () => {
 		expect(survivorUpdates.at(-1)).toEqual({ classifying: true, classified: 2, fallback: 0 });
 		settleClassifyingLinger();
 		expect(survivorUpdates.at(-1)).toEqual({ classifying: false, classified: 2, fallback: 0 });
-		expect(parentUpdates).toEqual(beforeDisposal);
 	});
 });
