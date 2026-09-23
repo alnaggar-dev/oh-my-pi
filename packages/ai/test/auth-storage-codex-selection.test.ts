@@ -3146,7 +3146,7 @@ describe("AuthStorage codex oauth ranking", () => {
 		expect(elapsedMs).toBeLessThan(1_000);
 	});
 
-	test("weights 3 accounts by weekly drain rate", async () => {
+	test("prefers the account whose weekly window resets soonest", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 
 		await authStorage.credentials.set("openai-codex", [
@@ -3181,8 +3181,8 @@ describe("AuthStorage codex oauth ranking", () => {
 		);
 
 		const counts = await countApiKeySelections(authStorage, "openai-codex", "weighted-codex-three");
-		expect(countFor(counts, "api-acct-slow")).toBeGreaterThan(countFor(counts, "api-acct-medium"));
-		expect(countFor(counts, "api-acct-slow")).toBeGreaterThan(countFor(counts, "api-acct-fast"));
+		expect(countFor(counts, "api-acct-fast")).toBeGreaterThan(countFor(counts, "api-acct-medium"));
+		expect(countFor(counts, "api-acct-fast")).toBeGreaterThan(countFor(counts, "api-acct-slow"));
 	});
 
 	test("handles usage fetch failure gracefully (null report)", async () => {
@@ -4161,7 +4161,7 @@ describe("AuthStorage claude oauth ranking", () => {
 		expect(apiKey).toBe("api-acct-soon");
 	});
 
-	test("weights 3 accounts by secondary drain rate", async () => {
+	test("prefers the account whose secondary window resets soonest", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 
 		await authStorage.credentials.set("anthropic", [
@@ -4196,8 +4196,8 @@ describe("AuthStorage claude oauth ranking", () => {
 		);
 
 		const counts = await countApiKeySelections(authStorage, "anthropic", "weighted-claude-three");
-		expect(countFor(counts, "api-acct-slow")).toBeGreaterThan(countFor(counts, "api-acct-medium"));
-		expect(countFor(counts, "api-acct-slow")).toBeGreaterThan(countFor(counts, "api-acct-fast"));
+		expect(countFor(counts, "api-acct-fast")).toBeGreaterThan(countFor(counts, "api-acct-medium"));
+		expect(countFor(counts, "api-acct-fast")).toBeGreaterThan(countFor(counts, "api-acct-slow"));
 	});
 
 	test("selects the account with lower Fable weekly usage for Claude Fable requests", async () => {
