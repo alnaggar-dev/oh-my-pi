@@ -234,34 +234,39 @@ does what I wanted".
 
 ### Bounded repeated tool calls inside one advisor review
 
-- **What it does:** The advisor's private loop counts its own repeated tool calls. At
-  the threshold it gets one corrective message; if it repeats anyway the review is
-  aborted. Repeats are counted across the whole review, so alternating between two
-  calls is bounded too.
-- **Why:** The advisor runs a loop that never passes through the main session's guards,
-  so a model re-issuing one failing call could burn dozens of requests inside a single
-  "successful" review.
-- **Files:** `packages/coding-agent/src/advisor/loop-guard.ts`,
-  `packages/ai/src/utils/tool-call-loop-guard.ts` (the `cumulative` option),
-  `packages/coding-agent/src/session/session-advisors.ts` (the `AdvisorLoopGuard` wiring),
-  `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md` (reworded:
-  the corrective no longer says "consecutive" or "this turn", because repeats are
-  now counted cumulatively across the whole review).
-- **Depends on upstream:** the shared settings `model.toolCallLoopGuard.enabled` /
-  `.threshold` / `.exemptTools` (one knob governs both loops);
-  `renderToolCallLoopRedirect`; `ToolCallLoopGuard` / `RepeatedToolCallDetection`; the
-  `AgentTurnEndContext` shape, and the converter the advisor actually runs —
-  `convertToLlmForSideRequest` (`session-provider-boundary.ts`), not the agent core's
-  default. The corrective is a `user` message on purpose: that survives every
-  converter, whereas `custom` only survives this one.
-- **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/session/messages.ts`, `packages/coding-agent/src/session/session-provider-boundary.ts`, `packages/coding-agent/src/session/stream-guards.ts`, `packages/agent/src/types.ts`
+- **What it does:** The advisor's loop guard also counts each identical tool call over
+  the whole review, not just back-to-back, so an advisor alternating between two calls
+  is bounded too: at five times `model.toolCallLoopGuard.threshold` it gets upstream's
+  corrective, then upstream's abort. The corrective says "consecutive" only when a
+  back-to-back run tripped it.
+- **Why:** Upstream's advisor guard only counts consecutive runs, so an A/B/A/B loop
+  never trips it and burns requests inside one "successful" review. The fork's first
+  cut dropped "consecutive" and "this turn" from the shared corrective, which also
+  reaches the main session, where it became a persisted, session-wide "NEVER call …
+  again".
+- **Files:** `packages/coding-agent/src/advisor/loop-guard.ts` (`cumulative: true`),
+  `packages/ai/src/utils/tool-call-loop-guard.ts` (the `cumulative` option,
+  `#recordCumulative`, `RepeatedToolCallDetection.mode`, and the exported
+  `toolCallSignature` the tally keys on),
+  `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md` (the
+  `{{#if consecutive}}` guard), `packages/coding-agent/src/session/tool-call-loop-redirect.ts`
+  (passes `consecutive`), `docs/advisor-watchdog.md` (the runaway-tool-loop bullet).
+- **Depends on upstream:** `AdvisorLoopGuard` and its "one corrective, then abort",
+  "reset each update" and "disabled means unbounded" rules; `ToolCallLoopGuard.recordTurn`
+  (the only fork line in its body hands the below-threshold case to
+  `#recordCumulative`); the shared settings `model.toolCallLoopGuard.enabled` /
+  `.threshold` / `.exemptTools`; `renderToolCallLoopRedirect`, shared by the main
+  session's `LoopGuards` and the advisor.
+- **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md`, `packages/coding-agent/src/session/stream-guards.ts`, `packages/coding-agent/src/config/settings-schema.ts`
 - **Must still be true:**
-  - An advisor repeating a call up to the threshold gets one corrective and still makes
-    its next request.
-  - Repeating again after the corrective aborts the update instead of looping.
-  - Repeat counting starts fresh after a context reset or update boundary.
-  - With `model.toolCallLoopGuard.enabled: false`, the advisor is not bounded by it.
-- **Check:** `bun test packages/coding-agent/test/advisor-tool-call-loop-guard.test.ts`
+  - An advisor alternating two identical calls gets one corrective once either call
+    reaches five times the threshold, and the review aborts if it keeps alternating.
+  - Only the advisor's guard sets `cumulative`; the main session's guard stays
+    consecutive-only (a session-long tally would trip on legitimate re-reads).
+  - A consecutive detection's corrective says "N consecutive times"; a cumulative one
+    says "N times". Both keep "this turn".
+  - `toolCallSignature` ignores the `intent` field and object key order.
+- **Check:** `bun test packages/coding-agent/test/advisor-tool-call-loop-guard.test.ts packages/ai/test/tool-call-loop-guard.test.ts packages/coding-agent/test/agent-session-tool-call-loop-guard.test.ts`
 
 ### Advisor keeps its context across the primary's per-turn prune
 

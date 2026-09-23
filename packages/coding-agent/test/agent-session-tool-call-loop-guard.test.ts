@@ -111,6 +111,7 @@ describe("AgentSession tool-call loop guard", () => {
 		expect(contexts).toHaveLength(3);
 		expect(JSON.stringify(contexts[2]!.messages)).toContain("tool_call_loop_detected");
 		expect(JSON.stringify(contexts[2]!.messages)).toContain("1263 passed, 4 skipped");
+		expect(JSON.stringify(contexts[2]!.messages)).toContain("You called `bash` 2 consecutive times");
 		const redirects = session.agent.state.messages.filter(
 			(message): message is CustomMessage =>
 				message.role === "custom" && message.customType === "tool-call-loop-redirect",
