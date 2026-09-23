@@ -80,14 +80,6 @@ export type AgentSessionEvent =
 			/** The level `auto` resolved to this turn, once classified. */
 			resolved?: Effort;
 	  }
-	| {
-			/**
-			 * Emitted when the auto-thinking classifier starts or stops running, so
-			 * the status line can repaint its live marker.
-			 */
-			type: "auto_thinking_activity";
-			classifying: boolean;
-	  }
 	| { type: "goal_updated"; goal: Goal | null; state?: GoalModeState }
 	// Coalesced snapshot of the displayable steering/follow-up queue: emitted
 	// whenever it differs from the last `queue_update` (enqueue, dequeue on
