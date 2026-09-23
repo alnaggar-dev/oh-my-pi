@@ -30,16 +30,21 @@ does what I wanted".
 - **Why:** One review per step on a long turn was the biggest advisor bill; a review
   averages ~$0.11.
 - **Files:** `packages/coding-agent/src/config/settings-schema.ts`,
-  `packages/coding-agent/src/advisor/runtime.ts`, `packages/coding-agent/src/session/session-advisors.ts`,
+  `packages/coding-agent/src/advisor/review-cadence.ts` (`reviewGate`),
+  `packages/coding-agent/src/advisor/runtime.ts` (the `shouldReview` option on
+  `onTurnEnd`, the `includeThinking` host flag),
+  `packages/coding-agent/src/session/session-advisors.ts` (per-step gate in
+  `onPrimaryTurnEnd`, the two build-time settings, the `setContextPrompt` skip),
   `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `docs/advisor-watchdog.md`,
   `docs/settings.md` (the three `advisor.*` rows and the reworded advisor intro).
 - **Depends on upstream:** `AdvisorRuntime.onTurnEnd(messages, { willContinue })` and
-  its `willContinue` flag; the settings-schema entry shape, its
-  `ui.condition: "advisorEnabled"` gate and `SettingValue<>` type derivation; the
-  settings-change rebuild switch in `selector-controller.ts` and the runtime signature
-  in `session-advisors.ts`, which includes both build-time content settings;
-  `formatSessionHistoryMarkdown`'s `includeThinking` option; the advisor
-  system-prompt assembly and `#advisorContextPrompt`.
+  its `willContinue` flag — the gate must run after `#latestMessages` is set and
+  before `#renderDelta`, which advances the review cursor; the settings-schema entry
+  shape, its `ui.condition: "advisorEnabled"` gate and `SettingValue<>` type
+  derivation; the settings-change rebuild switch in `selector-controller.ts` and the
+  runtime signature in `session-advisors.ts`, which includes both build-time content
+  settings; `formatSessionHistoryMarkdown`'s `includeThinking` option; the advisor
+  system-prompt assembly, `#advisorContextPrompt` and `setContextPrompt`.
 - **Tripwire paths:** `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`
 - **Must still be true:**
   - With `reviewOn: turn`, no advisor request is made for any mid-turn step, and that
@@ -49,6 +54,8 @@ does what I wanted".
     `projectContext: false` keeps the `<project-context>` block out of its prompt.
   - Changing `includeThinking` or `projectContext` mid-session rebuilds the advisors;
     changing `reviewOn` does not need a rebuild.
+  - With `projectContext: false`, a context-file change does not rebuild the advisors,
+    and turning the setting on later uses the latest context prompt.
 - **Check:** `bun test packages/coding-agent/test/advisor-live-settings.test.ts packages/coding-agent/test/advisor-review-cadence.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
 
 ### Read-only tools skipped by the `mutation` cadence
@@ -59,9 +66,9 @@ does what I wanted".
   change stored state (`retain`, `memory_edit`, `checkpoint`, `rewind`).
 - **Why:** Reviewing a step that only read files spends a full advisor request on work
   that cannot break anything.
-- **Files:** `packages/coding-agent/src/advisor/runtime.ts`
+- **Files:** `packages/coding-agent/src/advisor/review-cadence.ts`
   (`ADVISOR_STATEFUL_READ_TIER_TOOLS`, `ADVISOR_REVIEW_EXEMPT_TOOLS`,
-  `#shouldReviewMidTurn`), `packages/coding-agent/src/advisor/config.ts` (only the
+  `hasReviewWorthyToolCall`), `packages/coding-agent/src/advisor/config.ts` (only the
   `filterAdvisorTools` comment, kept accurate about which legacy tool aliases exist).
 - **Depends on upstream:** `READ_ONLY_TOOL_NAMES` in
   `packages/coding-agent/src/task/read-only-policy.ts`. **The exempt table is DERIVED
@@ -93,17 +100,14 @@ does what I wanted".
 - **Why:** One tool name covers both "show me the peers" and "kill that job", so a
   name-only list would either hide job kills from the advisor or bill a review for
   every status check.
-- **Files:** `packages/coding-agent/src/tools/hub/approval.ts`
-  (`HUB_ADVISOR_EXEMPT_OPS`, `isHubReviewExempt`, plus `hubApproval` moved here),
-  `packages/coding-agent/src/tools/hub/index.ts` (now imports `hubApproval` instead
-  of defining it, so the advisor can reach the op classifier without pulling in the
-  hub runtime), `packages/coding-agent/src/advisor/runtime.ts` (`#shouldReviewMidTurn`).
+- **Files:** `packages/coding-agent/src/advisor/review-cadence.ts`
+  (`HUB_ADVISOR_EXEMPT_OPS`, `isHubReviewExempt`, checked in `hasReviewWorthyToolCall`).
 - **Depends on upstream:** the `hub` op union in `packages/coding-agent/src/tools/hub/index.ts`. **`HUB_ADVISOR_EXEMPT_OPS`
   must keep covering the complete union** — an op upstream adds is treated as worth a
   review (safe, but costs money), and an inspection op upstream renames stops being
-  exempt. Also `hubApproval` in the same file (the exempt list is deliberately narrower
-  than that approval tier; do not let a refactor collapse the two), and the leaf-module
-  rule: `approval.ts` must stay free of hub runtime imports so the advisor can import it.
+  exempt. Also `hubApproval` in the same file (private there; the exempt list is
+  deliberately narrower than that approval tier; do not let a refactor collapse the
+  two), and the `op` field on the `hub` tool call's arguments.
 - **Tripwire paths:** `packages/coding-agent/src/tools/hub/index.ts`
 - **Must still be true:**
   - Under `mutation`, a step whose only call is `hub` with an inspection op does not

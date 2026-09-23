@@ -2768,6 +2768,9 @@ export class SessionAdvisors {
 		if (contextPrompt === this.#advisorContextPrompt) return;
 		this.#advisorContextPrompt = contextPrompt;
 		if (!this.#advisorEnabled || this.#advisors.length === 0) return;
+		// Stored above so a later `advisor.projectContext: true` rebuild picks it
+		// up; with it off, the prompt never reaches the advisor, so no rebuild.
+		if (!cfgAdvisorProjectContext.get(this.#host.settings)) return;
 		this.#rebuildAdvisorRuntime();
 	}
 
