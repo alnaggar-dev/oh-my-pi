@@ -334,23 +334,41 @@ does what I wanted".
 
 ### Bounded diffs and tool output inside advisor deltas
 
-- **What it does:** Every expanded diff and tool input/output rendered into an advisor
-  delta is middle-truncated to 8 KiB / 80 lines per tool call, with an elision marker.
-  Small ones pass through byte-identical.
+- **What it does:** Upstream already bounds expanded tool input/output in advisor deltas
+  and redacts it before truncating. The fork adds two things. (1) The expanded edit
+  diff (`details.diff`) is redacted, then middle-truncated to the same 8 KiB / 80-line
+  per-tool budget with an elision marker; small diffs pass through byte-identical.
+  (2) One-line previews — tool primary argument, tool intent, user `!`/`$` source,
+  custom/irc/async-result, branch, compaction and file-mention one-liners — are
+  redacted before their 120/80-character cut. Redaction covers the text through the end
+  of the word holding the last visible character (at most 8 KiB), so a secret the cut
+  lands in is redacted whole, while text after the cut is never scanned.
 - **Why:** A single large edit diff could otherwise dump an unbounded blob into every
-  advisor request.
-- **Files:** `packages/coding-agent/src/session/session-history-format.ts`.
+  advisor request. A cut through a plain secret leaves a fragment the later
+  whole-transcript redaction pass cannot recognize, so the visible half reached the
+  advisor.
+- **Files:** `packages/coding-agent/src/session/session-history-format.ts` (`previewLine`,
+  `primaryArgText`, the `transform` parameters on the preview formatters, and the
+  `details.diff` branch of `toolCallLine`).
 - **Depends on upstream:** `truncateMiddle` and its `{ maxBytes, maxLines }` options
   plus the elision marker text; the `details.diff` field on edit tool results;
   `formatSessionHistoryMarkdown`'s option object (`expandEditDiffs`, `expandToolIO`,
   `transformExpandedToolIO`) — the advisor sets all of these, so an upstream default
-  change silently changes what it is billed for.
-- **Tripwire paths:** `packages/tui/src/tools/streaming-output.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/delta-split.ts`
+  change silently changes what it is billed for; the advisor passing its secret
+  redaction as `transformExpandedToolIO` on both render paths (`#renderPreparedDelta`,
+  `renderAdvisorDeltaChunks` in `packages/coding-agent/src/advisor/runtime.ts`);
+  upstream's rule that execution source past the preview cap is never scanned (its
+  test `does not scan execution source after the advisor preview cap`).
+- **Tripwire paths:** `packages/tui/src/tools/streaming-output.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
 - **Must still be true:**
   - A 400-line diff keeps head and tail, drops the middle, and carries a marker.
   - A small diff renders byte-identically, with no marker.
-  - Truncation happens after secret obfuscation — for the expanded diff as well as tool
-    input/output — so redaction is never bypassed by a cut through a secret.
+  - A secret straddling the expanded diff's truncation cut leaves no 8-character piece
+    in the advisor prompt.
+  - A secret straddling a one-line preview's cut (tool command, user `!` command) leaves
+    no 8-character piece in the advisor prompt; a token starting after the cut is never
+    scanned, and upstream's preview-cap test passes unchanged.
+  - Without a transform, previews render byte-identically to upstream's `oneLine`.
   - Fenced output containing backticks still gets a wrapper the content cannot break.
 - **Check:** `bun test packages/coding-agent/test/session/session-history-format.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
 
