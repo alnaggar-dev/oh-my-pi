@@ -168,6 +168,19 @@ describe("advisor live request settings", () => {
 		expect(JSON.stringify(requests[requests.length - 1].systemPrompt)).toContain(updated);
 	});
 
+	it("uses a context change made while projectContext was switched off without a rebuild", async () => {
+		const { live, settings, runTurn } = createSession();
+		// A settings reload from disk flips the value without the selector's rebuild.
+		settings.set("advisor.projectContext", false);
+		live.setAdvisorContextPrompt("<project-context>UPDATED_CONTEXT_SENTINEL</project-context>");
+
+		settings.set("advisor.projectContext", true);
+		expect(live.setAdvisorEnabled(true)).toBe(true);
+		const system = JSON.stringify((await runTurn("project_on")).systemPrompt);
+		expect(system).toContain("UPDATED_CONTEXT_SENTINEL");
+		expect(system).not.toContain(PROJECT_CONTEXT);
+	});
+
 	it("applies reviewOn dynamically without discarding the advisor conversation", async () => {
 		const { live, settings, requests, runTurn } = createSession();
 		await runTurn("turn_cadence");
