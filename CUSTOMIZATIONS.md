@@ -414,40 +414,42 @@ does what I wanted".
 ### Subagent auto-thinking rolls into the parent's tally
 
 - **What it does:** A subagent that classifies its own thinking level adds to the
-  counters of the session that spawned it. While any classification anywhere in the
-  tree is running, the parent's pending marker stays up, followed by the shared
-  visibility hold. Cold revival and `/tan` belong to the same spawning tree.
+  counters of its root session. The tally is keyed by the spawn tree's
+  `subagentEventBus`, so every session sharing that bus shares one tally. While any
+  classification anywhere in the tree is running, the root's pending marker stays up,
+  followed by the shared visibility hold. Cold revival rides the root's bus; `/tan`,
+  which runs on a fresh bus, hands its owner's tally down explicitly.
 - **Why:** Most classifications happen inside subagents, so without roll-up the
   parent's status line showed almost nothing during a busy multi-agent turn.
 - **Files:** `packages/coding-agent/src/session/model-controls.ts`,
   `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/agent-session.ts`,
-  `packages/coding-agent/src/tools/index.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/task/executor.ts`,
-  `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/vibe/runtime.ts`,
-  `packages/coding-agent/src/task/persisted-revive.ts`,
-  `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`.
-- **Depends on upstream:** the tool-facing session interface in `packages/coding-agent/src/tools/index.ts` —
-  the customization **widens** it with the optional `autoThinkingTally?()`, so if
-  upstream changes how that object is built the accessor goes missing at runtime with
-  no type error; the accessor table in `sdk.ts`; the spawn option bags
-  (`autoThinkingActivity` on task options, `AgentSessionConfig`, and its consumption in
-  `agent-session.ts`); **every child constructor must forward the parent's tally,
-  including cold revival and `/tan`.** Cold revival reads the live owner when revived;
-  `/tan` snapshots its owner's tally before deferred dispatch so changing focus cannot
-  move the counts into another tree. `ModelControls`' `activity?` option: absent means
-  a fresh tally. A private shared activity object owns `inFlight` notifications and
-  one visibility deadline/timer per tally. `AgentSession.beginDispose()` must detach
-  only its own notification subscription, not the surviving tree's hold.
-- **Tripwire paths:** `packages/coding-agent/src/tools/index.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`, `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`
+  `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`.
+- **Depends on upstream:** every spawn path forwarding the parent's `subagentEventBus`
+  into `createAgentSession` (task executor spawn and in-turn revival, structured
+  subagents, work pools, vibe, cold revival wired from `main.ts`), and
+  `createAgentSessionScoped` giving a session without one a fresh bus. A path that
+  stops forwarding the bus silently counts into a fresh tally, with no type error.
+  `sdk.ts` resolves the tally with `autoThinkingTallyFor(subagentEventBus,
+  options.autoThinkingActivity)`; a handed-down tally wins and claims a bus that has no
+  tally yet, so a tangent's own subagents follow its owner. `/tan` gets a fresh bus
+  upstream, so it snapshots its owner's tally before deferred dispatch and passes it as
+  `autoThinkingActivity`; changing focus cannot move the counts into another tree.
+  `AgentSessionConfig.autoThinkingActivity` feeds `ModelControls`' `activity?` option:
+  absent means a fresh tally. A private shared activity object owns `inFlight`
+  notifications and one visibility deadline/timer per tally. `AgentSession.beginDispose()`
+  must detach only its own notification subscription, not the surviving tree's hold.
+- **Tripwire paths:** `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/workpool.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`, `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`
 - **Must still be true:**
-  - A classification inside a subagent increments the spawning session's `classified`
+  - A classification inside a subagent increments its root session's `classified`
     count, not a separate one.
   - A subagent whose classification fails increments the shared `fallback` count.
   - With two overlapping classifications, the marker stays up until the last finishes.
-  - Cold revival uses the current owner's counters; a deferred tangent keeps its
-    dispatch owner's counters even if focus switches before construction.
+  - Cold revival counts into the tree whose `subagentEventBus` it revives on; a
+    deferred tangent keeps its dispatch owner's counters even if focus switches before
+    construction, and its own subagents count there too.
   - Disposed or superseded classifications do not count, but still release their
     in-flight contribution; surviving sessions continue receiving activity updates.
-  - A session created without a handed-down tally keeps its own independent counts.
+  - Sessions on different subagent buses (separate roots) keep independent counts.
 - **Check:** `bun test packages/coding-agent/test/auto-thinking-tally.test.ts packages/coding-agent/test/task/persisted-revive.test.ts packages/coding-agent/test/modes/controllers/tan-command-controller.test.ts`
 
 ## legacy-pi

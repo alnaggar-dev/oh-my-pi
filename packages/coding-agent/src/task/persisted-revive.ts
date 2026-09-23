@@ -237,7 +237,6 @@ export function createPersistedSubagentReviverFactory(
 					cwd: restoredSeance?.cwd ?? ctx.session.sessionManager.getCwd(),
 					costGate: ctx.session.costGate,
 					authStorage: ctx.authStorage,
-					autoThinkingActivity: ctx.session.autoThinkingTally(),
 					// Revived agents join the root session tree, so their observability
 					// frames ride the same bus the RPC/collab surfaces subscribed to.
 					subagentEventBus: ctx.subagentEventBus,
