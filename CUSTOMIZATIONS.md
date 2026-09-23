@@ -350,8 +350,10 @@ does what I wanted".
 - **Why:** `auto` is a session-level selector with no per-advisor classifier, so
   building an advisor erased it and the advisor reviewed hard turns at medium effort.
 - **Files:** `packages/coding-agent/src/session/session-advisors.ts`
-  (`#inheritedAutoThinkingLevel`, `#retuneAutoThinkingAdvisors`, the host's
-  `primaryThinkingLevel`), `packages/coding-agent/src/session/agent-session.ts` (its
+  (`#autoAdvisorThinkingLevel`, the one source for build, retune and fallback restore;
+  `#retuneAutoThinkingAdvisors`; the `autoThinking` branch in
+  `#maybeRestoreAdvisorRetryFallbackPrimary`; the host's `primaryThinkingLevel`),
+  `packages/coding-agent/src/session/agent-session.ts` (the `primaryThinkingLevel`
   wiring).
 - **Depends on upstream:** the advisor host interface — `primaryThinkingLevel()` is
   implemented as a live getter, and the inherited level is **derived from the
@@ -363,7 +365,9 @@ does what I wanted".
   level into that signature, every per-turn effort change rebuilds the advisor and
   destroys its accumulated context.** Also the review-boundary hook
   `#retuneAutoThinkingAdvisors()` (re-tunes via `setThinkingLevel` only — no rebuild,
-  no model change; skipped while `retryFallback` holds a fallback selector's effort).
+  no model change; skipped while `retryFallback` holds a fallback selector's effort),
+  and upstream's `#maybeRestoreAdvisorRetryFallbackPrimary` restore-level ternary,
+  which an `auto` advisor bypasses to restore at `#autoAdvisorThinkingLevel()`.
   The provider-side cached prefix survives the re-tune only on models with
   `compat.supportsPerMessageEffort` (the effort change rides in the message tail);
   elsewhere the top-level effort changes and the prefix is re-written once.
@@ -372,8 +376,12 @@ does what I wanted".
   - With the primary on `auto`, an `auto` advisor runs at the primary's current
     resolved effort, not `medium`.
   - With the primary pinned to a concrete level (including a mid-session switch off
-    `auto`), an `auto` advisor follows that level at the next review boundary; with the
-    primary `off` it falls back to its own configured level.
+    `auto`), an `auto` advisor follows that level at the next review boundary. With
+    the primary `off`, a live `auto` advisor drops at the next boundary to the level a
+    fresh build gives it (`medium`): same instance, no rebuild.
+  - An `auto` advisor on a retry-fallback model keeps the fallback's effort when the
+    primary's level changes; the review that restores its main model already runs at
+    the primary's current level, not its pre-fallback level.
   - When the classifier resolves a different level, the live advisor's effort changes at
     the next review boundary and it is the same instance — model and context survive,
     and so does the cached prefix on `supportsPerMessageEffort` models.
