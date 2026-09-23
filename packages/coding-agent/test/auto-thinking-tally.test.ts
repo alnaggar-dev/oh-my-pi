@@ -11,11 +11,13 @@ import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage
 import {
 	type AutoThinkingActivity,
 	type AutoThinkingTally,
+	autoThinkingTallyFor,
 	MIN_CLASSIFYING_VISIBLE_MS,
 	ModelControls,
 	type ModelControlsHost,
 } from "@oh-my-pi/pi-coding-agent/session/model-controls";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
@@ -128,6 +130,18 @@ describe("auto thinking shared activity", () => {
 		expect(parent.autoThinkingActivity).toBe(shared);
 		expect(child.autoThinkingActivity).toBe(shared);
 		expect(child.autoThinkingTally).toBe(shared);
+	});
+
+	it("gives one subagent bus one tally, and lets a handed-down tally claim a fresh bus", () => {
+		const treeBus = new EventBus();
+		const root = autoThinkingTallyFor(treeBus);
+		expect(autoThinkingTallyFor(treeBus)).toBe(root);
+		expect(autoThinkingTallyFor(new EventBus())).not.toBe(root);
+
+		// `/tan`: the tangent's fresh bus adopts its owner's tally for its own subagents.
+		const tangentBus = new EventBus();
+		expect(autoThinkingTallyFor(tangentBus, root)).toBe(root);
+		expect(autoThinkingTallyFor(tangentBus)).toBe(root);
 	});
 
 	it("notifies an idle parent of child starts, same-effort counts, fallbacks and hold expiry", async () => {
