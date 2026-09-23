@@ -43,6 +43,8 @@ export type UsageRankedCandidate<T extends AuthCredential> = UsageCandidate<T> &
 	planPriority: number;
 	secondaryUsed: number;
 	secondaryRequiredDrain: number;
+	/** Secondary (long) window reset time; `Infinity` when unknown so it sorts last. */
+	secondaryResetAt: number;
 	primaryUsed: number;
 	primaryRequiredDrain: number;
 	orderPos: number;
@@ -106,11 +108,18 @@ function compareUsageRankedCandidatePriority(
 	const rightMeasured = right.usageMeasured;
 	if (leftMeasured !== rightMeasured) return leftMeasured ? -1 : 1;
 	if (left.accountPriority !== right.accountPriority) return right.accountPriority - left.accountPriority;
-	// Required drain, descending: the account whose remaining quota must
-	// burn fastest to avoid expiring unused at its reset comes first, so
-	// staggered resets land at ~100% utilization instead of stranding
-	// headroom that a cooler sibling could have absorbed.
-	let metric = compareUsageRankingMetric(right.secondaryRequiredDrain, left.secondaryRequiredDrain);
+	// A spent long window has nothing left to drain, so its early reset must
+	// not win; it sorts behind accounts that still have headroom.
+	const leftSpent = left.secondaryUsed >= 1;
+	const rightSpent = right.secondaryUsed >= 1;
+	if (leftSpent !== rightSpent) return leftSpent ? 1 : -1;
+	// Soonest long-window reset first: among accounts with quota left, drain
+	// the one whose window resets earliest before touching later ones.
+	// Resets within the metric tolerance (~30 min) fall through to required
+	// drain, which still spreads load between near-simultaneous resets.
+	let metric = compareUsageRankingMetric(left.secondaryResetAt, right.secondaryResetAt);
+	if (metric !== 0) return metric;
+	metric = compareUsageRankingMetric(right.secondaryRequiredDrain, left.secondaryRequiredDrain);
 	if (metric !== 0) return metric;
 	metric = compareUsageRankingMetric(left.secondaryUsed, right.secondaryUsed);
 	if (metric !== 0) return metric;
