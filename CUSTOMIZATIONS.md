@@ -36,7 +36,8 @@ does what I wanted".
   `packages/coding-agent/src/session/session-advisors.ts` (per-step gate in
   `onPrimaryTurnEnd`, the two build-time settings, the `setContextPrompt` skip),
   `packages/coding-agent/src/modes/controllers/selector-controller.ts`,
-  `docs/advisor-watchdog.md` (the "Controlling token spend" section),
+  `docs/advisor-watchdog.md` (the "Controlling token spend" section, except its
+  runaway-tool-loop bullet, which the loop-bound entry owns),
   `docs/settings.md` (the three `advisor.*` rows and the reworded advisor intro).
 - **Depends on upstream:** `AdvisorRuntime.onTurnEnd(messages, { willContinue })` and
   its `willContinue` flag — the gate must run after `#latestMessages` is set and
