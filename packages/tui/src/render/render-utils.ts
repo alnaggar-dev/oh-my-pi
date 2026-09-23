@@ -149,16 +149,6 @@ export function thinkingLevelGlyph(level: ConfiguredThinkingLevel, uiTheme: Them
 }
 
 /**
- * Dim `⟨high⟩` badge naming a configured effort level, styled like the other
- * bracketed row badges. Empty when nothing explicit was resolved (`inherit`),
- * so rows without their own effort selector stay unchanged.
- */
-export function thinkingLevelBadge(level: ConfiguredThinkingLevel | undefined, uiTheme: Theme): string {
-	if (level === undefined || level === ThinkingLevel.Inherit) return "";
-	return ` ${uiTheme.fg("dim", `${uiTheme.format.bracketLeft}${level}${uiTheme.format.bracketRight}`)}`;
-}
-
-/**
  * Compact feed-row prefix: explicit thinking glyph, sanitized model identity,
  * then advisor eye. Keep fitting icons if no model fits; preserve literal identity suffixes.
  */
