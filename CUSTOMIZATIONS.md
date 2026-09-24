@@ -138,6 +138,20 @@ does what I wanted".
   advisor requests where the advise-only turn now makes one (`toHaveLength(2)` became
   `toHaveLength(1)`, and its canned follow-up reply became a silent handler); an
   upstream edit to that test is a conflict to resolve in the fork's favor.
+  **Known conflict — upstream PR #12387** (open; merges final-review notes). Run
+  against its head with this feature ported in, three tests fail, one of them by
+  hanging; the product behaves the same, with one advisor request fewer. (1) Its new
+  test "releases a strict final-review wait on user stop and preserves its blocker
+  without restarting the run" in
+  `packages/coding-agent/test/agent-session-advisor-suppression.test.ts` hangs: it
+  parks the review in the wrap-up request this feature removes. Park it instead in a
+  sibling tool call of the same turn (`advise` plus a mock `read` whose `execute`
+  waits); every original assertion still holds. (2) "preserves a final-yield blocker
+  without starting a hidden post-yield turn" is the flipped test above: keep
+  `toHaveLength(1)`. (3) Its new test "resolves catch-up per advisor: a strict final
+  reviewer waits while an off override never parks the boundary" in
+  `packages/coding-agent/test/advisor-tool-call-loop-guard.test.ts` expects `>= 2`
+  final-reviewer requests; make it `>= 1`.
 - **Tripwire paths:** `packages/agent/src/agent-loop.ts`, `packages/agent/src/agent.ts`, `packages/agent/src/types.ts`, `packages/coding-agent/src/session/session-advisors.ts`
 - **Must still be true:**
   - An advisor turn whose only tool call is `advise` makes exactly one provider request
@@ -189,7 +203,14 @@ does what I wanted".
   which must keep ignoring the agent-authored intent fields and key order and keep
   argument values verbatim; maintenance step 1 and the repeat-call paragraph in
   `docs/advisor-watchdog.md` (cadence entry).
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/message-cache.ts`, `packages/agent/src/compaction/compaction.ts`, `packages/agent/src/compaction/transcript-tokens.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/coding-agent/src/tools/read.ts`, `packages/coding-agent/src/tools/output-meta.ts`, `packages/tui/src/tools/output-meta.ts`
+  **Open upstream risk — PR #12516** (open): it moves the advisor onto the shared
+  compaction code, whose per-turn prune follows `compaction.supersedeReads` and
+  `compaction.dropUseless` (both on by default). On the advisor's history, a newer
+  identical `read` whose result is the dedupe stub could supersede the original that
+  stub points to and blank it, leaving the advisor neither copy. (`dropUseless`
+  eliding the stubs themselves is expected: they are flagged `useless` for that.) If
+  it lands, re-check dedupe and eviction against the shared prune.
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/message-cache.ts`, `packages/agent/src/compaction/compaction.ts`, `packages/agent/src/compaction/transcript-tokens.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/coding-agent/src/tools/read.ts`, `packages/coding-agent/src/tools/output-meta.ts`, `packages/tui/src/tools/output-meta.ts`, `packages/coding-agent/src/session/session-advisors.ts`
 - **Must still be true:**
   - After a review finishes, the next request carries a short elision stub in place of
     that review's large file output, while the primary deltas and the advisor's notes
@@ -404,6 +425,17 @@ does what I wanted".
   `renderAdvisorDeltaChunks` in `packages/coding-agent/src/advisor/runtime.ts`);
   upstream's rule that execution source past the preview cap is never scanned (its
   test `does not scan execution source after the advisor preview cap`).
+  **Open upstream risk — PR #12848** (open) makes `boundedFencedToolContext` return
+  `{ content, truncated }`. In a test merge
+  `packages/coding-agent/src/session/session-history-format.ts` merged cleanly (only
+  `packages/coding-agent/test/session/session-history-format.test.ts` conflicted) and
+  the type check and lint passed, yet the `details.diff` line would put
+  `[object Object]` into the advisor prompt. Fix: `.content` on that line; keep the
+  fork's tests when resolving the test conflict.
+  **Known gap (upstream code, left alone):** `obfuscateAdvisorMessage` in
+  `packages/coding-agent/src/advisor/runtime.ts` still cuts `bashExecution` and
+  `pythonExecution` source with `formatExecutionSourcePreview` (no transform) before
+  redacting it.
 - **Tripwire paths:** `packages/tui/src/tools/streaming-output.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
 - **Must still be true:**
   - A 400-line diff keeps head and tail, drops the middle, and carries a marker.
@@ -415,6 +447,12 @@ does what I wanted".
     scanned, and upstream's preview-cap test passes unchanged.
   - Without a transform, previews render byte-identically to upstream's `oneLine`.
   - Fenced output containing backticks still gets a wrapper the content cannot break.
+  - `primaryArgText` returns raw text and never calls `oneLine` itself, so every branch
+    (`advise`, `grep`, `glob`, `ast_grep`, the key list, the JSON fallback) is cut only
+    by `previewLine`, after redaction; an upstream `return oneLine(...)` there would
+    bring the leak back with no merge conflict. `formatToolResultErrorPreview` keeps
+    upstream's `oneLine` on purpose: its input is the whole tool result, already
+    redacted.
 - **Check:** `bun test packages/coding-agent/test/session/session-history-format.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
 
 ### Advisor `auto` thinking tracks the primary turn's effort
@@ -610,13 +648,20 @@ does what I wanted".
 - **What it does:** When several accounts of one provider can serve a request, the
   usage-based ranking picks the one whose long (weekly) window resets soonest, as long
   as that window still has headroom. Resets that `compareUsageRankingMetric` treats as
-  equal fall back to upstream's required-drain order. Applies to Claude, Codex, Kimi
-  Code (its `7d` window) and API-key ranking. **Not Antigravity:** its
+  equal fall back to upstream's required-drain order. Applies to every provider whose
+  ranking strategy reports a long window, in both OAuth and API-key ranking: Claude,
+  Codex, Kimi Code (its `7d` window), Z.ai (its second-shortest window), Alibaba Token
+  Plan (`credits:7d`) and OpenCode Go (`weekly`). **Not Antigravity:** its
   `findWindowLimits` deliberately returns no secondary window, so every Antigravity
   account gets `secondaryResetAt = ∞` and the new rule never separates them.
-- **Why:** Upstream's required-drain score (`headroom / hours left`) could prefer a
-  barely-used account resetting in 6 days over a half-used one resetting in 3, so quota
-  on the sooner-resetting account expired unused.
+- **Why:** A policy choice, not an upstream bug fix. Upstream ranks by required drain
+  (`headroom ÷ hours left`), which already prefers a half-used account resetting in 3
+  days (0.5 ÷ 72 h ≈ 0.0069) over a barely-used one resetting in 6 (0.9 ÷ 144 h ≈
+  0.0063). The rules differ when the sooner-resetting account is mostly used: 70% used
+  and resetting in 3 days (0.3 ÷ 72 h ≈ 0.0042) vs 10% used and resetting in 6 (≈
+  0.0063). Upstream picks the 6-day account; the fork uses up the 3-day account's
+  remaining quota before it expires. Keep it fork-only; do not propose it as
+  upstream's default.
 - **Files:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`.
 - **Depends on upstream:** `compareUsageRankedCandidatePriority` in `auth/rank.ts` and its
   order of checks (blocked, plan priority, reserve, priority boost, hot 5h guard,
@@ -637,7 +682,20 @@ does what I wanted".
   weekly/secondary drain rate") are renamed and inverted to expect the
   soonest-resetting account; an upstream edit to either is a conflict to resolve in
   the fork's favor.
-- **Tripwire paths:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`, `packages/ai/src/auth/usage-report.ts`, `packages/ai/src/auth/affinity.ts`, `packages/ai/src/usage.ts`, `packages/ai/src/usage/claude.ts`, `packages/ai/src/usage/openai-codex.ts`, `packages/ai/src/usage/google-antigravity.ts`, `packages/ai/src/usage/kimi.ts`, `packages/ai/src/usage/registry.ts`
+  **Open upstream interactions:** PR #8919 (open; still written against drain code
+  upstream has since moved to `windowRequiredDrain` in
+  `packages/ai/src/auth/usage-report.ts`) wants an untouched Anthropic seat, which
+  has no reset clock yet, started first by giving it top drain urgency. The fork's
+  rule runs before drain and sorts a window with no reset time last, so that boost is
+  never reached and its new test would likely fail (not run); decide which rule wins
+  if it lands. Issue #10203 (open): outside Anthropic a session pin has no idle
+  cutoff (only the Claude strategy sets `stickyWarmMs`), so a pinned session never
+  reaches either ranking rule; that is the likelier cause of quota expiring unused.
+  Issue #10929 (closed): ChatGPT can report Codex's 7-day window as the primary one;
+  Codex's `findWindowLimits` still returns it as the secondary through its `7d`
+  window-id fallback, so the rule sees its reset time. If that fallback goes, such an
+  account gets no reset time and sorts last.
+- **Tripwire paths:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`, `packages/ai/src/auth/usage-report.ts`, `packages/ai/src/auth/affinity.ts`, `packages/ai/src/usage.ts`, `packages/ai/src/usage/claude.ts`, `packages/ai/src/usage/openai-codex.ts`, `packages/ai/src/usage/google-antigravity.ts`, `packages/ai/src/usage/kimi.ts`, `packages/ai/src/usage/zai.ts`, `packages/ai/src/usage/alibaba-token-plan.ts`, `packages/ai/src/usage/opencode-go.ts`, `packages/ai/src/usage/registry.ts`
 - **Must still be true:**
   - Among unblocked, measured accounts below the 5h hot threshold, the one whose weekly
     window resets earliest is selected, regardless of how much of it is already used.
@@ -653,9 +711,11 @@ does what I wanted".
 
 ## Known follow-ups
 
-- **Hand-copied constant (accepted).** `MIN_EVICT_TOKENS = 50` in
+- **Hand-copied constant (until upstream exports it).** `MIN_EVICT_TOKENS = 50` in
   `packages/coding-agent/src/advisor/tool-result-eviction.ts` mirrors upstream's unexported
-  `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts`. Exporting it would
-  edit an upstream file, so the copy stays. It is a known drift risk, not resolved:
-  the pruning.ts tripwire in the advisor context slimming entry flags any upstream
-  change for a manual re-check.
+  `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts`. The fork does not edit
+  that upstream file; the one-word export is ready on the local branch
+  `pr/export-min-prune-tokens` (not sent upstream). Once upstream exports it, import it,
+  delete the copy and its Must-line in the advisor context slimming entry, and drop this
+  note. Until then it is a known drift risk: the pruning.ts tripwire in that entry flags
+  any upstream change for a manual re-check.
