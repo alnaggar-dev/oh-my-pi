@@ -1,7 +1,7 @@
 import type { AfterToolCallResult, AgentMessage, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
-import { toolCallSignature } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
 import { formatOutputNotice, type OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
+import { toolCallSignature } from "./cumulative-loop-guard";
 
 /** Ceiling on tracked signatures so a long advisor session cannot grow the registry without bound. */
 const MAX_TRACKED_SIGNATURES = 4096;
