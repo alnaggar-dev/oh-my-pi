@@ -258,7 +258,7 @@ does what I wanted".
   "next_user_message"`, `isPerCallContextMessage`, tool-control-only `system`
   messages), which `isAnchorable` copies and must stay in step with; the 4-breakpoint
   budget and head-caching plan (`countHeadBreakpoints`, `buildAnthropicSystemBlocks`'s
-  OAuth identity breakpoint, `planStableAnthropicSystem`/`planStableAnthropicTools`)
+  OAuth identity breakpoint, `applyHeadCaching`'s last-tool and stable-system anchors)
   that the message budget subtracts from; the decimation anchors; the merge path that
   collapses consecutive tool results into one wire message; the TTL `getCacheControl`
   picks (overridable by `cacheRetention` or `PI_CACHE_RETENTION`); Anthropic's
