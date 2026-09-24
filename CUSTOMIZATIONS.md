@@ -47,7 +47,7 @@ does what I wanted".
   settings; `formatSessionHistoryMarkdown`'s `includeThinking` option; the advisor
   system-prompt assembly, `#advisorContextPrompt` and `setContextPrompt`.
   Fork code it relies on in files other entries own: `reviewGate` in
-  `packages/coding-agent/src/advisor/review-cadence.ts` (hub entry), including its
+  `packages/coding-agent/src/advisor/review-cadence.ts` (read-only entry), including its
   `default:` fallback to `step`; the `shouldReview` option on `onTurnEnd` and the
   `includeThinking` host flag in `packages/coding-agent/src/advisor/runtime.ts` (prune
   entry); the per-step gate in `onPrimaryTurnEnd`, the two build-time settings and the
@@ -75,10 +75,15 @@ does what I wanted".
 - **What it does:** Under `reviewOn: mutation`, a mid-turn step is skipped when every
   tool call since the last review was a pure read. The skip list is computed at module
   load from upstream's read-tier list, minus four tools that are read-tier but still
-  change stored state (`retain`, `memory_edit`, `checkpoint`, `rewind`).
+  change stored state (`retain`, `memory_edit`, `checkpoint`, `rewind`). `wait` is on
+  that list, so waiting on background work is skipped; `write` is not, so a peer
+  message (`agent://`) or job control (`proc://`) forces a review.
 - **Why:** Reviewing a step that only read files spends a full advisor request on work
   that cannot break anything.
-- **Files:** `packages/coding-agent/src/advisor/config.ts` (only the
+- **Files:** `packages/coding-agent/src/advisor/review-cadence.ts`
+  (`ADVISOR_STATEFUL_READ_TIER_TOOLS`, `ADVISOR_REVIEW_EXEMPT_TOOLS`,
+  `hasReviewWorthyToolCall`; `reviewGate` is named under the cadence entry's **Depends
+  on upstream**), `packages/coding-agent/src/advisor/config.ts` (only the
   `filterAdvisorTools` comment, kept accurate about which legacy tool aliases exist).
 - **Depends on upstream:** `READ_ONLY_TOOL_NAMES` in
   `packages/coding-agent/src/task/read-only-policy.ts`. **The exempt table is DERIVED
@@ -89,12 +94,16 @@ does what I wanted".
   Also `normalizeToolName` in `packages/coding-agent/src/tools/builtin-names.ts`, and
   the `toolCall` block shape on assistant messages. Ordering constraint:
   `ADVISOR_STATEFUL_READ_TIER_TOOLS` must stay declared *before* the derived table or
-  module load throws.
-  Fork code it relies on in files other entries own: `ADVISOR_STATEFUL_READ_TIER_TOOLS`,
-  `ADVISOR_REVIEW_EXEMPT_TOOLS` and `hasReviewWorthyToolCall` in
-  `packages/coding-agent/src/advisor/review-cadence.ts` (hub entry); the
+  module load throws. Upstream replaced the `hub` tool with `wait` (read-tier) plus
+  `write` to `agent://` (peer message) and `proc://` (job cancel, service
+  stop/stdin/mode), and `bash` launches services. So the split the fork's old `hub`
+  carve-out made by hand now falls out of tool names: `wait` and reads of `proc://` /
+  `agent://` are exempt, `write` and `bash` are not. If upstream moves peer messaging
+  or job control onto a read-tier tool, that tool lands in `READ_ONLY_TOOL_NAMES` and
+  becomes exempt — re-check this entry then.
+  Fork text it relies on in a file another entry owns: the `mutation` paragraph and the
   `advisors[].tools` legacy-alias sentence in `docs/advisor-watchdog.md` (cadence entry).
-- **Tripwire paths:** `packages/coding-agent/src/task/read-only-policy.ts`, `packages/coding-agent/src/tools/builtin-names.ts`, `packages/coding-agent/src/tools/jfind/index.ts`, `packages/coding-agent/src/advisor/config.ts`
+- **Tripwire paths:** `packages/coding-agent/src/task/read-only-policy.ts`, `packages/coding-agent/src/tools/builtin-names.ts`, `packages/coding-agent/src/tools/jfind/index.ts`, `packages/coding-agent/src/tools/wait.ts`, `packages/coding-agent/src/advisor/config.ts`
 - **Must still be true:**
   - A mid-turn step whose only tool calls are read-only ones does not trigger a review
     under `mutation`.
@@ -102,37 +111,9 @@ does what I wanted".
     one, even though upstream classes those as read-tier.
   - A step containing any tool absent from upstream's read-tier list — `write`, `edit`,
     `bash`, `lsp`, `task`, any MCP or plugin tool — triggers one.
+  - `wait` alone does not trigger a review under `mutation`; a `write`, including a
+    peer message to `agent://`, does.
   - A skipped step is not lost: its content lands in the next review that happens.
-- **Check:** `bun test packages/coding-agent/test/advisor-review-cadence.test.ts`
-
-### Hub inspection ops skipped by the `mutation` cadence
-
-- **What it does:** The `hub` tool is judged by its `op` argument, not its name. Pure
-  look-at-it ops (`list`, `jobs`, `inbox`, `logs`, `ps`, `describe`, `wait`) let a
-  mid-turn step be skipped; everything else (`start`, `stop`, `restart`, `cancel`,
-  `send`) forces a review.
-- **Why:** One tool name covers both "show me the peers" and "kill that job", so a
-  name-only list would either hide job kills from the advisor or bill a review for
-  every status check.
-- **Files:** `packages/coding-agent/src/advisor/review-cadence.ts` (`HUB_ADVISOR_EXEMPT_OPS`,
-  `isHubReviewExempt`, checked in `hasReviewWorthyToolCall`; the module's other exports
-  are named under the cadence and read-only entries' **Depends on upstream**).
-- **Depends on upstream:** the `hub` op union in `packages/coding-agent/src/tools/hub/index.ts`. **`HUB_ADVISOR_EXEMPT_OPS`
-  must keep covering the complete union** — an op upstream adds is treated as worth a
-  review (safe, but costs money) and fails the schema-union test until it is
-  classified; an inspection op upstream renames stops being
-  exempt. Also `hubApproval` in the same file (private there; the exempt list is
-  deliberately narrower than that approval tier; do not let a refactor collapse the
-  two), and the `op` field on the `hub` tool call's arguments.
-- **Tripwire paths:** `packages/coding-agent/src/tools/hub/index.ts`
-- **Must still be true:**
-  - Under `mutation`, a step whose only call is `hub` with an inspection op does not
-    trigger a review.
-  - `hub` with `start` / `stop` / `restart` / `cancel` / `send` does trigger one.
-  - A `hub` call with a missing, non-string or unrecognized `op` triggers one.
-  - Every op in the `hub` schema union is covered by one of those two behaviors;
-    `advisor-review-cadence.test.ts` reads the union from the live `HubTool` schema, so
-    an op upstream adds fails that test until it is classified here.
 - **Check:** `bun test packages/coding-agent/test/advisor-review-cadence.test.ts`
 
 ### Advise-only turn ends the review
