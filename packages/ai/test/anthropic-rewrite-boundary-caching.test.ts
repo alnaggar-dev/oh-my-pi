@@ -15,6 +15,7 @@ import { describe, expect, it } from "bun:test";
 import type { MessageCreateParams } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
 import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import type { Context, Message, Model, ModelSpec } from "@oh-my-pi/pi-ai/types";
+import { markPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 const MODEL_SPEC: ModelSpec<"anthropic-messages"> = {
@@ -51,7 +52,7 @@ const TOOLS: Context["tools"] = [
 
 async function captureWireBody(
 	messages: Message[],
-	{ apiKey = "sk-ant-api-test", systemPrompt = ["You are a precise assistant."] } = {},
+	{ apiKey = "sk-ant-api-test", systemPrompt = ["You are a precise assistant."], tools = TOOLS } = {},
 ): Promise<MessageCreateParams> {
 	let body: MessageCreateParams | undefined;
 	const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
@@ -62,7 +63,7 @@ async function captureWireBody(
 		);
 	}) as typeof fetch;
 
-	await streamAnthropic(MODEL, { systemPrompt, messages, tools: TOOLS }, { apiKey, fetch: fetchMock })
+	await streamAnthropic(MODEL, { systemPrompt, messages, tools }, { apiKey, fetch: fetchMock })
 		.result()
 		.catch(() => undefined);
 
@@ -150,6 +151,59 @@ function history(cycles: number, prunedAt: ReadonlyMap<number, number>, thinking
 	return messages;
 }
 
+/**
+ * A session of `turns` user turns plus a closing one. Wire layout for turn
+ * `k` (1-based): user at `4(k - 1)`, assistant text + tool_use at `4(k - 1) + 1`,
+ * its tool_result at `4(k - 1) + 2`, assistant reply at `4(k - 1) + 3`; the
+ * closing user turn sits at `4 * turns`. `prunedTurns` rewrites those turns'
+ * tool results after every assistant turn was sent, so the rewrite is unbilled;
+ * `perCallTurn` marks that turn's tool_use assistant as per-call context.
+ */
+function longSession(turns: number, prunedTurns: readonly number[], perCallTurn?: number): Message[] {
+	const messages: Message[] = [];
+	for (let turn = 1; turn <= turns; turn++) {
+		const timestamp = turn * 100;
+		messages.push({ role: "user", content: `turn ${turn}`, timestamp });
+		const toolUse: Message = {
+			role: "assistant",
+			content: [
+				{ type: "text", text: `checking ${turn}` },
+				{ type: "toolCall", id: `call-${turn}`, name: "lookup", arguments: {} },
+			],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: MODEL_SPEC.id,
+			usage: USAGE,
+			stopReason: "toolUse",
+			timestamp: timestamp + 1,
+		};
+		if (turn === perCallTurn) markPerCallContextMessage(toolUse);
+		messages.push(toolUse);
+		const pruned = prunedTurns.includes(turn);
+		messages.push({
+			role: "toolResult",
+			toolCallId: `call-${turn}`,
+			toolName: "lookup",
+			isError: false,
+			content: [{ type: "text", text: pruned ? "[Stale result elided]" : `result ${turn}` }],
+			timestamp: timestamp + 2,
+			...(pruned ? { prunedAt: 1_000_000 } : {}),
+		});
+		messages.push({
+			role: "assistant",
+			content: [{ type: "text", text: `done ${turn}` }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: MODEL_SPEC.id,
+			usage: USAGE,
+			stopReason: "stop",
+			timestamp: timestamp + 3,
+		});
+	}
+	messages.push({ role: "user", content: "wrap up", timestamp: turns * 100 + 50 });
+	return messages;
+}
+
 describe("anthropic rewrite-boundary caching", () => {
 	it("anchors a breakpoint before a rewritten region deeper than the lookback window", async () => {
 		// Cycle 2's result is pruned: 26 lookback positions from there to the tail.
@@ -223,5 +277,42 @@ describe("anthropic rewrite-boundary caching", () => {
 
 		expect(countCacheBreakpoints(body)).toBe(4);
 		expect(cachedMessageIndices(body)).toEqual([21]);
+	});
+
+	it("takes the decimation anchor's slot in a long session with two message breakpoints", async () => {
+		// 17 user turns: the 15th (index 56) is upstream's decimation anchor.
+		// Turn 3's result is pruned, so the boundary is turn 3's assistant (9).
+		const unpruned = await captureWireBody(longSession(16, []));
+		const pruned = await captureWireBody(longSession(16, [3]));
+
+		expect(cachedMessageIndices(unpruned)).toEqual([56, 64]);
+		// System + tool anchors leave two message breakpoints: the trailing turn
+		// keeps one and the boundary outranks the decimation anchor for the other.
+		expect(cachedMessageIndices(pruned)).toEqual([9, 64]);
+		expect(countCacheBreakpoints(pruned)).toBe(4);
+	});
+
+	it("displaces the oldest decimation anchor first when three message breakpoints remain", async () => {
+		// 32 user turns: decimation anchors at the 15th (56) and 30th (116).
+		// No tools, so only the system anchor spends a head breakpoint.
+		const unpruned = await captureWireBody(longSession(31, []), { tools: [] });
+		const pruned = await captureWireBody(longSession(31, [3]), { tools: [] });
+
+		expect(cachedMessageIndices(unpruned)).toEqual([56, 116, 124]);
+		// Ranked trailing, boundary, then decimation newest first: the 15th
+		// turn's anchor is the one that falls off the budget.
+		expect(cachedMessageIndices(pruned)).toEqual([9, 116, 124]);
+		expect(countCacheBreakpoints(pruned)).toBe(4);
+	});
+
+	it("never anchors the boundary on a per-call message", async () => {
+		// Turn 3's assistant (9) is rebuilt every request, so a breakpoint on
+		// it could never match; upstream skips such messages as candidates.
+		// The boundary falls back to the nearest message before it (turn 3's
+		// user message, 8), which still precedes the rewritten region.
+		const body = await captureWireBody(longSession(16, [3], 3));
+
+		expect(cachedMessageIndices(body)).toEqual([8, 64]);
+		expect(countCacheBreakpoints(body)).toBe(4);
 	});
 });

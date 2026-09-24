@@ -214,28 +214,42 @@ does what I wanted".
 ### Cache breakpoint in front of a rewritten region (Anthropic)
 
 - **What it does:** When history was rewritten in place deeper than Anthropic's
-  20-position lookback, the request adds a cache breakpoint on the last message
-  *before* the rewritten region, so only the rewritten bytes are re-billed.
+  20-position lookback, the request adds a cache breakpoint on the last cacheable
+  message *before* the rewritten region (skipping per-call, `clear_at` and
+  tool-control-only messages, which upstream never anchors either), so the re-bill can
+  stop there instead of running back to the previous explicit breakpoint. That only
+  pays off while a cache entry written within 20 positions behind the new breakpoint
+  is still alive: 5 minutes by default on API keys, 1 hour by default on OAuth for
+  models with long retention.
 - **Why:** Without it, the money saved by eviction is lost again at the cache-write
   premium — a cache write costs roughly 16x a cache read per token.
-- **Files:** `packages/ai/src/providers/anthropic.ts`
-  (`findRewriteBoundary`, `hasUnbilledRewrite`, `countLookbackPositions`,
-  `ANTHROPIC_REWRITE_BOUNDARY_POSITIONS`; `applyPromptCaching` only gains a 2-line
-  call that ranks the boundary right after the most recent trailing message, and
-  `convertAnthropicMessages` only gains the `hasUnbilledRewrite` gate plus one
-  `markRewriteAt` line per merged tool result — upstream's numbered priority
-  comment stays unchanged), `packages/ai/src/utils/block-symbols.ts` (`kRewriteAt`,
-  `markRewriteAt`, `rewriteAtOf` — symbol-keyed so the mark never reaches the wire).
-- **Depends on upstream:** `prunedAt` and the rule that a prune mutates in place; the
-  `candidateIndices` list in `applyPromptCaching` (the call site sits right after the
-  first trailing candidate is pushed) and its `messageEnd`; the 4-breakpoint budget
-  and head-caching plan (`applyHeadCaching`, `countHeadBreakpoints`,
-  `buildAnthropicSystemBlocks`'s OAuth identity breakpoint,
-  `planStableAnthropicSystem`/`planStableAnthropicTools`) that the message-tail budget
-  subtracts from; the merge path that collapses consecutive tool results into one wire
-  message; Anthropic's 20-position lookback, encoded as
-  `ANTHROPIC_REWRITE_BOUNDARY_POSITIONS = 16`.
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/ai/src/providers/anthropic.ts`, `packages/ai/src/utils/block-symbols.ts`
+- **Files:** `packages/ai/src/providers/anthropic-rewrite-boundary.ts`
+  (`ANTHROPIC_REWRITE_BOUNDARY_POSITIONS`, `countLookbackPositions`, `isAnchorable`,
+  `findRewriteBoundary`, `hasUnbilledRewrite`), `packages/ai/src/providers/anthropic.ts`
+  (call sites only: the import, a 2-line call in `applyPromptCaching` that ranks the
+  boundary right after the most recent trailing message, the `hasUnbilledRewrite` gate
+  in `convertAnthropicMessages` and one `markRewriteAt` line per merged tool result),
+  `packages/ai/src/utils/block-symbols.ts` (`kRewriteAt`, `markRewriteAt`,
+  `rewriteAtOf` — symbol-keyed so the mark never reaches the wire).
+- **Depends on upstream:** `prunedAt` on `ToolResultMessage` and the rule that a prune
+  rewrites tool results in place; the `candidateIndices` list in `applyPromptCaching`
+  (the call site sits right after the first trailing candidate is pushed) and its
+  `messageEnd`; upstream's trailing-candidate filter there (skip `clear_at ===
+  "next_user_message"`, `isPerCallContextMessage`, tool-control-only `system`
+  messages), which `isAnchorable` copies and must stay in step with; the 4-breakpoint
+  budget and head-caching plan (`countHeadBreakpoints`, `buildAnthropicSystemBlocks`'s
+  OAuth identity breakpoint, `planStableAnthropicSystem`/`planStableAnthropicTools`)
+  that the message budget subtracts from; the decimation anchors; the merge path that
+  collapses consecutive tool results into one wire message; the TTL `getCacheControl`
+  picks (overridable by `cacheRetention` or `PI_CACHE_RETENTION`); Anthropic's
+  20-position lookback, encoded as `ANTHROPIC_REWRITE_BOUNDARY_POSITIONS = 16`.
+  Compaction summaries replace the root instead of rewriting in place, so the boundary
+  ignores them. **Known stale comment:** upstream's numbered "Prioritize:" comment in
+  `applyPromptCaching` is left untouched and no longer matches the real order, which
+  is: most recent trailing message, rewrite boundary, decimation anchors newest first,
+  the newest message at or before the first per-call or turn-scoped mark, second
+  trailing message.
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/ai/src/providers/anthropic.ts`, `packages/ai/src/utils/block-symbols.ts`, `packages/agent/src/compaction/pruning.ts`
 - **Must still be true:**
   - A rewrite deeper than the lookback window gets a breakpoint before it plus the
     usual trailing one, and the request never exceeds 4 breakpoints.
@@ -246,7 +260,14 @@ does what I wanted".
     stable-system anchor in front of a `<memories>` recall suffix, and the tool
     anchor), the one remaining message breakpoint stays on the trailing message and the
     boundary anchor is dropped.
-- **Check:** `bun test packages/ai/test/anthropic-rewrite-boundary-caching.test.ts`
+  - In a long session (15+ user turns) the boundary outranks upstream's decimation
+    anchors: with two message breakpoints the layout is trailing + boundary; with
+    three, the newest decimation anchor stays and the oldest drops. The trailing
+    breakpoint always stays.
+  - The boundary never lands on a per-call, `clear_at: "next_user_message"` or
+    tool-control-only `system` message; it moves back to the nearest earlier message
+    upstream would anchor.
+- **Check:** `bun test packages/ai/test/anthropic-rewrite-boundary-caching.test.ts packages/ai/test/anthropic-head-caching.test.ts`
 
 ### Bounded repeated tool calls inside one advisor review
 
