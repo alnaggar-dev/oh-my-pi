@@ -1,18 +1,22 @@
 /**
- * Contract: the status line reports the `auto` thinking classifier — a tally of
- * turns it resolved (and, after the preset's warning symbol, turns that fell
- * back to a guess), plus a pending marker while a classification is in flight.
- * Both renderers show it, and the custom bar's render cache must invalidate when
- * the tallies move: the session hands out one mutated activity object, so a
- * stable object reference alone would freeze the counters at their first
- * painted value.
+ * Contract: the status line reports the `auto` thinking classifier through the
+ * readout's hook status — a tally of turns it resolved (and, after the preset's
+ * warning symbol, turns that fell back to a guess), plus a pending marker while a
+ * classification is in flight. It shows in the footer status lines and the
+ * `status` segment, only while the focused session runs `auto`.
  */
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import {
+	AUTO_THINKING_ACTIVITY_EVENT_CHANNEL,
+	type AutoThinkingActivityFrame,
+} from "@oh-my-pi/pi-coding-agent/auto-thinking/activity-events";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AutoThinkingReadout, MIN_CLASSIFYING_VISIBLE_MS } from "@oh-my-pi/pi-coding-agent/modes/auto-thinking-readout";
 import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import type { AgentSession, AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
-import { FooterComponent } from "@oh-my-pi/pi-tui/status-line/footer";
 import { initTheme, setSymbolPreset } from "@oh-my-pi/pi-tui/theme";
 
 beforeAll(async () => {
@@ -21,24 +25,22 @@ beforeAll(async () => {
 	await initTheme();
 });
 
-const model = {
-	id: "opus-5",
-	name: "Opus 5",
-	contextWindow: 1_000_000,
-	thinking: true,
-};
+beforeEach(() => {
+	vi.useFakeTimers();
+});
+
+afterEach(() => {
+	vi.clearAllTimers();
+	vi.useRealTimers();
+});
+
+const model = { id: "opus-5", name: "Opus 5", contextWindow: 1_000_000, thinking: true };
 const messages = [{ role: "user", content: "hi" }];
 
-interface Activity {
-	classifying: boolean;
-	classified: number;
-	fallback: number;
-}
-
-/** Structural session stub exposing only the members the status line reads. */
-function fakeSession(activity: Activity | undefined, opts: { auto?: boolean } = {}): AgentSession {
-	const { auto = true } = opts;
-	return {
+/** Structural session stub: what the status line reads, plus the readout's `auto` gate and event feed. */
+function fakeSession(auto: boolean) {
+	const listeners: AgentSessionEventListener[] = [];
+	const session = {
 		messages,
 		systemPrompt: [],
 		agent: { state: { tools: [] } },
@@ -70,120 +72,151 @@ function fakeSession(activity: Activity | undefined, opts: { auto?: boolean } = 
 		getGoalModeState: () => null,
 		isAutoThinking: auto,
 		autoResolvedThinkingLevel: () => "high",
-		autoThinkingActivity: activity === undefined ? undefined : () => activity,
-		getContextUsage: () => ({
-			tokens: 101_000,
-			contextWindow: 1_000_000,
-			percent: 10.1,
-		}),
+		getContextUsage: () => ({ tokens: 101_000, contextWindow: 1_000_000, percent: 10.1 }),
 		contextUsageRevision: 0,
-	} as unknown as AgentSession;
+		subscribe: (listener: AgentSessionEventListener) => {
+			listeners.push(listener);
+			return () => listeners.splice(listeners.indexOf(listener), 1);
+		},
+	};
+	const setAuto = (next: boolean): void => {
+		session.isAutoThinking = next;
+		for (const listener of listeners) void listener({ type: "thinking_level_changed", thinkingLevel: undefined });
+	};
+	return { session: session as unknown as AgentSession, setAuto };
 }
 
-function plain(text: string | readonly string[]): string {
-	return (
-		(Array.isArray(text) ? text.join("\n") : (text as string))
-			// biome-ignore lint/suspicious/noControlCharactersInRegex: strip SGR before matching
-			.replace(/\x1b\[[0-9;]*m/g, "")
-			.replace(/[ \t]+$/gm, "")
-			.split("\n")
-			.filter(Boolean)
-			.pop() ?? ""
-	);
+interface Harness {
+	bus: EventBus;
+	component: StatusLineComponent;
+	readout: AutoThinkingReadout;
+	setAuto(auto: boolean): void;
+	/** Footer status lines plus the custom bar's `status` segment, SGR stripped. */
+	screen(): string;
 }
 
-function footerBar(session: AgentSession): string {
-	return plain(new FooterComponent(session, statusLineHost).render(110));
-}
+const harnesses: Harness[] = [];
 
-function customComponent(session: AgentSession): StatusLineComponent {
+afterEach(() => {
+	for (const harness of harnesses.splice(0)) {
+		harness.readout.dispose();
+		harness.component.dispose();
+	}
+});
+
+function harness(opts: { auto?: boolean } = {}): Harness {
+	const { session, setAuto } = fakeSession(opts.auto ?? true);
+	const bus = new EventBus();
 	const component = new StatusLineComponent(session, statusLineHost);
 	component.updateSettings({
 		preset: "custom",
 		leftSegments: ["model"],
-		rightSegments: ["context_pct", "auto_thinking"],
+		rightSegments: ["status"],
 		separator: "powerline-thin",
 		sessionAccent: false,
 	} as unknown as Parameters<StatusLineComponent["updateSettings"]>[0]);
-	return component;
+	const ctx = {
+		session,
+		viewSession: session,
+		subagentEventBus: bus,
+		setHookStatus: (key: string, text: string | undefined) => component.setHookStatus(key, text),
+	} as unknown as InteractiveModeContext;
+	const readout = new AutoThinkingReadout(ctx);
+	const screen = () =>
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: strip SGR before matching
+		[...component.render(110), component.renderBottomBar(110, "full")].join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+	const built = { bus, component, readout, setAuto, screen };
+	harnesses.push(built);
+	return built;
 }
 
-function customBar(session: AgentSession): string {
-	const component = customComponent(session);
-	try {
-		return plain(component.renderBottomBar(110, "full"));
-	} finally {
-		component.dispose();
+function emit(bus: EventBus, frame: AutoThinkingActivityFrame): void {
+	bus.emit(AUTO_THINKING_ACTIVITY_EVENT_CHANNEL, frame);
+}
+
+/** Count `classified` resolved and `fallback` guessed turns, then let the hold expire. */
+function count(bus: EventBus, classified: number, fallback: number): void {
+	for (let i = 0; i < classified + fallback; i++) {
+		emit(bus, { phase: "begin" });
+		emit(bus, { phase: "end", result: i < classified ? "classified" : "fallback" });
 	}
+	vi.advanceTimersByTime(MIN_CLASSIFYING_VISIBLE_MS);
 }
 
-describe("status line auto-thinking indicator", () => {
+/** Occurrences of `text` on screen: once as a footer status line, once in the `status` segment. */
+function occurrences(screen: string, text: string): number {
+	return screen.split(text).length - 1;
+}
+
+describe("status line auto-thinking readout", () => {
 	it("reports resolved turns, and fallbacks only once some occurred", () => {
-		const mixed = fakeSession({
-			classifying: false,
-			classified: 8,
-			fallback: 2,
-		});
-		expect(footerBar(mixed)).toContain("8·2⚠");
-		expect(customBar(mixed)).toContain("8·2⚠");
-		const clean = fakeSession({
-			classifying: false,
-			classified: 8,
-			fallback: 0,
-		});
-		expect(footerBar(clean)).toContain("🧠 8");
-		expect(footerBar(clean)).not.toContain("·2");
-		expect(customBar(clean)).toContain("🧠 8");
-		expect(customBar(clean)).not.toContain("·2");
+		const mixed = harness();
+		count(mixed.bus, 8, 2);
+		expect(occurrences(mixed.screen(), "🧠 8·2⚠")).toBe(2);
+
+		const clean = harness();
+		count(clean.bus, 8, 0);
+		expect(occurrences(clean.screen(), "🧠 8")).toBe(2);
+		expect(clean.screen()).not.toContain("⚠");
+		expect(clean.screen()).not.toContain("8·");
 	});
 
 	it("takes the icon, separator and warning from the symbol preset", async () => {
 		await setSymbolPreset("ascii");
 		try {
-			const mixed = fakeSession({ classifying: false, classified: 8, fallback: 2 });
-			expect(footerBar(mixed)).toContain("IQ 8-2[!]");
-			expect(customBar(mixed)).toContain("IQ 8-2[!]");
+			const mixed = harness();
+			count(mixed.bus, 8, 2);
+			expect(occurrences(mixed.screen(), "IQ 8-2[!]")).toBe(2);
 		} finally {
 			await initTheme();
 		}
 	});
 
-	it("stays hidden with nothing to report, auto off, or no accessor", () => {
-		for (const session of [
-			fakeSession({ classifying: false, classified: 0, fallback: 0 }),
-			fakeSession({ classifying: false, classified: 8, fallback: 2 }, { auto: false }),
-			fakeSession(undefined),
-		]) {
-			expect(footerBar(session)).not.toContain("🧠");
-			expect(customBar(session)).not.toContain("🧠");
-		}
+	it("stays hidden with nothing to report or with auto off", () => {
+		const idle = harness();
+		expect(idle.component.render(110)).toEqual([]);
+
+		const off = harness({ auto: false });
+		count(off.bus, 8, 2);
+		expect(off.component.render(110)).toEqual([]);
+		expect(off.screen()).not.toContain("8·2");
 	});
 
-	it("shows the pending marker instead of the stale level while classifying", () => {
-		const busy = fakeSession({ classifying: true, classified: 8, fallback: 2 });
-		expect(footerBar(busy)).toContain("⟳ auto");
-		expect(footerBar(busy)).not.toContain("• high");
-		expect(customBar(busy)).toContain("⟳ auto");
-		expect(footerBar(busy)).toContain("8·2⚠");
+	it("shows the pending marker ahead of the counts while classifying, and holds it briefly", () => {
+		const { bus, screen } = harness();
+		count(bus, 8, 2);
+		emit(bus, { phase: "begin" });
+		expect(screen()).toContain("⟳ auto 🧠 8·2⚠");
+		emit(bus, { phase: "end", result: "classified" });
+		expect(screen()).toContain("⟳ auto 🧠 9·2⚠");
+		vi.advanceTimersByTime(MIN_CLASSIFYING_VISIBLE_MS);
+		expect(screen()).toContain("🧠 9·2⚠");
+		expect(screen()).not.toContain("auto");
 	});
 
-	it("repaints the cached custom bar when the tallies move", () => {
-		const live: Activity = { classifying: false, classified: 1, fallback: 0 };
-		const component = customComponent(fakeSession(live));
-		try {
-			expect(plain(component.renderBottomBar(110, "full"))).toContain("🧠 1");
-			live.classified = 2;
-			expect(plain(component.renderBottomBar(110, "full"))).toContain("🧠 2");
-			live.classifying = true;
-			expect(plain(component.renderBottomBar(110, "full"))).toContain("⟳ auto");
-			live.fallback = 1;
-			expect(plain(component.renderBottomBar(110, "full"))).toContain("2·1⚠");
-			live.classifying = false;
-			const settled = plain(component.renderBottomBar(110, "full"));
-			expect(settled).toContain("2·1⚠");
-			expect(settled).not.toContain("auto");
-		} finally {
-			component.dispose();
-		}
+	it("shows the marker alone before anything was counted", () => {
+		const { bus, component } = harness();
+		emit(bus, { phase: "begin" });
+		expect(component.render(110)).toEqual(["⟳ auto"]);
+	});
+
+	it("follows `auto` being switched on and off without classifier activity", () => {
+		const { bus, component, setAuto } = harness({ auto: false });
+		count(bus, 3, 0);
+		expect(component.render(110)).toEqual([]);
+		setAuto(true);
+		expect(component.render(110)).toEqual(["🧠 3"]);
+		setAuto(false);
+		expect(component.render(110)).toEqual([]);
+	});
+
+	it("clears its status on dispose", () => {
+		const { bus, component, readout } = harness();
+		count(bus, 1, 0);
+		expect(component.render(110)).toEqual(["🧠 1"]);
+		readout.dispose();
+		expect(component.render(110)).toEqual([]);
+		emit(bus, { phase: "begin" });
+		expect(component.render(110)).toEqual([]);
 	});
 });
