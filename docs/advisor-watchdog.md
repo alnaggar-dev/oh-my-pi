@@ -286,7 +286,7 @@ advisors:
     tools: [read, grep, glob]
 ```
 
-Diffs inside an advisor delta are bounded by the same 8 KiB / 80-line per-tool budget as other expanded tool output.
+Diffs inside an advisor delta are bounded to 8 KiB / 300 lines; other expanded tool output keeps its 8 KiB / 80-line per-tool budget.
 
 ### Reading actual spend
 

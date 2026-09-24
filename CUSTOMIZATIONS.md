@@ -34,8 +34,8 @@ does what I wanted".
 - **Files:** `packages/coding-agent/src/config/settings-schema.ts`,
   `packages/coding-agent/src/modes/controllers/selector-controller.ts`,
   `docs/advisor-watchdog.md` (its "Controlling token spend" section; the other fork
-  paragraphs are named under the read-only, context-slimming, loop-bound and prune
-  entries' **Depends on upstream**),
+  paragraphs are named under the read-only, context-slimming, loop-bound, prune and
+  bounded-diffs entries' **Depends on upstream**),
   `docs/settings.md` (the three `advisor.*` rows and the reworded advisor intro).
 - **Depends on upstream:** `AdvisorRuntime.onTurnEnd(messages, { willContinue })` and
   its `willContinue` flag — the gate must run after `#latestMessages` is set and
@@ -402,8 +402,10 @@ does what I wanted".
 
 - **What it does:** Upstream already bounds expanded tool input/output in advisor deltas
   and redacts it before truncating. The fork adds two things. (1) The expanded edit
-  diff (`details.diff`) is redacted, then middle-truncated to the same 8 KiB / 80-line
-  per-tool budget with an elision marker; small diffs pass through byte-identical.
+  diff (`details.diff`) is redacted, then middle-truncated to 8 KiB / 300 lines with an
+  elision marker: the tool-IO byte cap with its own, higher line cap
+  (`EXPANDED_DIFF_MAX_LINES`), while other expanded tool output keeps 80 lines. A diff
+  within both caps passes through byte-identical.
   (2) One-line previews — tool primary argument, tool intent, user `!`/`$` source,
   custom/irc/async-result, branch, compaction and file-mention one-liners — are
   redacted before their 120/80-character cut. Redaction covers the text through the end
@@ -412,10 +414,13 @@ does what I wanted".
 - **Why:** A single large edit diff could otherwise dump an unbounded blob into every
   advisor request. A cut through a plain secret leaves a fragment the later
   whole-transcript redaction pass cannot recognize, so the visible half reached the
-  advisor.
+  advisor. The diff has its own line cap because at 80 lines the cut hid the middle
+  hunks of mid-size edits, often the part a review needs most; under the same byte cap
+  the most one diff can cost stays the same.
 - **Files:** `packages/coding-agent/src/session/session-history-format.ts` (`previewLine`,
-  `primaryArgText`, the `transform` parameters on the preview formatters, and the
-  `details.diff` branch of `toolCallLine`).
+  `primaryArgText`, the `transform` parameters on the preview formatters,
+  `EXPANDED_DIFF_MAX_LINES`, the `maxLines` parameter of `boundedFencedToolContext`, and
+  the `details.diff` branch of `toolCallLine`).
 - **Depends on upstream:** `truncateMiddle` and its `{ maxBytes, maxLines }` options
   plus the elision marker text; the `details.diff` field on edit tool results;
   `formatSessionHistoryMarkdown`'s option object (`expandEditDiffs`, `expandToolIO`,
@@ -426,20 +431,27 @@ does what I wanted".
   upstream's rule that execution source past the preview cap is never scanned (its
   test `does not scan execution source after the advisor preview cap`).
   **Open upstream risk — PR #12848** (open) makes `boundedFencedToolContext` return
-  `{ content, truncated }`. In a test merge
-  `packages/coding-agent/src/session/session-history-format.ts` merged cleanly (only
-  `packages/coding-agent/test/session/session-history-format.test.ts` conflicted) and
-  the type check and lint passed, yet the `details.diff` line would put
-  `[object Object]` into the advisor prompt. Fix: `.content` on that line; keep the
-  fork's tests when resolving the test conflict.
+  `{ content, truncated }`. A test merge against its head conflicts in
+  `packages/coding-agent/src/session/session-history-format.ts` (the function's
+  signature and its fenced return) and in
+  `packages/coding-agent/test/session/session-history-format.test.ts`. Resolve by
+  keeping #12848's return shape and the fork's `maxLines` in both `truncateMiddle`
+  calls. The `details.diff` line merges cleanly, yet without `.content` it would put
+  `[object Object]` into the advisor prompt: add `.content` there. Keep the fork's tests
+  when resolving the test conflict.
   **Known gap (upstream code, left alone):** `obfuscateAdvisorMessage` in
   `packages/coding-agent/src/advisor/runtime.ts` still cuts `bashExecution` and
   `pythonExecution` source with `formatExecutionSourcePreview` (no transform) before
   redacting it.
+  Fork text it relies on in a file another entry owns: the diff-budget sentence in
+  `docs/advisor-watchdog.md` (cadence entry).
 - **Tripwire paths:** `packages/tui/src/tools/streaming-output.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
 - **Must still be true:**
   - A 400-line diff keeps head and tail, drops the middle, and carries a marker.
-  - A small diff renders byte-identically, with no marker.
+  - A small diff, and a 200-line diff under 8 KiB (past the 80-line tool-output cap,
+    inside the diff's 300-line cap), render byte-identically, with no marker.
+  - Only the `details.diff` call passes the 300-line cap; tool results and `ask` input
+    keep `boundedFencedToolContext`'s 80-line default.
   - A secret straddling the expanded diff's truncation cut leaves no 8-character piece
     in the advisor prompt.
   - A secret straddling a one-line preview's cut (tool command, user `!` command) leaves

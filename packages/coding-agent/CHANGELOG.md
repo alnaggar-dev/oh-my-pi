@@ -401,7 +401,7 @@
 - Type `^` to tag a model for delegation, with atomic display-name chips and session-persisted `m1`, `m2`, … agents available to task and eval.
 - Provider login and setup support masked secret prompts; RPC rejects secret prompts rather than requesting ordinary input.
 - Added the `advisor.reviewOn`, `advisor.includeThinking`, and `advisor.projectContext` settings to control advisor token spend. `advisor.reviewOn` defaults to `step` (today's behavior: one review per primary agent-loop step); `mutation` skips a mid-turn step only when every tool call since the last review is review-exempt — the read-tier tools minus `retain`, `memory_edit`, `checkpoint`, and `rewind`, so any unrecognized or mutating tool still triggers a review; `turn` reviews only the terminal boundary. The terminal boundary is always reviewed and skipped content is never dropped. `advisor.includeThinking: false` omits primary reasoning from the advisor delta, and `advisor.projectContext: false` omits the discovered `<project-context>` block from the advisor system prompt.
-- Expanded edit diffs in advisor transcript deltas are now bounded by the same 8 KiB / 80-line budget as other expanded tool input/output instead of being sent in full.
+- Expanded edit diffs in advisor transcript deltas are now bounded to 8 KiB / 300 lines instead of being sent in full; other expanded tool input/output keeps its 8 KiB / 80-line budget.
 
 ### Changed
 
