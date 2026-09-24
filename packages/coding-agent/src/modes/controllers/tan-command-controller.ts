@@ -76,7 +76,6 @@ export class TanCommandController {
 		// populated the cache under — same rule as advisor and handoff calls.
 		const parentPromptCacheKey = session.agent.promptCacheKey ?? parentSessionId;
 		const thinkingLevel = session.configuredThinkingLevel();
-		const autoThinkingActivity = session.autoThinkingTally();
 		const systemPrompt = [...session.systemPrompt];
 		const toolNames = session.getEnabledToolNames();
 		const modelRegistry = session.modelRegistry;
@@ -152,7 +151,6 @@ export class TanCommandController {
 							sessionManager: cloneManager,
 							model,
 							thinkingLevel,
-							autoThinkingActivity,
 							systemPrompt,
 							toolNames,
 							providerSessionId: `${parentSessionId}:tan:${Snowflake.next()}`,
