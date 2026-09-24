@@ -76,7 +76,6 @@ export class TanCommandController {
 		const parentPromptCacheKey =
 			session.agent.promptCacheKey ?? (taskPromptCacheKey === undefined ? parentSessionId : undefined);
 		const thinkingLevel = session.configuredThinkingLevel();
-		const autoThinkingActivity = session.autoThinkingTally();
 		const systemPrompt = [...session.systemPrompt];
 		// The copied prompt carries the parent's memory recall; the clone inherits it as delivered.
 		const parentMnemopiSessionState = session.getMnemopiSessionState?.();
@@ -159,7 +158,6 @@ export class TanCommandController {
 								sessionManager: cloneManager,
 								model,
 								thinkingLevel,
-								autoThinkingActivity,
 								systemPrompt,
 								toolNames,
 								mountedToolNames,
