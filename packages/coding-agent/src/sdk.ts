@@ -46,6 +46,7 @@ import {
 	formatAdvisorMemoryPrompt,
 } from "./advisor";
 import { AsyncJobManager } from "./async";
+import { AUTO_THINKING_ACTIVITY_EVENT_CHANNEL } from "./auto-thinking/activity-events";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
 import { createAutoresearchExtension } from "./autoresearch";
 import { loadCapability, reset as resetCapabilities } from "./capability";
@@ -181,7 +182,6 @@ import {
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
 } from "./session/messages";
-import { type AutoThinkingTally, autoThinkingTallyFor } from "./session/model-controls";
 import { clampProviderContextImages, dropUnreadableContextImages } from "./session/provider-image-budget";
 import {
 	expandDefaultRetryFallbackChains,
@@ -543,12 +543,6 @@ export interface CreateAgentSessionOptions {
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); retry-fallback recovery re-clamps to it. */
 	thinkingLevelCeiling?: Effort;
-	/**
-	 * Auto-thinking tally to count this session's classifications into. Omitted →
-	 * the tally of this session's `subagentEventBus`, shared by its whole spawn tree.
-	 * Set by `/tan`, whose tangent runs on a fresh bus but counts toward its owner.
-	 */
-	autoThinkingActivity?: AutoThinkingTally;
 	/** OpenAI service-tier override for this session. `null` omits `service_tier`. */
 	openAIServiceTier?: ServiceTier | null;
 	/**
@@ -4259,7 +4253,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			agent,
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
 			thinkingLevelCeiling: options.thinkingLevelCeiling,
-			autoThinkingActivity: autoThinkingTallyFor(subagentEventBus, options.autoThinkingActivity),
+			onAutoThinkingActivity: frame => subagentEventBus.emit(AUTO_THINKING_ACTIVITY_EVENT_CHANNEL, frame),
 			initialRetryFallback,
 			prewalk: options.prewalk,
 			planYolo: options.planYolo,

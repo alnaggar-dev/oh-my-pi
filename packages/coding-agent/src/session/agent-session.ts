@@ -362,12 +362,7 @@ import {
 	USER_INTERRUPT_LABEL,
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
-import {
-	type AutoThinkingActivity,
-	type AutoThinkingTally,
-	ModelControls,
-	type ModelControlsHost,
-} from "./model-controls";
+import { ModelControls, type ModelControlsHost } from "./model-controls";
 import {
 	isPrewalkPlanNudge,
 	PrewalkCoordinator,
@@ -418,7 +413,6 @@ import { YieldQueue } from "./yield-queue";
 export * from "./agent-session-events";
 export * from "./agent-session-types";
 export type { AdvisorStats, AdvisorStatusOverviewEntry, PerAdvisorStat } from "./session-advisors";
-export type { AutoThinkingActivity, AutoThinkingTally } from "./model-controls";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
 
@@ -1533,13 +1527,13 @@ export class AgentSession implements SettingsScope {
 			emit: event => this.#emit(event),
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
+			onAutoThinkingActivity: config.onAutoThinkingActivity,
 		};
 		this.#models = new ModelControls(modelControlsHost, {
 			scopedModels: config.scopedModels,
 			thinkingLevel: config.thinkingLevel,
 			thinkingLevelCeiling: config.thinkingLevelCeiling,
 			serviceTierByFamily: config.serviceTierByFamily,
-			activity: config.autoThinkingActivity,
 		});
 
 		this.#promptTemplates = config.promptTemplates ?? [];
@@ -4980,7 +4974,6 @@ export class AgentSession implements SettingsScope {
 	beginDispose(): void {
 		this.#isDisposed = true;
 		for (const dispose of this.#disposers.splice(0)) dispose();
-		this.#models.dispose();
 		this.#modelDiscoveryAbortController.abort();
 		this.#queuedMessageDrainBlocked = false;
 		this.#usagePreflightReadyForNextModelCall = false;
@@ -5588,28 +5581,6 @@ export class AgentSession implements SettingsScope {
 	/** The level `auto` resolved to for the current turn (undefined until classified). */
 	autoResolvedThinkingLevel(): Effort | undefined {
 		return this.#models.autoResolvedThinkingLevel;
-	}
-
-	/** Live auto-thinking classifier activity (pending marker + session-tree tallies). */
-	autoThinkingActivity(): AutoThinkingActivity {
-		return this.#models.autoThinkingActivity;
-	}
-
-	/**
-	 * UI repaint hook for {@link autoThinkingActivity}: pending-state changes and
-	 * counted classifications anywhere in this tree. Not a session event, so it
-	 * never reaches RPC clients or parent sessions.
-	 */
-	subscribeAutoThinkingActivity(listener: () => void): () => void {
-		return this.#models.subscribeAutoThinkingActivity(listener);
-	}
-
-	/**
-	 * The same tally object, mutable: `/tan` hands it to its tangent, which runs
-	 * on a fresh subagent bus, so the tangent still counts toward this tree.
-	 */
-	autoThinkingTally(): AutoThinkingTally {
-		return this.#models.autoThinkingTally;
 	}
 
 	/** Live per-family service tiers (OpenAI / Anthropic / Google). */

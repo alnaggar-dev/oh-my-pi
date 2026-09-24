@@ -1,50 +1,56 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import { Agent } from "@oh-my-pi/pi-agent-core";
+/**
+ * Contract: every session on a spawn tree publishes its auto-thinking classifier
+ * activity on the tree's subagent event bus, and the interactive readout on that
+ * bus rolls it up — a pending marker while anything classifies (held briefly so a
+ * fast classification stays visible), plus the tree's resolved and fallback counts.
+ */
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as path from "node:path";
 import { Effort, type Model } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import {
+	AUTO_THINKING_ACTIVITY_EVENT_CHANNEL,
+	type AutoThinkingActivityFrame,
+} from "@oh-my-pi/pi-coding-agent/auto-thinking/activity-events";
 import * as classifier from "@oh-my-pi/pi-coding-agent/auto-thinking/classifier";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import {
-	type AutoThinkingActivity,
-	type AutoThinkingTally,
-	autoThinkingTallyFor,
-	MIN_CLASSIFYING_VISIBLE_MS,
-	ModelControls,
-	type ModelControlsHost,
-} from "@oh-my-pi/pi-coding-agent/session/model-controls";
+import { AutoThinkingReadout, MIN_CLASSIFYING_VISIBLE_MS } from "@oh-my-pi/pi-coding-agent/modes/auto-thinking-readout";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
+import { type AgentRef, AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import type { CreateAgentSessionOptions } from "@oh-my-pi/pi-coding-agent/sdk";
+import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { ModelControls, type ModelControlsHost } from "@oh-my-pi/pi-coding-agent/session/model-controls";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
-const sessionsToDispose: AgentSession[] = [];
-const authToClose: AuthStorage[] = [];
+const readouts: AutoThinkingReadout[] = [];
+
+beforeAll(async () => {
+	await initTheme();
+});
 
 beforeEach(() => {
 	vi.useFakeTimers();
 });
 
-afterEach(async () => {
+afterEach(() => {
+	for (const readout of readouts.splice(0)) readout.dispose();
 	vi.clearAllTimers();
 	vi.useRealTimers();
-	for (const session of sessionsToDispose.splice(0)) await session.dispose();
-	for (const auth of authToClose.splice(0)) auth.close();
 	vi.restoreAllMocks();
 });
 
-function freshTally(): AutoThinkingTally {
-	return { classifying: false, classified: 0, fallback: 0, inFlight: 0 };
-}
-
-/** ModelControls with every collaborator stubbed down to what auto-thinking touches. */
-function createControls(
-	model: Model,
-	activity?: AutoThinkingTally,
-	promptGeneration: () => number = () => 1,
-): ModelControls {
+/** ModelControls wired like `sdk.ts`: classifier activity goes onto `bus`. */
+function createControls(model: Model, bus: EventBus, promptGeneration: () => number = () => 1): ModelControls {
 	const host = {
 		agent: {
 			setThinkingLevel: () => {},
@@ -65,31 +71,31 @@ function createControls(
 		promptGeneration,
 		magicKeywordEnabled: () => false,
 		emit: () => {},
+		onAutoThinkingActivity: (frame: AutoThinkingActivityFrame) =>
+			bus.emit(AUTO_THINKING_ACTIVITY_EVENT_CHANNEL, frame),
 	} as unknown as ModelControlsHost;
-	return new ModelControls(host, { thinkingLevel: AUTO_THINKING, activity });
+	return new ModelControls(host, { thinkingLevel: AUTO_THINKING });
+}
+
+/** The interactive readout on `bus`; returns every hook-status text it published, in order. */
+function watch(bus: EventBus): Array<string | undefined> {
+	const statuses: Array<string | undefined> = [];
+	const ctx = {
+		viewSession: { isAutoThinking: true },
+		subagentEventBus: bus,
+		setHookStatus: (key: string, text: string | undefined) => {
+			expect(key).toBe("auto-thinking");
+			statuses.push(text);
+		},
+	} as unknown as InteractiveModeContext;
+	readouts.push(new AutoThinkingReadout(ctx));
+	return statuses;
 }
 
 function classifierModel(): Model {
 	const model = getBundledModel("anthropic", "claude-sonnet-4-6");
 	if (!model) throw new Error("Expected bundled Claude Sonnet 4.6 model");
 	return model;
-}
-
-/** Burn down the cosmetic hold so `classifying` settles back to false. */
-function settleClassifyingLinger(): void {
-	vi.advanceTimersByTime(MIN_CLASSIFYING_VISIBLE_MS);
-}
-
-/** What the status line sees at each repaint request it gets through `source`. */
-function recordActivity(
-	source: { subscribeAutoThinkingActivity(listener: () => void): () => void },
-	activity: AutoThinkingActivity,
-): AutoThinkingActivity[] {
-	const updates: AutoThinkingActivity[] = [];
-	source.subscribeAutoThinkingActivity(() => {
-		updates.push({ classifying: activity.classifying, classified: activity.classified, fallback: activity.fallback });
-	});
-	return updates;
 }
 
 function gatedClassifier(): Array<PromiseWithResolvers<Effort | undefined>> {
@@ -102,252 +108,291 @@ function gatedClassifier(): Array<PromiseWithResolvers<Effort | undefined>> {
 	return gates;
 }
 
-describe("auto thinking shared activity", () => {
-	it("accumulates every session in the tree into the stable tally they share", async () => {
+describe("auto thinking activity on the subagent bus", () => {
+	it("rolls every session on the bus into one readout", async () => {
 		vi.spyOn(classifier, "classifyDifficulty").mockResolvedValue(Effort.High);
+		const bus = new EventBus();
+		const statuses = watch(bus);
 		const model = classifierModel();
-		const parent = createControls(model);
-		const shared = parent.autoThinkingTally;
-		const child = createControls(model, shared);
 
-		await parent.applyAutoThinkingLevel("rename a helper", 1);
-		await child.applyAutoThinkingLevel("untangle this race", 1);
+		await createControls(model, bus).applyAutoThinkingLevel("rename a helper", 1);
+		await createControls(model, bus).applyAutoThinkingLevel("untangle this race", 1);
+		vi.advanceTimersByTime(MIN_CLASSIFYING_VISIBLE_MS);
 
-		expect(shared.classified).toBe(2);
-		expect(shared.fallback).toBe(0);
-		settleClassifyingLinger();
-		expect(shared.classifying).toBe(false);
-		expect(parent.autoThinkingActivity).toBe(shared);
-		expect(child.autoThinkingActivity).toBe(shared);
-		expect(child.autoThinkingTally).toBe(shared);
+		expect(statuses.at(-1)).toBe("🧠 2");
 	});
 
-	it("gives one subagent bus one tally, and lets a handed-down tally claim a fresh bus", () => {
-		const treeBus = new EventBus();
-		const root = autoThinkingTallyFor(treeBus);
-		expect(autoThinkingTallyFor(treeBus)).toBe(root);
-		expect(autoThinkingTallyFor(new EventBus())).not.toBe(root);
-
-		// `/tan`: the tangent's fresh bus adopts its owner's tally for its own subagents.
-		const tangentBus = new EventBus();
-		expect(autoThinkingTallyFor(tangentBus, root)).toBe(root);
-		expect(autoThinkingTallyFor(tangentBus)).toBe(root);
-	});
-
-	it("notifies an idle parent of child starts, same-effort counts, fallbacks and hold expiry", async () => {
+	it("updates an idle parent on child starts, same-effort counts, fallbacks and hold expiry", async () => {
 		const classify = vi.spyOn(classifier, "classifyDifficulty").mockResolvedValue(Effort.High);
-		const shared = freshTally();
-		const updates = recordActivity(createControls(classifierModel(), shared), shared);
-		const child = createControls(classifierModel(), shared);
+		const bus = new EventBus();
+		const statuses = watch(bus);
+		const child = createControls(classifierModel(), bus);
 
 		const first = child.applyAutoThinkingLevel("first turn", 1);
-		expect(updates.at(-1)).toEqual({ classifying: true, classified: 0, fallback: 0 });
+		expect(statuses.at(-1)).toBe("⟳ auto");
 		await first;
-		expect(updates.at(-1)).toEqual({ classifying: true, classified: 1, fallback: 0 });
+		expect(statuses.at(-1)).toBe("⟳ auto 🧠 1");
 		await child.applyAutoThinkingLevel("same effort", 1);
-		expect(updates.at(-1)).toEqual({ classifying: true, classified: 2, fallback: 0 });
+		expect(statuses.at(-1)).toBe("⟳ auto 🧠 2");
 
 		classify.mockResolvedValueOnce(undefined);
 		await child.applyAutoThinkingLevel("no classified level", 1);
-		expect(updates.at(-1)).toEqual({ classifying: true, classified: 2, fallback: 1 });
+		expect(statuses.at(-1)).toBe("⟳ auto 🧠 2·1⚠");
 		classify.mockRejectedValueOnce(new Error("aborted"));
 		await child.applyAutoThinkingLevel("failed classification", 1);
-		expect(updates.at(-1)).toEqual({ classifying: true, classified: 2, fallback: 2 });
+		expect(statuses.at(-1)).toBe("⟳ auto 🧠 2·2⚠");
 
-		settleClassifyingLinger();
-		expect(updates.at(-1)).toEqual({ classifying: false, classified: 2, fallback: 2 });
+		vi.advanceTimersByTime(MIN_CLASSIFYING_VISIBLE_MS);
+		expect(statuses.at(-1)).toBe("🧠 2·2⚠");
 	});
 
-	it("keeps the parent pending until all overlapping work finishes, even beyond the hold", async () => {
+	it("keeps the marker until every overlapping classification ends, even beyond the hold", async () => {
 		const gates = gatedClassifier();
 		const model = classifierModel();
-		const shared = freshTally();
-		const parent = createControls(model, shared);
-		const updates = recordActivity(parent, shared);
-		const child = createControls(model, shared);
+		const bus = new EventBus();
+		const statuses = watch(bus);
 
-		const first = parent.applyAutoThinkingLevel("first turn", 1);
-		const second = child.applyAutoThinkingLevel("second turn", 1);
-		expect(shared.inFlight).toBe(2);
+		const first = createControls(model, bus).applyAutoThinkingLevel("first turn", 1);
+		const second = createControls(model, bus).applyAutoThinkingLevel("second turn", 1);
 		gates[0]?.resolve(Effort.Medium);
 		await first;
-		expect(shared.inFlight).toBe(1);
-		expect(updates.at(-1)).toEqual({ classifying: true, classified: 1, fallback: 0 });
+		expect(statuses.at(-1)).toBe("⟳ auto 🧠 1");
 		vi.advanceTimersByTime(MIN_CLASSIFYING_VISIBLE_MS + 100);
-		expect(shared.classifying).toBe(true);
+		expect(statuses.at(-1)).toBe("⟳ auto 🧠 1");
 
 		gates[1]?.resolve(Effort.High);
 		await second;
-		expect(shared.inFlight).toBe(0);
-		expect(updates.at(-1)).toEqual({ classifying: false, classified: 2, fallback: 0 });
+		expect(statuses.at(-1)).toBe("🧠 2");
 	});
 
-	it("does not send activity or accumulate counts across independent trees", async () => {
+	it("keeps separate buses independent", async () => {
 		vi.spyOn(classifier, "classifyDifficulty").mockResolvedValue(Effort.High);
-		const model = classifierModel();
-		const own = createControls(model);
-		const other = createControls(model);
-		const unrelated = recordActivity(other, other.autoThinkingActivity);
-		const child = createControls(model, own.autoThinkingTally);
+		const own = new EventBus();
+		const other = new EventBus();
+		const ownStatuses = watch(own);
+		const otherStatuses = watch(other);
 
-		await child.applyAutoThinkingLevel("rename a helper", 1);
-		settleClassifyingLinger();
+		await createControls(classifierModel(), own).applyAutoThinkingLevel("rename a helper", 1);
+		vi.advanceTimersByTime(MIN_CLASSIFYING_VISIBLE_MS);
 
-		expect(own.autoThinkingActivity.classified).toBe(1);
-		expect(other.autoThinkingActivity).toEqual(freshTally());
-		expect(unrelated).toEqual([]);
+		expect(ownStatuses.at(-1)).toBe("🧠 1");
+		expect(otherStatuses).toEqual([]);
 	});
 
-	it("discards superseded results without losing another live classification", async () => {
+	it("releases a superseded classification without counting it", async () => {
 		const gates = gatedClassifier();
-		const shared = freshTally();
+		const bus = new EventBus();
+		const statuses = watch(bus);
 		let generation = 1;
-		const controls = createControls(classifierModel(), shared, () => generation);
-		const updates = recordActivity(controls, shared);
+		const controls = createControls(classifierModel(), bus, () => generation);
 		const stale = controls.applyAutoThinkingLevel("superseded turn", generation);
 		generation += 1;
 		const live = controls.applyAutoThinkingLevel("current turn", generation);
 		gates[1]?.resolve(undefined);
 		await live;
-		expect(shared.inFlight).toBe(1);
-		expect(updates.at(-1)).toEqual({ classifying: true, classified: 0, fallback: 1 });
+		expect(statuses.at(-1)).toBe("⟳ auto 🧠 0·1⚠");
 
 		gates[0]?.resolve(Effort.High);
 		await stale;
-		expect(shared.inFlight).toBe(0);
-		settleClassifyingLinger();
-		expect(updates.at(-1)).toEqual({ classifying: false, classified: 0, fallback: 1 });
+		// Past the hold: only a still-counted in-flight classification could keep the marker.
+		vi.advanceTimersByTime(MIN_CLASSIFYING_VISIBLE_MS);
+		expect(statuses.at(-1)).toBe("🧠 0·1⚠");
 	});
 
 	it("settles the turn without waiting for the visible window", async () => {
 		vi.spyOn(classifier, "classifyDifficulty").mockResolvedValue(Effort.High);
-		const shared = freshTally();
-		const controls = createControls(classifierModel(), shared);
-		const updates = recordActivity(controls, shared);
+		const bus = new EventBus();
+		const statuses = watch(bus);
+		const controls = createControls(classifierModel(), bus);
 
 		await controls.applyAutoThinkingLevel("rename a helper", 1);
 		expect(controls.autoResolvedThinkingLevel).toBe(Effort.High);
-		expect(updates.at(-1)).toEqual({ classifying: true, classified: 1, fallback: 0 });
+		expect(statuses.at(-1)).toBe("⟳ auto 🧠 1");
 
 		vi.advanceTimersByTime(MIN_CLASSIFYING_VISIBLE_MS - 1);
-		expect(shared.classifying).toBe(true);
+		expect(statuses.at(-1)).toBe("⟳ auto 🧠 1");
 		vi.advanceTimersByTime(1);
-		expect(updates.at(-1)).toEqual({ classifying: false, classified: 1, fallback: 0 });
+		expect(statuses.at(-1)).toBe("🧠 1");
 	});
 
-	it("replaces older children's hold deadlines rather than clearing a later episode", async () => {
+	it("never lets an older hold deadline cut a later classification's hold short", async () => {
 		const gates = gatedClassifier();
 		const model = classifierModel();
-		const shared = freshTally();
-		const updates = recordActivity(createControls(model, shared), shared);
-		const a = createControls(model, shared);
-		const b = createControls(model, shared);
-		const c = createControls(model, shared);
+		const bus = new EventBus();
+		const statuses = watch(bus);
 
-		const first = a.applyAutoThinkingLevel("A starts at 0", 1);
+		const first = createControls(model, bus).applyAutoThinkingLevel("A starts at 0", 1);
 		vi.advanceTimersByTime(200);
 		gates[0]?.resolve(Effort.High);
 		await first;
 		vi.advanceTimersByTime(100);
-		const second = b.applyAutoThinkingLevel("B starts at 300", 1);
+		const second = createControls(model, bus).applyAutoThinkingLevel("B starts at 300", 1);
 		vi.advanceTimersByTime(600);
 		gates[1]?.resolve(Effort.High);
 		await second;
 		vi.advanceTimersByTime(100);
 		// A's old 1000ms deadline must not shorten B's 1300ms hold.
-		expect(shared.classifying).toBe(true);
+		expect(statuses.at(-1)).toBe("⟳ auto 🧠 2");
 
 		vi.advanceTimersByTime(100);
-		const third = c.applyAutoThinkingLevel("C starts at 1100", 1);
+		const third = createControls(model, bus).applyAutoThinkingLevel("C starts at 1100", 1);
 		vi.advanceTimersByTime(100);
 		gates[2]?.resolve(Effort.High);
 		await third;
 		vi.advanceTimersByTime(100);
 		// B's old 1300ms deadline must not shorten C's 2100ms hold.
-		expect(shared.classifying).toBe(true);
-		expect(updates.at(-1)).toEqual({ classifying: true, classified: 3, fallback: 0 });
+		expect(statuses.at(-1)).toBe("⟳ auto 🧠 3");
 		vi.advanceTimersByTime(MIN_CLASSIFYING_VISIBLE_MS - 201);
-		expect(shared.classifying).toBe(true);
+		expect(statuses.at(-1)).toBe("⟳ auto 🧠 3");
 		vi.advanceTimersByTime(1);
-		expect(updates.at(-1)).toEqual({ classifying: false, classified: 3, fallback: 0 });
+		expect(statuses.at(-1)).toBe("🧠 3");
 	});
 
-	it("drops a disposed child's result without clearing a surviving sibling", async () => {
-		const gates = gatedClassifier();
-		const model = classifierModel();
-		const shared = freshTally();
-		const parentUpdates = recordActivity(createControls(model, shared), shared);
-		const child = createControls(model, shared);
-		const sibling = createControls(model, shared);
-		const childTurn = child.applyAutoThinkingLevel("disposed turn", 1);
-		const siblingTurn = sibling.applyAutoThinkingLevel("surviving turn", 1);
-
-		child.dispose();
-		gates[0]?.resolve(Effort.High);
-		await childTurn;
-		expect(shared.inFlight).toBe(1);
-		expect(shared.classified).toBe(0);
-		expect(shared.classifying).toBe(true);
-
-		gates[1]?.resolve(Effort.High);
-		await siblingTurn;
-		expect(parentUpdates.at(-1)).toEqual({ classifying: true, classified: 1, fallback: 0 });
-		settleClassifyingLinger();
-		expect(parentUpdates.at(-1)).toEqual({ classifying: false, classified: 1, fallback: 0 });
-	});
-
-	it("keeps a completed child's hold alive after that child is disposed", async () => {
-		vi.spyOn(classifier, "classifyDifficulty").mockResolvedValue(Effort.High);
-		const shared = freshTally();
-		const updates = recordActivity(createControls(classifierModel(), shared), shared);
-		const child = createControls(classifierModel(), shared);
-
-		await child.applyAutoThinkingLevel("completed turn", 1);
-		child.dispose();
-		vi.advanceTimersByTime(MIN_CLASSIFYING_VISIBLE_MS - 1);
-		expect(shared.classifying).toBe(true);
-		vi.advanceTimersByTime(1);
-		expect(updates.at(-1)).toEqual({ classifying: false, classified: 1, fallback: 0 });
-	});
-});
-
-describe("AgentSession shared activity disposal", () => {
-	it("keeps repainting a surviving session's subscriber after another session in the tree is disposed", async () => {
-		vi.spyOn(classifier, "classifyDifficulty").mockResolvedValue(Effort.High);
-		const model = classifierModel();
-		const auth = createInMemoryAuthStorage();
-		authToClose.push(auth);
-		const modelRegistry = new ModelRegistry(auth);
-		function newSession(activity?: AutoThinkingTally): AgentSession {
-			const session = new AgentSession({
-				agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [] } }),
-				sessionManager: SessionManager.inMemory(),
-				settings: Settings.isolated({ "compaction.enabled": false }),
-				modelRegistry,
-				thinkingLevel: AUTO_THINKING,
-				autoThinkingActivity: activity,
-			});
-			sessionsToDispose.push(session);
-			return session;
+	it("ignores malformed frames on the channel", () => {
+		const bus = new EventBus();
+		const statuses = watch(bus);
+		for (const frame of [undefined, "begin", { phase: "start" }, { phase: "end", result: "guessed" }]) {
+			bus.emit(AUTO_THINKING_ACTIVITY_EVENT_CHANNEL, frame);
 		}
-		const parent = newSession();
-		const shared = parent.autoThinkingTally();
-		const survivor = newSession(shared);
-		const survivorUpdates = recordActivity(survivor, survivor.autoThinkingActivity());
-		const child = createControls(model, shared);
-
-		await child.applyAutoThinkingLevel("first child turn", 1);
-		expect(survivorUpdates.at(-1)).toEqual({ classifying: true, classified: 1, fallback: 0 });
-		parent.beginDispose();
-		settleClassifyingLinger();
-		expect(survivorUpdates.at(-1)).toEqual({ classifying: false, classified: 1, fallback: 0 });
-
-		vi.useRealTimers();
-		await parent.dispose();
-		vi.useFakeTimers();
-		await child.applyAutoThinkingLevel("after parent disposal", 1);
-		expect(survivorUpdates.at(-1)).toEqual({ classifying: true, classified: 2, fallback: 0 });
-		settleClassifyingLinger();
-		expect(survivorUpdates.at(-1)).toEqual({ classifying: false, classified: 2, fallback: 0 });
+		expect(statuses).toEqual([]);
 	});
 });
+
+describe("cold-revived subagent auto thinking", () => {
+	it("rolls real cold-revived classifications into the tree whose subagent bus it revives on", async () => {
+		vi.useRealTimers();
+		const tempDir = TempDir.createSync("@pi-revive-auto-thinking-");
+		const cwd = tempDir.path();
+		const authStorage = createInMemoryAuthStorage();
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected bundled test model");
+		const settings = Settings.isolated({
+			"async.enabled": false,
+			"compaction.enabled": false,
+			"marketplace.autoUpdate": "off",
+			"todo.enabled": false,
+		});
+		const sessions: AgentSession[] = [];
+		const createAgentSession = sdkModule.createAgentSession;
+		const create = async (options?: CreateAgentSessionOptions) => {
+			const result = await createAgentSession({
+				agentDir: cwd,
+				skills: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				skipPythonPreflight: true,
+				disableExtensionDiscovery: true,
+				...options,
+			});
+			sessions.push(result.session);
+			return result;
+		};
+		const rootOptions: CreateAgentSessionOptions = {
+			cwd,
+			authStorage,
+			modelRegistry,
+			settings,
+			model,
+			hasUI: false,
+			enableMCP: false,
+			enableLsp: false,
+		};
+		try {
+			const treeBus = new EventBus();
+			const otherBus = new EventBus();
+			const treeStatuses = watch(treeBus);
+			const otherStatuses = watch(otherBus);
+			const { session: root } = await create({
+				...rootOptions,
+				sessionManager: SessionManager.inMemory(cwd),
+				subagentEventBus: treeBus,
+			});
+			await create({ ...rootOptions, sessionManager: SessionManager.inMemory(cwd), subagentEventBus: otherBus });
+
+			const sessionFile = await createPersistedSession(cwd);
+			const ref = AgentRegistry.global().register(createRef(sessionFile));
+			const reviver = await createPersistedSubagentReviverFactory({
+				session: root,
+				authStorage,
+				modelRegistry,
+				settings,
+				enableLsp: false,
+				subagentEventBus: treeBus,
+			})(ref);
+			if (!reviver) throw new Error("Expected a persisted reviver");
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(create);
+			const child = await reviver(ref);
+			child.setThinkingLevel(AUTO_THINKING);
+			child.agent.streamFn = createMockModel({ handler: { content: ["revived complete"] } }).stream;
+			vi.spyOn(classifier, "classifyDifficulty")
+				.mockResolvedValueOnce(Effort.Low)
+				.mockRejectedValueOnce(new Error("classifier unavailable"));
+
+			// Real timers: the pending marker may or may not still be held here.
+			await child.prompt("Classify the revived task", { attribution: "user" });
+			expect(treeStatuses.at(-1)).toEndWith("🧠 1");
+			await child.prompt("Continue after the classifier fails", { attribution: "user" });
+			expect(treeStatuses.at(-1)).toEndWith("🧠 1·1⚠");
+			expect(otherStatuses).toEqual([]);
+			expect(child.getLastAssistantMessage()?.content).toEqual([{ type: "text", text: "revived complete" }]);
+		} finally {
+			for (const session of sessions.reverse()) await session.dispose();
+			authStorage.close();
+			AgentLifecycleManager.resetGlobalForTests();
+			AgentRegistry.resetGlobalForTests();
+			await tempDir.remove();
+			vi.useFakeTimers();
+		}
+	}, 20_000);
+});
+
+function createRef(sessionFile: string): AgentRef {
+	return {
+		id: "persisted-auto-thinking",
+		displayName: "Persisted Auto Thinking",
+		kind: "sub",
+		parentId: "Main",
+		status: "parked",
+		session: null,
+		sessionFile,
+		createdAt: 0,
+		lastActivity: 0,
+	};
+}
+
+/** A parked subagent transcript on disk, as the task executor leaves it. */
+async function createPersistedSession(cwd: string): Promise<string> {
+	const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
+	const sessionFile = manager.getSessionFile();
+	if (!sessionFile) throw new Error("Expected a persisted session file");
+	manager.appendSessionInit({
+		systemPrompt: "persisted prompt",
+		task: "persisted task",
+		tools: ["read", "yield"],
+		restrictToolNames: true,
+		modelRole: "default",
+		resolvedModel: "anthropic/claude-sonnet-4-5",
+	});
+	manager.appendMessage({
+		role: "assistant",
+		provider: "anthropic",
+		model: "claude-sonnet-4-5",
+		content: [{ type: "text", text: "persisted" }],
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		api: "anthropic-messages",
+		stopReason: "stop",
+		timestamp: Date.now(),
+	});
+	await manager.close();
+	return sessionFile;
+}

@@ -1,27 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
-import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { Effort, type AssistantMessage, type Model } from "@oh-my-pi/pi-ai";
-import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
-import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import * as classifier from "@oh-my-pi/pi-coding-agent/auto-thinking/classifier";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import type { AsyncJobRegisterOptions } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import type { EffectiveExtensionRoots } from "@oh-my-pi/pi-coding-agent/capability/types";
-import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { PreparedExtension } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { resolveLocalRoot } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
 import { TanCommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/tan-command-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
-import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
-import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
-import { createInMemoryAuthStorage } from "../../helpers/agent-session-setup";
 
 interface CapturedJobRunContext {
 	jobId: string;
@@ -137,7 +129,6 @@ function createContext(overrides?: {
 		asyncJobManager: { register },
 		sessionId: "parent-session",
 		configuredThinkingLevel: vi.fn(() => undefined),
-		autoThinkingTally: vi.fn(),
 		systemPrompt: ["system prompt"],
 		getActiveToolNames: vi.fn(() => overrides?.activeToolNames ?? ["read", "bash"]),
 		getEnabledToolNames: vi.fn(() => overrides?.enabledToolNames ?? overrides?.activeToolNames ?? ["read", "bash"]),
@@ -199,102 +190,6 @@ describe("TanCommandController", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
-
-	it("keeps real tangent classifications on the dispatch owner's tree across focus switches", async () => {
-		const harness = createContext();
-		const cwd = harness.tempDir.path();
-		const authStorage = createInMemoryAuthStorage();
-		authStorage.keys.setRuntime("anthropic", "test-key");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
-		const reasoningModel = getBundledModel("anthropic", "claude-sonnet-4-5");
-		if (!reasoningModel) throw new Error("Expected bundled test model");
-		const settings = Settings.isolated({
-			"async.enabled": false,
-			"compaction.enabled": false,
-			"marketplace.autoUpdate": "off",
-			"task.enableLsp": false,
-			"todo.enabled": false,
-		});
-		const sessions: AgentSession[] = [];
-		const makeOwner = (agentId: string, parent?: AgentSession) => {
-			const sessionManager = SessionManager.create(cwd, path.join(cwd, agentId));
-			sessionManager.appendMessage(assistantText("parent context"));
-			const session = new AgentSession({
-				agent: new Agent({
-					initialState: { model: reasoningModel, systemPrompt: ["parent"], tools: [], messages: [] },
-				}),
-				sessionManager,
-				settings,
-				modelRegistry,
-				agentId,
-				agentKind: parent ? "sub" : "main",
-				thinkingLevel: AUTO_THINKING,
-				autoThinkingActivity: parent?.autoThinkingTally(),
-				disableExtensionDiscovery: true,
-			});
-			sessions.push(session);
-			return session;
-		};
-		let restoreJobManager: (() => void) | undefined;
-		try {
-			const root = makeOwner("Main");
-			const focusedOwner = makeOwner("Focused", root);
-			const otherRoot = makeOwner("OtherRoot");
-			const jobManagerDescriptor = Object.getOwnPropertyDescriptor(focusedOwner, "asyncJobManager");
-			Object.defineProperty(focusedOwner, "asyncJobManager", {
-				configurable: true,
-				value: harness.ctx.session.asyncJobManager,
-			});
-			restoreJobManager = () => {
-				if (jobManagerDescriptor) Object.defineProperty(focusedOwner, "asyncJobManager", jobManagerDescriptor);
-				else Reflect.deleteProperty(focusedOwner, "asyncJobManager");
-			};
-			harness.ctx.settings = settings;
-			const createAgentSession = sdkModule.createAgentSession;
-			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
-				const result = await createAgentSession({
-					agentDir: cwd,
-					skills: [],
-					contextFiles: [],
-					promptTemplates: [],
-					slashCommands: [],
-					preloadedCustomToolPaths: [],
-					skipPythonPreflight: true,
-					enableIrc: false,
-					...options,
-				});
-				sessions.push(result.session);
-				result.session.agent.streamFn = createMockModel({ handler: { content: ["tangent complete"] } }).stream;
-				return result;
-			});
-			vi.spyOn(classifier, "classifyDifficulty").mockResolvedValueOnce(Effort.Low).mockResolvedValueOnce(undefined);
-			const controller = new TanCommandController(harness.ctx);
-
-			for (const fallback of [0, 1]) {
-				harness.ctx.session = focusedOwner;
-				harness.ctx.sessionManager = focusedOwner.sessionManager;
-				await controller.start(fallback ? "Continue without a classifier result" : "Classify the tangent");
-				const run = harness.capturedRun;
-				if (!run) throw new Error("Expected deferred tangent job");
-				// Switch both the focused session and transcript before actual construction.
-				harness.ctx.session = otherRoot;
-				harness.ctx.sessionManager = otherRoot.sessionManager;
-				expect(
-					await run({ jobId: "job-123", signal: new AbortController().signal, reportProgress: async () => {} }),
-				).toBe("tangent complete");
-				expect(root.autoThinkingActivity()).toMatchObject({ classified: 1, fallback });
-				expect(focusedOwner.autoThinkingActivity()).toMatchObject({ classified: 1, fallback });
-				expect(otherRoot.autoThinkingActivity()).toMatchObject({ classified: 0, fallback: 0 });
-			}
-		} finally {
-			restoreJobManager?.();
-			for (const session of sessions.reverse()) await session.dispose();
-			authStorage.close();
-			AgentLifecycleManager.resetGlobalForTests();
-			AgentRegistry.resetGlobalForTests();
-			await harness.tempDir.remove();
-		}
-	}, 20_000);
 
 	it("rejects empty work before forking", async () => {
 		const harness = createContext();

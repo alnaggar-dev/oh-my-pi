@@ -1,5 +1,4 @@
 import { formatNumber } from "@oh-my-pi/pi-utils";
-import type { StatusLineAutoThinkingActivity } from "./host";
 import type { Theme } from "../theme";
 
 /** Inputs whose differences are intentionally preserved between current status segments and the legacy footer. */
@@ -92,25 +91,4 @@ export function formatBillingSummary(options: BillingSummaryOptions, uiTheme: Th
 		);
 	}
 	return parts.length > 0 ? parts.join(" ") : undefined;
-}
-
-/**
- * Shared auto-thinking tally: `<icon> 8` while every turn resolved a level,
- * `<icon> 8·2⚠` once the classifier timed out or errored and a guessed level
- * was used. Separator and warning come from the symbol preset (`IQ 8-2[!]`
- * under `ascii`). Callers gate on `isAutoThinking`; a missing accessor or an
- * all-zero tally renders nothing.
- */
-export function formatAutoThinkingActivity(
-	activity: StatusLineAutoThinkingActivity | undefined,
-	uiTheme: Theme,
-): string | undefined {
-	if (!activity) return undefined;
-	const { classified, fallback } = activity;
-	if (!classified && !fallback) return undefined;
-	const tally = fallback
-		? `${formatNumber(classified)}${uiTheme.sep.dot.trim()}${formatNumber(fallback)}${uiTheme.status.warning}`
-		: formatNumber(classified);
-	const icon = uiTheme.symbol("icon.intelligence");
-	return icon ? `${icon} ${tally}` : tally;
 }

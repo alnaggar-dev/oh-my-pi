@@ -332,18 +332,18 @@
 
 ### Added
 
-- Added an `auto` thinking activity readout to the status line: sessions now expose the classifier's in-flight state plus per-session counts of turns it resolved a level for versus turns that fell back after a timeout or error.
+- Added an `auto` thinking activity readout to the status line, shown as a hook status (its own line under the status bar, and inside the `status` segment when a layout includes it): a pending `auto` marker while the classifier runs, then how many turns it resolved a level for (`🧠 8`) and how many fell back to a guessed level after a timeout or error (`🧠 8·2⚠`; `IQ 8-2[!]` under the `ascii` symbol preset).
 
 ### Changed
 
-- Changed the status line's `auto` thinking activity readout to count a whole session tree: subagent classifications now roll up into the root session's tally (every session on the same subagent bus shares one), so a turn where several subagents classified is reflected in the parent's counts.
+- Changed the status line's `auto` thinking activity readout to count a whole session tree: every session publishes its classifier activity on the tree's subagent event bus, so subagent classifications roll up into the root's readout. `/tan` tangents run on their own bus, so their classifications are not counted.
 
 ### Fixed
 
 - Fixed clipboard paste stalling on an empty clipboard; image and text clipboard reads now run concurrently so the empty-clipboard status surfaces after the slower read instead of the sum of both.
 - Fixed memory recall blocks carrying a minute-resolution `Current time` stamp that dirtied the cached system prompt on every refresh; recall rows already carry dates, so the stamp is removed.
 - Fixed `omp auth-broker token` and `omp auth-gateway token` exiting silently without creating a token on Windows when no token file exists yet; token and config reads now use `node:fs` instead of `Bun.file`.
-- Fixed the status line's `auto` thinking marker never becoming visible while the classifier ran: the status line now repaints when classification starts and stops (a UI-only subscription, not a session event, so RPC clients never see it), and the marker is held briefly when a classification finishes faster than the repaint cadence. The hold is display-only and never delays the turn.
+- Fixed the status line's `auto` thinking marker never becoming visible while the classifier ran: the readout now repaints when classification starts and stops (published on the subagent event bus, which RPC clients and collab peers do not forward), and the marker is held briefly when a classification finishes faster than the repaint cadence. The hold is display-only and never delays the turn.
 
 ## [18.2.5] - 2026-09-17
 

@@ -8,7 +8,7 @@ import type { FooterHost, FooterSession } from "./host";
 import { shortenPath } from "../render/render-utils";
 import { sanitizeStatusText } from "../chrome/shared";
 import { formatMetric } from "../components/metric";
-import { formatAutoThinkingActivity, formatBillingSummary } from "./metrics";
+import { formatBillingSummary } from "./metrics";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "../chrome/context-thresholds";
 
 /**
@@ -246,11 +246,6 @@ export class FooterComponent implements Component {
 		}
 		statsParts.push(contextPercentStr);
 
-		// Auto-thinking classifier tally sits at the right end of the counter cluster.
-		const autoThinking = this.session.isAutoThinking ? this.session.autoThinkingActivity?.() : undefined;
-		const autoThinkingPart = formatAutoThinkingActivity(autoThinking, theme);
-		if (autoThinkingPart) statsParts.push(autoThinkingPart);
-
 		let statsLeft = statsParts.join(" ");
 
 		// Add model name on the right side, plus thinking level if model supports it
@@ -262,8 +257,7 @@ export class FooterComponent implements Component {
 			if (this.session.isAutoThinking) {
 				// Pending (no turn classified yet / classifying) shows a symbol-theme
 				// question-box marker; once resolved it shows `<level>`.
-				// A live classification outranks the previous turn's resolved level.
-				const resolved = autoThinking?.classifying ? undefined : this.session.autoResolvedThinkingLevel();
+				const resolved = this.session.autoResolvedThinkingLevel();
 				rightSide = `${modelName} • ${resolved ? resolved : `${theme.thinking.autoPending} auto`}`;
 			} else {
 				const thinkingLevel = state.thinkingLevel ?? ThinkingLevel.Off;

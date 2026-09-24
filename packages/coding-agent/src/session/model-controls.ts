@@ -9,6 +9,7 @@ import { isFireworksFastModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id"
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { AutoThinkingActivityFrame } from "../auto-thinking/activity-events";
 import { classifyDifficulty } from "../auto-thinking/classifier";
 import type { ModelRegistry } from "../config/model-registry";
 import {
@@ -38,17 +39,8 @@ import type { ModelCycleResult, ResolvedRoleModel, RoleModelCycle, RoleModelCycl
 import { formatRoleModelValue, resolveRoleModelFull } from "./role-models";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
 import type { SessionManager } from "./session-manager";
-import type { EventBus } from "../utils/event-bus";
-
 import { cfgDefaultThinkingLevel, cfgProvidersFireworksTier } from "./settings";
 import { cfgDisabledProviders, cfgEnabledModels } from "../config/model-settings";
-/**
- * Minimum visibility window from the latest classification's start. A
- * classification usually finishes faster than the status line's repaint cadence,
- * so the flag is held briefly to stay perceivable. Display-only: no turn work
- * ever waits on this window.
- */
-export const MIN_CLASSIFYING_VISIBLE_MS = 1000;
 
 /** Capabilities borrowed from the owning AgentSession. */
 export interface ModelControlsHost {
@@ -69,104 +61,8 @@ export interface ModelControlsHost {
 	emit(event: AgentSessionEvent): void;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
-}
-
-/** Live auto-thinking classifier activity for this session tree. */
-export interface AutoThinkingActivity {
-	/** A classification is in flight or its minimum visibility window is active. */
-	readonly classifying: boolean;
-	/** Turns where the classifier returned a level. */
-	readonly classified: number;
-	/** Turns where it timed out or errored and a guessed level was used. */
-	readonly fallback: number;
-}
-
-/**
- * Mutable tally shared by a session tree (see {@link autoThinkingTallyFor}), so
- * child classifications land on the root's object.
- * `inFlight` counts concurrent requests; `classifying` also includes their
- * shared display-only visibility window.
- */
-export interface AutoThinkingTally {
-	classifying: boolean;
-	classified: number;
-	fallback: number;
-	inFlight: number;
-}
-
-/** One notification channel and visibility deadline per tally, never per child. */
-class AutoThinkingTreeActivity {
-	readonly #tally: AutoThinkingTally;
-	readonly #listeners = new Set<() => void>();
-	#visibleUntil = 0;
-	#lingerTimer: NodeJS.Timeout | undefined;
-
-	constructor(tally: AutoThinkingTally) {
-		this.#tally = tally;
-	}
-
-	subscribe(listener: () => void): () => void {
-		this.#listeners.add(listener);
-		return () => this.#listeners.delete(listener);
-	}
-
-	#notify(): void {
-		for (const listener of this.#listeners) listener();
-	}
-
-	begin(): void {
-		if (this.#lingerTimer) {
-			clearTimeout(this.#lingerTimer);
-			this.#lingerTimer = undefined;
-		}
-		this.#visibleUntil = Date.now() + MIN_CLASSIFYING_VISIBLE_MS;
-		this.#tally.inFlight += 1;
-		if (!this.#tally.classifying) {
-			this.#tally.classifying = true;
-			this.#notify();
-		}
-	}
-
-	end(result: "classified" | "fallback" | undefined): void {
-		if (result) this.#tally[result] += 1;
-		this.#tally.inFlight -= 1;
-		let cleared = false;
-		if (this.#tally.inFlight === 0) {
-			const remaining = this.#visibleUntil - Date.now();
-			if (remaining <= 0) {
-				this.#tally.classifying = false;
-				cleared = true;
-			} else {
-				// Capture only this shared state, not a completing session/host.
-				this.#lingerTimer = setTimeout(() => {
-					this.#lingerTimer = undefined;
-					this.#tally.classifying = false;
-					this.#notify();
-				}, remaining);
-				// Purely cosmetic: never hold the process open.
-				this.#lingerTimer.unref();
-			}
-		}
-		// Counts repaint even if effort and pending state did not change.
-		if (result || cleared) this.#notify();
-	}
-}
-
-const autoThinkingTrees = new WeakMap<AutoThinkingTally, AutoThinkingTreeActivity>();
-
-/** One tally per spawn tree, keyed by the `subagentEventBus` every spawn path hands down. */
-const busTallies = new WeakMap<EventBus, AutoThinkingTally>();
-
-/**
- * Tally for a new session on `bus`. A `handedDown` tally wins (`/tan` runs on a
- * fresh bus but counts toward its dispatch owner) and, when `bus` has none yet,
- * becomes the bus's tally so that session's own subagents roll up with it.
- */
-export function autoThinkingTallyFor(bus: EventBus, handedDown?: AutoThinkingTally): AutoThinkingTally {
-	const own = busTallies.get(bus);
-	const tally = handedDown ?? own ?? { classifying: false, classified: 0, fallback: 0, inFlight: 0 };
-	if (!own) busTallies.set(bus, tally);
-	return tally;
+	/** Classifier start/finish, for the auto-thinking readout. */
+	onAutoThinkingActivity?(frame: AutoThinkingActivityFrame): void;
 }
 
 /** Owns model selection, thinking effort, role cycling, and service tiers. */
@@ -178,14 +74,6 @@ export class ModelControls {
 	readonly #thinkingLevelCeiling: Effort | undefined;
 	#autoThinking = false;
 	#autoResolvedLevel: Effort | undefined;
-	/**
-	 * Mutated in place: the status line reads it every frame, so it is never
-	 * copied. Shared by every session on this tree's subagent bus, so a child's
-	 * classifications roll up into the root's tally.
-	 */
-	readonly #autoActivity: AutoThinkingTally;
-	readonly #autoActivityTree: AutoThinkingTreeActivity;
-	#disposed = false;
 	#serviceTierByFamily: ServiceTierByFamily;
 
 	constructor(
@@ -195,20 +83,11 @@ export class ModelControls {
 			thinkingLevel?: ConfiguredThinkingLevel;
 			thinkingLevelCeiling?: Effort;
 			serviceTierByFamily?: ServiceTierByFamily;
-			/** Tally shared with the spawning session's tree; absent → this session owns its own. */
-			activity?: AutoThinkingTally;
 		},
 	) {
 		this.#host = host;
 		this.#scopedModels = options.scopedModels ?? [];
 		this.#serviceTierByFamily = options.serviceTierByFamily ?? {};
-		this.#autoActivity = options.activity ?? { classifying: false, classified: 0, fallback: 0, inFlight: 0 };
-		let tree = autoThinkingTrees.get(this.#autoActivity);
-		if (!tree) {
-			tree = new AutoThinkingTreeActivity(this.#autoActivity);
-			autoThinkingTrees.set(this.#autoActivity, tree);
-		}
-		this.#autoActivityTree = tree;
 		this.#thinkingLevelCeiling = options.thinkingLevelCeiling;
 		if (options.thinkingLevel === AUTO_THINKING) {
 			// Keep auto pending until the first turn while exposing a valid wire effort.
@@ -226,11 +105,6 @@ export class ModelControls {
 			);
 		}
 		this.#applyThinkingLevelToAgent(this.#thinkingLevel);
-	}
-
-	/** Stop counting this session's classifications without disturbing the tree's work or visibility. */
-	dispose(): void {
-		this.#disposed = true;
 	}
 
 	get #model(): Model | undefined {
@@ -260,24 +134,6 @@ export class ModelControls {
 	/** Last concrete effort selected by automatic classification. */
 	get autoResolvedThinkingLevel(): Effort | undefined {
 		return this.#autoResolvedLevel;
-	}
-
-	/** Stable classifier activity; the same object is mutated in place. */
-	get autoThinkingActivity(): AutoThinkingActivity {
-		return this.#autoActivity;
-	}
-
-	/** Same object as {@link autoThinkingActivity}, mutable for `/tan` roll-up. */
-	get autoThinkingTally(): AutoThinkingTally {
-		return this.#autoActivity;
-	}
-
-	/**
-	 * Repaint hook for the UI: fires when the tree's pending state changes and on
-	 * every counted classification, including a subagent's while this session idles.
-	 */
-	subscribeAutoThinkingActivity(listener: () => void): () => void {
-		return this.#autoActivityTree.subscribe(listener);
 	}
 
 	/** Models explicitly scoped to the session's cycle command, minus currently disabled providers. */
@@ -745,7 +601,6 @@ export class ModelControls {
 	 * Never throws into the turn, and never clears `#autoThinking`.
 	 */
 	async applyAutoThinkingLevel(promptText: string, generation: number): Promise<void> {
-		if (this.#disposed) return;
 		const model = this.#model;
 		if (!model?.reasoning) return;
 		// Models with reasoning but no controllable effort surface (devin-agent
@@ -766,7 +621,7 @@ export class ModelControls {
 				sessionId: this.#host.sessionManager.getSessionId(),
 				parentId: this.#host.sessionManager.getLeafId(),
 			};
-			this.#autoActivityTree.begin();
+			this.#host.onAutoThinkingActivity?.({ phase: "begin" });
 			try {
 				resolved = await classifyDifficulty(promptText, {
 					settings: this.#host.settings,
@@ -789,20 +644,16 @@ export class ModelControls {
 				});
 			} finally {
 				clearTimeout(timer);
-				// Disposed/superseded turns discard their result and tally, but
-				// still release their contribution to the shared in-flight count.
-				const result =
-					!this.#disposed && this.#host.promptGeneration() === generation
-						? resolved === undefined
-							? "fallback"
-							: "classified"
-						: undefined;
-				this.#autoActivityTree.end(result);
+				const superseded = this.#host.promptGeneration() !== generation;
+				this.#host.onAutoThinkingActivity?.({
+					phase: "end",
+					result: superseded ? undefined : resolved === undefined ? "fallback" : "classified",
+				});
 			}
 		}
 
 		// Drop the result if the turn was aborted/superseded while classifying.
-		if (this.#disposed || this.#host.promptGeneration() !== generation || !this.#autoThinking) return;
+		if (this.#host.promptGeneration() !== generation || !this.#autoThinking) return;
 
 		const effort = clampThinkingLevelToCeiling(
 			model,

@@ -17,7 +17,7 @@ import { fileHyperlink } from "../render/hyperlink";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../theme/session-color";
 import { summarizeLoopCondition } from "./loop";
 import { formatMetric } from "../components/metric";
-import { formatAutoThinkingActivity, formatBillingSummary } from "./metrics";
+import { formatBillingSummary } from "./metrics";
 import { sanitizeStatusText } from "../chrome/shared";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "../chrome/context-thresholds";
 import type { RenderedSegment, SegmentContext, StatusLineSegment, StatusLineSegmentId } from "./types";
@@ -224,16 +224,12 @@ const modelSegment: StatusLineSegment = {
 
 		// Resolve the current thinking-level display ("◉ xhigh", "⟳ auto", …)
 		// when the model supports thinking and the segment isn't hiding it.
-		let classifyingNow = false;
 		let thinkingDisplay = "";
 		if (opts.showThinkingLevel !== false && state.model?.thinking) {
 			if (ctx.session.isAutoThinking) {
 				// Pending (no turn classified yet / classifying) shows a symbol-theme
 				// question-box marker; once resolved it shows `<level>`.
-				// A live classification outranks the previous turn's resolved level.
-				const activity = ctx.session.autoThinkingActivity?.();
-				classifyingNow = activity?.classifying === true;
-				const resolved = classifyingNow ? undefined : ctx.session.autoResolvedThinkingLevel();
+				const resolved = ctx.session.autoResolvedThinkingLevel();
 				thinkingDisplay = resolved
 					? (theme.thinking[resolved as keyof Theme["thinking"]] ?? resolved)
 					: `${theme.thinking.autoPending} auto`;
@@ -251,11 +247,8 @@ const modelSegment: StatusLineSegment = {
 		}
 
 		// Compact mode swaps the model icon for the thinking-level glyph and drops
-		// the " · <level>" tail, keeping the level visible as a single icon. A live
-		// classification opts out: compacted, it is a bare glyph swap in the icon
-		// slot, indistinguishable from the idle pending state — the spelled-out
-		// `⟳ auto` tail is the only form a reader actually notices.
-		const compact = ctx.compactThinkingLevel && thinkingDisplay !== "" && !classifyingNow;
+		// the " · <level>" tail, keeping the level visible as a single icon.
+		const compact = ctx.compactThinkingLevel && thinkingDisplay !== "";
 		const modelIcon = compact ? leadingGlyph(thinkingDisplay) : theme.icon.model;
 
 		// Fast-mode icon and thinking-level suffix trail the model name and are
@@ -640,22 +633,6 @@ const contextPctSegment: StatusLineSegment = {
 	},
 };
 
-/**
- * Auto-thinking classifier tally for this session tree (subagents roll up into
- * the root): how many turns resolved a level, and (after the preset's warning
- * separator) how many fell back to a guess. Hidden unless the session runs the
- * classifier and has classified at least one turn.
- */
-const autoThinkingSegment: StatusLineSegment = {
-	id: "auto_thinking",
-	render(ctx) {
-		if (!ctx.session.isAutoThinking) return { content: "", visible: false };
-		const content = formatAutoThinkingActivity(ctx.session.autoThinkingActivity?.(), theme);
-		if (!content) return { content: "", visible: false };
-		return { content: theme.fg("statusLineModel", content), visible: true };
-	},
-};
-
 const contextTotalSegment: StatusLineSegment = {
 	id: "context_total",
 	render(ctx) {
@@ -954,7 +931,6 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	token_rate: tokenRateSegment,
 	cost: costSegment,
 	context_pct: contextPctSegment,
-	auto_thinking: autoThinkingSegment,
 	context_total: contextTotalSegment,
 	time_spent: timeSpentSegment,
 	time: timeSegment,

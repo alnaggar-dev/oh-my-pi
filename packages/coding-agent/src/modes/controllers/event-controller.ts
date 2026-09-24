@@ -50,6 +50,7 @@ import {
 	assistantUsageIsBilled,
 	splitAssistantMessageToolTimeline,
 } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
+import { AutoThinkingReadout } from "../auto-thinking-readout";
 import { isWarpCliAgentProtocolActive } from "../warp-events";
 import { StreamingRevealController } from "./streaming-reveal";
 import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
@@ -225,7 +226,7 @@ export class EventController {
 	#toolArgsReveal: ToolArgsRevealController;
 	#prevHideThinking = false;
 	#handlers: AgentSessionEventHandlers;
-	#detachAutoThinkingActivity: (() => void) | undefined;
+	readonly #autoThinkingReadout: AutoThinkingReadout;
 	#terminalProgressActive = false;
 	// Coalescing window for `message_update` events at the subscription boundary.
 	// `message_update` carries the CUMULATIVE assistant message (every update
@@ -267,13 +268,7 @@ export class EventController {
 					})
 				: null,
 		);
-		// The auto-thinking classifier runs before a turn streams (or inside an
-		// idle parent's subagent), so nothing else repaints the bar's live marker
-		// and counters while it works.
-		this.#detachAutoThinkingActivity = session?.subscribeAutoThinkingActivity?.(() => {
-			this.ctx.statusLine.invalidate();
-			this.ctx.ui.requestRender();
-		});
+		this.#autoThinkingReadout = new AutoThinkingReadout(ctx);
 		this.#streamingReveal = new StreamingRevealController({
 			getSmoothStreaming: () => cfgDisplaySmoothStreaming.get(this.ctx.settings),
 			getHideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
@@ -378,8 +373,7 @@ export class EventController {
 	dispose(): void {
 		this.#detachToolApprovalPreviewWaiter?.();
 		this.#detachToolApprovalPreviewWaiter = undefined;
-		this.#detachAutoThinkingActivity?.();
-		this.#detachAutoThinkingActivity = undefined;
+		this.#autoThinkingReadout.dispose();
 		this.#clearApprovalPreviewGates();
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
