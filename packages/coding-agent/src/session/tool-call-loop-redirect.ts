@@ -23,7 +23,6 @@ export function renderToolCallLoopRedirect(detection: RepeatedToolCallDetection)
 	return prompt.render(toolCallLoopRedirectTemplate, {
 		tool_name: detection.toolName,
 		count: detection.count,
-		consecutive: detection.mode !== "cumulative",
 		arguments_summary: detection.argumentsSummary,
 		result_summary: detection.resultSummary || "(no text result)",
 	});
