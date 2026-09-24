@@ -405,9 +405,6 @@ class StatusLineExternalInputs {
 	sessionId: string | undefined = undefined;
 	isStreaming: boolean | undefined = undefined;
 	isAutoThinking: boolean | undefined = undefined;
-	autoThinkingClassifying = false;
-	autoThinkingClassified = 0;
-	autoThinkingFallback = 0;
 	isFastModeActive = false;
 	anthropicSlowModeLabel: string | undefined = undefined;
 	compactionSpeculation: unknown = undefined;
@@ -2527,7 +2524,6 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		}
 		const tools = this.session.agent?.state?.tools;
 		const skills = this.session.skills;
-		const autoThinking = this.session.autoThinkingActivity?.();
 		target.themeRef = theme;
 		target.themeEpoch = getThemeEpoch();
 		target.projectDir = getProjectDir();
@@ -2575,9 +2571,6 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		target.sessionId = this.session.sessionManager?.getSessionId?.();
 		target.isStreaming = this.session.isStreaming;
 		target.isAutoThinking = this.session.isAutoThinking;
-		target.autoThinkingClassifying = autoThinking?.classifying ?? false;
-		target.autoThinkingClassified = autoThinking?.classified ?? 0;
-		target.autoThinkingFallback = autoThinking?.fallback ?? 0;
 		target.isFastModeActive =
 			typeof this.session.isFastModeActive === "function" ? this.session.isFastModeActive() : false;
 		target.anthropicSlowModeLabel =
@@ -2636,9 +2629,6 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			left.sessionId === right.sessionId &&
 			left.isStreaming === right.isStreaming &&
 			left.isAutoThinking === right.isAutoThinking &&
-			left.autoThinkingClassifying === right.autoThinkingClassifying &&
-			left.autoThinkingClassified === right.autoThinkingClassified &&
-			left.autoThinkingFallback === right.autoThinkingFallback &&
 			left.isFastModeActive === right.isFastModeActive &&
 			left.anthropicSlowModeLabel === right.anthropicSlowModeLabel &&
 			left.compactionSpeculation === right.compactionSpeculation

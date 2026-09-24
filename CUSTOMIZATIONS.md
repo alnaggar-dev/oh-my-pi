@@ -36,8 +36,7 @@ does what I wanted".
   `docs/advisor-watchdog.md` (its "Controlling token spend" section; the other fork
   paragraphs are named under the read-only, context-slimming, loop-bound and prune
   entries' **Depends on upstream**),
-  `docs/settings.md` (the three `advisor.*` rows and the reworded advisor intro; the
-  `auto_thinking` segment description is named under the status-line entry).
+  `docs/settings.md` (the three `advisor.*` rows and the reworded advisor intro).
 - **Depends on upstream:** `AdvisorRuntime.onTurnEnd(messages, { willContinue })` and
   its `willContinue` flag — the gate must run after `#latestMessages` is set and
   before `#renderDelta`, which advances the review cursor; the settings-schema entry
@@ -346,8 +345,8 @@ does what I wanted".
   (`rebaseDeliveredPrefix`, `EVAL_STATE_CONTEXT_TYPE`; the cadence entry's hunks here
   are named under its **Depends on upstream**),
   `packages/coding-agent/src/session/agent-session.ts` (the `rebaseAdvisorPrefix` host
-  wiring; the file's other fork hunks are named under the status-line and tally
-  entries' **Depends on upstream**).
+  wiring; the file's other fork line is named under the status-line entry's **Depends
+  on upstream**).
 - **Depends on upstream:** the prune passes only rewrite tool results, in place, marking
   them with `prunedAt` — the rebase accepts a changed slot only when it is the same
   tool result (`toolCallId`) now carrying `prunedAt`; `#deliveredPrefix` / `#lastCount`
@@ -480,114 +479,91 @@ does what I wanted".
 
 ## Status line and TUI
 
-### Auto-thinking classifier readout in the status line
+### Auto-thinking classifier readout (hook status, rolled up over the subagent bus)
 
-- **What it does:** With thinking set to `auto`, the status line and footer show a live
-  `⟳ auto` marker while the classifier decides how hard to think about the turn, plus a
-  running count of turns it decided (`8`) versus turns that fell back to a guess after
-  a timeout or error (`8·2⚠`; icon, separator and warning come from the symbol preset,
-  `IQ 8-2[!]` under `ascii`). The marker is held for at least a second so it is
-  actually visible. `omp gallery --surface segment --segment auto_thinking` previews it.
+- **What it does:** With thinking set to `auto`, the status line shows a hook status
+  (key `auto-thinking`, the same channel extensions use): a `⟳ auto` pending marker
+  while any session in the spawn tree is classifying, then the tree's count of turns
+  the classifier decided (`🧠 8`) and turns that fell back to a guessed level after a
+  timeout or error (`🧠 8·2⚠`; icon, separator and warning come from the symbol preset,
+  `IQ 8-2[!]` under `ascii`). The marker is held at least a second after the latest
+  classification starts so it is actually visible. Every session on a spawn tree
+  (root, task and structured subagents, work pools, vibe, cold-revived subagents)
+  publishes begin/end frames on the tree's `subagentEventBus`, so subagent
+  classifications count toward the root's readout. It shows on its own line under the
+  bar (`statusLine.showHookStatus`, on by default) and inside the built-in `status`
+  segment when a layout includes it.
 - **Why:** With `auto` on there was no way to see whether the classifier was working,
-  what it picked, or how often it was silently failing.
-- **Files:** `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/footer.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/component.ts`,
-  `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`, `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`.
-- **Depends on upstream:** the `StatusLineSegment` / `StatusLineSegmentId` shape and the
-  `SEGMENTS` registry. **Three hardcoded lists are NOT derived from each other and each
-  needs the segment id by hand — upstream rewriting any of them drops the segment
-  silently:** `STATUS_LINE_SEGMENT_IDS` (`status-line/schema.ts`), the Custom preset's
-  right-hand defaults (same file), and the `full` / `nerd` arrays
-  (`status-line/presets.ts`). Also `StatusLineSession` and the footer session shape in
-  `status-line/host.ts` — the accessor is optional, so upstream could drop the call
-  site with no error; `StatusLineExternalInputs` and its equality function in
-  `status-line/component.ts` (the tally object identity is stable by design, so the
-  three numeric fields must stay in the cache key); `thinking.autoPending` across all
-  three symbol presets; `thinkingLevelGlyph`'s `auto → autoPending` branch; the
-  `icon.intelligence`, `sep.dot` and `status.warning` symbols in every preset, read
-  through `Theme.symbol()`, `Theme.sep` and `Theme.status`; `classifyDifficulty`, its
-  4 s timeout, and `promptGeneration()`; shared activity notifications after counter
-  increments and at pending-state transitions. The repaint is a UI-only subscription,
-  not a session event: `AgentSession.subscribeAutoThinkingActivity` is attached in
-  `EventController`'s constructor and detached in its `dispose()`, so it never reaches
-  RPC clients or parent sessions. The constructor tolerates a session without the
-  hook, so upstream reshaping `EventController` construction would drop the idle
-  repaint silently. The callback is `statusLine.invalidate()` plus an ordinary
-  `ui.requestRender()`: the TUI's row diff rewrites the changed marker, and a forced
-  render would only add rewriting unchanged rows and skipping the render cadence.
-  Counter values also participate in the render cache, so ordinary renders can
-  refresh them. The gallery variant rides on `variantsFor` in
-  `cli/gallery-fixtures/segments.ts` and the `GallerySessionOptions` session double.
-  Fork code it relies on in files other entries own: `AutoThinkingActivity`,
-  `MIN_CLASSIFYING_VISIBLE_MS`, the `autoThinkingActivity` getter and
-  `subscribeAutoThinkingActivity` in `packages/coding-agent/src/session/model-controls.ts`
-  (tally entry, which also owns the pending hold timer in `AutoThinkingTreeActivity`);
-  `autoThinkingActivity()` and `subscribeAutoThinkingActivity` in
-  `packages/coding-agent/src/session/agent-session.ts` (prune entry); the
-  `auto_thinking` segment description in `docs/settings.md` (cadence entry).
-- **Tripwire paths:** `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/status-line/footer.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/theme-class.ts`, `packages/tui/src/theme/glyph-bundle.json`, `packages/tui/src/render/render-utils.ts`, `packages/tui/src/tui.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`, `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`
+  what it picked, or how often it silently fell back; most classifications happen
+  inside subagents, so the readout counts the whole tree. It rides the hook-status path
+  instead of adding a segment because upstream keeps the segment list by hand in three
+  places and open upstream PRs edit the same status-line files. `/tan` tangents run on
+  their own bus, so their classifications are not counted.
+- **Files:** `packages/coding-agent/src/auto-thinking/activity-events.ts`
+  (`AUTO_THINKING_ACTIVITY_EVENT_CHANNEL`, `AutoThinkingActivityFrame`,
+  `isAutoThinkingActivityFrame`), `packages/coding-agent/src/modes/auto-thinking-readout.ts`
+  (`AutoThinkingReadout`, `MIN_CLASSIFYING_VISIBLE_MS`),
+  `packages/coding-agent/src/session/model-controls.ts` (one import, the optional
+  `ModelControlsHost.onAutoThinkingActivity` member, a `begin` emit before
+  `classifyDifficulty` and an `end` emit in its `finally`),
+  `packages/coding-agent/src/session/agent-session-types.ts`
+  (`AgentSessionConfig.onAutoThinkingActivity`), `packages/coding-agent/src/sdk.ts` (one
+  import and the callback that emits on `subagentEventBus` in
+  `createAgentSessionScoped`), `packages/coding-agent/src/modes/controllers/event-controller.ts`
+  (creates the readout in its constructor, disposes it in `dispose()`).
+- **Depends on upstream:** `packages/coding-agent/src/session/agent-session.ts` carries
+  one pass-through line, `onAutoThinkingActivity: config.onAutoThinkingActivity`, in the
+  `ModelControlsHost` it builds (the prune entry owns that file). Every spawn path must
+  keep forwarding the parent's `subagentEventBus` into `createAgentSession`: the task
+  executor's spawn and in-turn revival (`buildSubagentSessionOptions` in
+  `task/executor.ts`), structured subagents (`buildExecutorOptions` in
+  `task/structured-subagent.ts`), work pools (`task/workpool.ts`), vibe
+  (`vibe/runtime.ts`) and cold revival (`createPersistedSubagentReviverFactory` in
+  `task/persisted-revive.ts`, wired from `main.ts`). A path that stops forwarding
+  publishes on a fresh bus nobody listens to, with no type error;
+  `createAgentSessionScoped` gives a session without a bus a fresh one. The interactive
+  root's bus must be the object `InteractiveMode` holds (`main.ts` passes one bus to
+  both `createAgentSession` and `runInteractiveMode`), and `InteractiveMode` must set it
+  and create its `ExtensionUiController` before it constructs `EventController`.
+  Nothing may forward arbitrary bus channels: `RpcSubagentRegistry`
+  (`modes/rpc/rpc-subagents.ts`), `SessionObserverRegistry.subscribeToEventBus` and the
+  collab host (`COLLAB_BUS_CHANNELS`) listen only to `task:subagent:*` today. Rendering
+  rides the hook-status path: `InteractiveModeContext.setHookStatus` →
+  `ExtensionUiController.setHookStatus` → `StatusLineComponent.setHookStatus` (drops
+  its render cache) plus `ui.requestRender()`; hook statuses render as lines under the
+  bar unless `showHookStatus` is false, and inside the `status` segment, both through
+  `sanitizeStatusText`, which strips color. Superseded detection is
+  `promptGeneration() !== generation` in `applyAutoThinkingLevel`; `classifyDifficulty`
+  and its 4 s timeout decide classified vs fallback. The readout shows only while
+  `viewSession.isAutoThinking`, re-checked on bus frames, hold expiry and the root
+  session's `thinking_level_changed`, so a focus switch to a subagent with a different
+  `auto` state shows at the next such event. Theme reads: `theme.thinking.autoPending`,
+  `theme.symbol("icon.intelligence")`, `theme.sep.dot`, `theme.status.warning` in every
+  symbol preset. A classification that finishes after its session was disposed (but
+  was not superseded) still counts.
+- **Tripwire paths:** `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/workpool.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/modes/types.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/modes/controllers/extension-ui-controller.ts`, `packages/coding-agent/src/modes/rpc/rpc-subagents.ts`, `packages/coding-agent/src/collab/host.ts`, `packages/coding-agent/src/utils/event-bus.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/overlays/session-observer-registry.ts`, `packages/tui/src/chrome/shared.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/theme-class.ts`
 - **Must still be true:**
-  - While a classification is in flight, the bar shows the pending marker, not the
-    previous turn's resolved level.
+  - While any classification in the tree is in flight, the readout shows the `⟳ auto`
+    marker ahead of the counts.
   - A classification faster than the repaint cadence still leaves the marker up for at
-    least 1000 ms after the latest classification starts, and the hold never delays
-    the turn. An older child's timer cannot clear a newer child's hold.
-  - Child-only activity repaints an idle parent's pending marker and counters,
-    including the final hold-expiry repaint after the child has been disposed.
-  - Nothing renders when `auto` is off, when both counters are zero, or when the host
-    exposes no accessor; the fallback part appears only after a real fallback.
+    least 1000 ms after the latest classification starts; an older hold never cuts a
+    newer one short; the hold never delays the turn.
+  - With overlapping classifications the marker stays up until the last one ends, even
+    past the hold.
+  - A subagent's classification counts into its root's readout; a failed or unparseable
+    one counts as a fallback; a superseded one releases its in-flight share without
+    counting.
+  - Child-only activity updates an idle parent's readout, including the final
+    hold-expiry update.
+  - Cold revival counts into the tree whose `subagentEventBus` it revives on.
+  - Sessions on different subagent buses keep independent readouts.
+  - Nothing renders when the focused session is not on `auto`, or when both counters
+    are zero and nothing is in flight; toggling `auto` shows or hides it without
+    classifier activity; the fallback part appears only after a real fallback.
   - Under the `ascii` symbol preset the readout is plain ASCII (`IQ 8-2[!]`).
-  - Classifier activity is never an `AgentSessionEvent`, so RPC clients and parent
-    sessions receive nothing for it.
+  - Classifier activity is never an `AgentSessionEvent`, and no RPC or collab surface
+    forwards the `auto-thinking:activity` channel.
 - **Check:** `bun test packages/coding-agent/test/status-line-auto-thinking.test.ts packages/coding-agent/test/auto-thinking-tally.test.ts`
-
-### Subagent auto-thinking rolls into the parent's tally
-
-- **What it does:** A subagent that classifies its own thinking level adds to the
-  counters of its root session. The tally is keyed by the spawn tree's
-  `subagentEventBus`, so every session sharing that bus shares one tally. While any
-  classification anywhere in the tree is running, the root's pending marker stays up,
-  followed by the shared visibility hold. Cold revival rides the root's bus; `/tan`,
-  which runs on a fresh bus, hands its owner's tally down explicitly.
-- **Why:** Most classifications happen inside subagents, so without roll-up the
-  parent's status line showed almost nothing during a busy multi-agent turn.
-- **Files:** `packages/coding-agent/src/session/model-controls.ts` (`AutoThinkingTally`,
-  `AutoThinkingTreeActivity` including its pending hold timer, `autoThinkingTallyFor`,
-  the `activity` option, `dispose`; the status-line entry's hunks here are named under
-  its **Depends on upstream**),
-  `packages/coding-agent/src/session/agent-session-types.ts`,
-  `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`.
-- **Depends on upstream:** every spawn path forwarding the parent's `subagentEventBus`
-  into `createAgentSession` (task executor spawn and in-turn revival, structured
-  subagents, work pools, vibe, cold revival wired from `main.ts`), and
-  `createAgentSessionScoped` giving a session without one a fresh bus. A path that
-  stops forwarding the bus silently counts into a fresh tally, with no type error.
-  `sdk.ts` resolves the tally with `autoThinkingTallyFor(subagentEventBus,
-  options.autoThinkingActivity)`; a handed-down tally wins and claims a bus that has no
-  tally yet, so a tangent's own subagents follow its owner. `/tan` gets a fresh bus
-  upstream, so it snapshots its owner's tally before deferred dispatch and passes it as
-  `autoThinkingActivity`; changing focus cannot move the counts into another tree.
-  `AgentSessionConfig.autoThinkingActivity` feeds `ModelControls`' `activity?` option:
-  absent means a fresh tally. A private shared activity object owns `inFlight`
-  notifications and one visibility deadline/timer per tally. `AgentSession.beginDispose()`
-  must only stop counting its own classifications, never clear the surviving tree's
-  hold or its UI subscribers.
-  Fork code it relies on in a file another entry owns: the
-  `activity: config.autoThinkingActivity` pass-through, `autoThinkingTally()`, the type
-  re-exports and `#models.dispose()` in `packages/coding-agent/src/session/agent-session.ts`
-  (prune entry).
-- **Tripwire paths:** `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/workpool.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`, `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`
-- **Must still be true:**
-  - A classification inside a subagent increments its root session's `classified`
-    count, not a separate one.
-  - A subagent whose classification fails increments the shared `fallback` count.
-  - With two overlapping classifications, the marker stays up until the last finishes.
-  - Cold revival counts into the tree whose `subagentEventBus` it revives on; a
-    deferred tangent keeps its dispatch owner's counters even if focus switches before
-    construction, and its own subagents count there too.
-  - Disposed or superseded classifications do not count, but still release their
-    in-flight contribution; surviving sessions continue receiving activity updates.
-  - Sessions on different subagent buses (separate roots) keep independent counts.
-- **Check:** `bun test packages/coding-agent/test/auto-thinking-tally.test.ts packages/coding-agent/test/task/persisted-revive.test.ts packages/coding-agent/test/modes/controllers/tan-command-controller.test.ts`
 
 ## legacy-pi
 
