@@ -102,8 +102,6 @@ When the primary transcript is rewritten, the advisor runtime is reset:
 
 Reset clears the advisor's private in-memory transcript and rewinds its cursor. The next advisor update replays the current bounded primary transcript instead of continuing from stale pre-rewrite context.
 
-The primary's per-turn prune passes (superseded/useless/aged tool results blanked in place with `prunedAt`) do not reset the advisor: the advisor received the full result when it was delivered and keeps that copy in its own context. Instead the prune rebases the advisor's delivered prefix onto the rewritten messages, so a later equal clone of an elided result, or the `eval-state-context` message moving to the new tail, is not mistaken for a rewrite. Every other rewrite of an already-delivered message (rollback, branch, edited content) still triggers the reset above, including one that lands in the same turn as a prune.
-
 When the advisor is enabled mid-session, the cursor seeds to the current primary transcript length. That avoids replaying the whole old conversation on the first enabled turn.
 
 ## Tools and isolation

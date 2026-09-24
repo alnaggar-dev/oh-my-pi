@@ -151,11 +151,8 @@
 - Fixed reader-mode `fetch` output passing inline SVG icons and base64 `data:` images to the model as unreadable payloads; they are now dropped and their alt text is kept ([#13006](https://github.com/can1357/oh-my-pi/pull/13006) by [@H4vC](https://github.com/H4vC)).
 - Fixed judged TTSR rules failing with `max_tokens_exceeded` on long non-Latin outputs: judged content was capped at 60,000 characters, which is ~60k Jev tokens of Chinese against Jev's ~33k-token branch limit. It is now cut to 32,000 Jev tokens counted locally, so long English outputs are also no longer truncated early.
 - Fixed an advisor keeping an outdated project context after `advisor.projectContext` was switched off by a settings reload and then back on in `/settings`.
-- Fixed an advisor set to `auto` thinking staying at its last level when the main session's thinking was turned off; it now uses the same default level a freshly built advisor gets.
-- Fixed an advisor set to `auto` thinking running its first review after a retry fallback at its old level; it now rejoins the main session's current level.
 - Fixed advisor repeat-call de-duplication reporting a changed file as `[Unchanged since your earlier identical call]` when the only change was text that looks like `read`'s repeat hint (for example in a `:raw` read).
 - Fixed secrets leaking into advisor prompts when a one-line preview (a tool command or other main argument, a tool intent, a user `!`/`$` command, or a branch/compaction/custom one-liner) was cut in the middle of a secret; previews are now redacted before they are cut.
-- Fixed the advisor replaying the whole main transcript after the second per-turn prune in sessions that used `eval`, or when a pruned result later reappeared unchanged; the prune now re-anchors what the advisor has already seen instead of leaving stale fingerprints behind.
 
 ## [18.2.11] - 2026-09-23
 
@@ -272,13 +269,11 @@
 - Expanded browser security and resilience controls with configurable HTTPS error handling, domain allow-listing, and automatic tab recycling when security-sensitive state changes.
 - Updated background job notifications to deliver output as follow-up messages and discourage unnecessary polling.
 - Expanded the bash tool's documented auxiliary utilities and removed its truncation footer notice.
-- The advisor stops its review as soon as a turn's only tool calls are `advise`; the extra model request that used to follow every note (~6% of advisor spend, producing nothing) no longer runs. Turns that advise and keep investigating are unchanged.
 - The advisor now evicts the oversized tool results of finished reviews from its own context before the next review (blanked to `[Stale result elided - N tokens]`), and answers a byte-identical repeat `read`/`grep`/`glob` call with `[Unchanged since your earlier identical call]` while the earlier result is still in context. Measured over 895 advisor transcripts, stale investigation output was ~48% of the context the advisor re-sent on every request; the deltas it reviews and the notes it writes are untouched. The eviction cut is placed where the freed tokens outweigh the prompt-cache re-write behind it.
 ### Changed
 
 - npm and compiled builds embed `models.json` as JSON text instead of an object literal, cutting ~100 ms from bundle launch.
 - The advisor now evicts the oversized tool results of finished reviews from its own context before the next review (blanked to `[Stale result elided - N tokens]`), and answers a byte-identical repeat investigation call (by default `read`/`grep`/`glob`) with `[Unchanged since your earlier identical call]` while the earlier result is still in context. Measured over 895 advisor transcripts, stale investigation output was ~48% of the context the advisor re-sent on every request; the deltas it reviews and the notes it writes are untouched. The eviction cut is placed where the freed tokens outweigh the prompt-cache re-write behind it.
-- The advisor no longer replays the whole primary transcript when the primary's per-turn prune blanks a superseded, useless, or aged tool result in place; the advisor already holds that result in its own context. One such replay cost ~14% of a session's advisor spend in a live measurement, and each fired on a routine per-turn pass.
 
 ### Fixed
 
@@ -326,7 +321,6 @@
 - Fixed edit operations that could loop after empty insertions or fail on Unicode no-op and overlapping duplicate matches.
 - Fixed live subagent messages being delayed by agent discovery and roster discovery looping on dot-named transcripts.
 - Fixed llama.cpp discovery and routing for PrismML Bonsai 2 27B GGUF models, including support for cached models and the Qwen 3.8 thinking-level ladder.
-- Fixed an advisor configured with the `auto` thinking selector silently collapsing to the fixed `medium` default: `auto` is a session-level selector with no per-advisor classifier, and building the advisor erased it. An `auto` advisor now tracks the effort the primary turn is running at — the level the per-turn classifier resolved, or the pinned level when the primary is not on `auto` — retuned at each review boundary. The retune changes only the effort, so the advisor keeps its model and its accumulated context, and an `auto` advisor's runtime signature no longer changes with the level, so a per-turn change cannot rebuild it.
 
 ## [18.2.6] - 2026-09-18
 
@@ -401,7 +395,7 @@
 - Type `^` to tag a model for delegation, with atomic display-name chips and session-persisted `m1`, `m2`, … agents available to task and eval.
 - Provider login and setup support masked secret prompts; RPC rejects secret prompts rather than requesting ordinary input.
 - Added the `advisor.reviewOn`, `advisor.includeThinking`, and `advisor.projectContext` settings to control advisor token spend. `advisor.reviewOn` defaults to `step` (today's behavior: one review per primary agent-loop step); `mutation` skips a mid-turn step only when every tool call since the last review is review-exempt — the read-tier tools minus `retain`, `memory_edit`, `checkpoint`, and `rewind`, so any unrecognized or mutating tool still triggers a review; `turn` reviews only the terminal boundary. The terminal boundary is always reviewed and skipped content is never dropped. `advisor.includeThinking: false` omits primary reasoning from the advisor delta, and `advisor.projectContext: false` omits the discovered `<project-context>` block from the advisor system prompt.
-- Expanded edit diffs in advisor transcript deltas are now bounded to 8 KiB / 300 lines instead of being sent in full; other expanded tool input/output keeps its 8 KiB / 80-line budget.
+- Expanded edit diffs in advisor transcript deltas keep up to 300 lines under the 8 KiB byte cap, instead of the 80-line cap other expanded tool input/output keeps, so the middle hunks of mid-size edits reach the advisor.
 
 ### Changed
 
@@ -409,7 +403,6 @@
 
 ### Fixed
 
-- Fixed every `require("@oh-my-pi/pi-*")` first-use boundary dying with `BuildMessage: NameTooLong reading "file:file:file:…"` once the legacy-pi extension shim was installed — most visibly the `/login` provider selector, which crashed the process as an unhandled rejection. The shim's resolve hook matches the canonical `@oh-my-pi` scope as well as the legacy aliases, so a specifier that remapped to itself was re-resolved through `Bun.resolveSync` inside the hook, Bun re-entered the same hook, and each pass prefixed another `file:` until the name exceeded the OS limit. Such a specifier now declines unless a bundled/root override answers it, leaving native resolution untouched.
 - macOS process discovery now retains the complete PID list when locating executables and descendants. ([#12290](https://github.com/can1357/oh-my-pi/pull/12290) by [@iliaal](https://github.com/iliaal))
 - Reduced snapshot-recording stalls when a session retains large file histories. ([#12279](https://github.com/can1357/oh-my-pi/pull/12279) by [@iliaal](https://github.com/iliaal))
 - Cancelled background jobs remain tracked until execution finishes, so cleanup cannot report completion prematurely after retention expires. ([#12278](https://github.com/can1357/oh-my-pi/pull/12278) by [@iliaal](https://github.com/iliaal))
