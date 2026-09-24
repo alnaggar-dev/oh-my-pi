@@ -1,5 +1,5 @@
 <system-interrupt reason="tool_call_loop_detected">
-You called `{{tool_name}}` {{count}} consecutive times with identical arguments:
+You called `{{tool_name}}` {{count}} times with identical arguments:
 `{{arguments_summary}}`
 
 Last result (truncated): `{{result_summary}}`

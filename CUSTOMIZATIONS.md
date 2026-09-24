@@ -186,11 +186,11 @@ does what I wanted".
   `packages/coding-agent/src/session/session-advisors.ts` (advise-only entry),
   `evictedSinceAnchor`, the eviction step at the top of `#maintainAdvisorContext` and
   the dedupe call in the advisor `afterToolCall` hook; `toolCallSignature` in
-  `packages/ai/src/utils/tool-call-loop-guard.ts` (loop-bound entry), which must keep
-  ignoring the agent-authored `intent` field and key order and keep argument values
-  verbatim; maintenance step 1 and the repeat-call paragraph in
+  `packages/coding-agent/src/advisor/cumulative-loop-guard.ts` (loop-bound entry),
+  which must keep ignoring the agent-authored intent fields and key order and keep
+  argument values verbatim; maintenance step 1 and the repeat-call paragraph in
   `docs/advisor-watchdog.md` (cadence entry).
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/message-cache.ts`, `packages/agent/src/compaction/compaction.ts`, `packages/agent/src/compaction/transcript-tokens.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/tools/read.ts`, `packages/coding-agent/src/tools/output-meta.ts`, `packages/tui/src/tools/output-meta.ts`
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/message-cache.ts`, `packages/agent/src/compaction/compaction.ts`, `packages/agent/src/compaction/transcript-tokens.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/coding-agent/src/tools/read.ts`, `packages/coding-agent/src/tools/output-meta.ts`, `packages/tui/src/tools/output-meta.ts`
 - **Must still be true:**
   - After a review finishes, the next request carries a short elision stub in place of
     that review's large file output, while the primary deltas and the advisor's notes
@@ -252,40 +252,59 @@ does what I wanted".
 
 - **What it does:** The advisor's loop guard also counts each identical tool call over
   the whole review, not just back-to-back, so an advisor alternating between two calls
-  is bounded too: at five times `model.toolCallLoopGuard.threshold` it gets upstream's
-  corrective, then upstream's abort. The corrective says "consecutive" only when a
-  back-to-back run tripped it.
+  is bounded too: at five times `model.toolCallLoopGuard.threshold` it gets a
+  corrective, then upstream's abort. A back-to-back run still gets upstream's
+  corrective verbatim ("N consecutive times"); the whole-review tally gets a copy of it
+  without the word "consecutive".
 - **Why:** Upstream's advisor guard only counts consecutive runs, so an A/B/A/B loop
-  never trips it and burns requests inside one "successful" review. The fork's first
-  cut dropped "consecutive" and "this turn" from the shared corrective, which also
-  reaches the main session, where it became a persisted, session-wide "NEVER call …
-  again".
-- **Files:** `packages/coding-agent/src/advisor/loop-guard.ts` (`cumulative: true`),
-  `packages/ai/src/utils/tool-call-loop-guard.ts` (the `cumulative` option,
-  `#recordCumulative`, `RepeatedToolCallDetection.mode`, the two fork lines in
-  `recordTurn`, and the exported `toolCallSignature` the tally and the advisor dedupe
-  key on), `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md` (the
-  `{{#if consecutive}}` guard), `packages/coding-agent/src/session/tool-call-loop-redirect.ts`
-  (passes `consecutive`).
+  never trips it and burns requests inside one "successful" review. The bound lives in
+  a fork-owned subclass, not in upstream's shared `ToolCallLoopGuard`: the main session
+  uses that class too (a session-long tally would trip on legitimate re-reads, and an
+  earlier fork cut turned its corrective into a persisted, session-wide "NEVER call …
+  again"), and several open upstream PRs edit the exact lines the fork used to change.
+- **Files:** `packages/coding-agent/src/advisor/cumulative-loop-guard.ts`
+  (`CumulativeToolCallLoopGuard`, `CumulativeToolCallDetection`, `toolCallSignature`,
+  `renderAdvisorToolCallLoopRedirect`),
+  `packages/coding-agent/src/prompts/advisor/tool-call-loop-redirect-cumulative.md`
+  (the cumulative corrective), `packages/coding-agent/src/advisor/loop-guard.ts`
+  (imports, `new CumulativeToolCallLoopGuard(...)` and
+  `renderAdvisorToolCallLoopRedirect(detection)` in place of upstream's guard and
+  renderer).
 - **Depends on upstream:** `AdvisorLoopGuard` and its "one corrective, then abort",
-  "reset each update" and "disabled means unbounded" rules; `ToolCallLoopGuard.recordTurn`
-  (upstream's body with two fork lines: the below-threshold branch returns
-  `#recordCumulative(...)`, and the consecutive detection carries `mode:
-  "consecutive"`); the shared settings `model.toolCallLoopGuard.enabled` /
-  `.threshold` / `.exemptTools`; `renderToolCallLoopRedirect`, shared by the main
-  session's `LoopGuards` and the advisor.
+  "reset each update" and "disabled means unbounded" rules; `ToolCallLoopGuard` in
+  `packages/ai/src/utils/tool-call-loop-guard.ts` — its constructor options
+  (`threshold`, `exemptTools`), `recordTurn` being overridable and returning `null`
+  whenever the consecutive bound does not trip (the subclass tallies only then), and
+  the `RepeatedToolCallDetection` shape; upstream's module-private summary helpers,
+  whose limits (result 200 chars, arguments 400 chars) and whitespace collapsing are
+  hand-copied into `cumulative-loop-guard.ts`; `renderToolCallLoopRedirect` (shared by
+  the main session's `LoopGuards` and the advisor) and the wording of
+  `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md`, which the
+  cumulative prompt copies minus "consecutive"; `stableStringifyJson` in
+  `packages/utils/src/json.ts` sorting object keys at every depth; `INTENT_FIELD` from
+  `@oh-my-pi/pi-wire`; the shared settings `model.toolCallLoopGuard.enabled` /
+  `.threshold` / `.exemptTools`.
   Fork text it relies on in a file another entry owns: the runaway-tool-loop bullet in
   `docs/advisor-watchdog.md` (cadence entry).
-- **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md`, `packages/coding-agent/src/session/stream-guards.ts`, `packages/coding-agent/src/config/settings-schema.ts`
+- **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md`, `packages/coding-agent/src/session/stream-guards.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/utils/src/json.ts`
 - **Must still be true:**
   - An advisor alternating two identical calls gets one corrective once either call
     reaches five times the threshold, and the review aborts if it keeps alternating.
-  - Only the advisor's guard sets `cumulative`; the main session's guard stays
-    consecutive-only (a session-long tally would trip on legitimate re-reads).
+  - Only the advisor uses `CumulativeToolCallLoopGuard`; the main session's guard
+    (`packages/coding-agent/src/session/stream-guards.ts`) stays upstream's
+    consecutive-only `ToolCallLoopGuard`.
   - A consecutive detection's corrective says "N consecutive times"; a cumulative one
-    says "N times". Both keep "this turn".
-  - `toolCallSignature` ignores the `intent` field and object key order.
-- **Check:** `bun test packages/coding-agent/test/advisor-tool-call-loop-guard.test.ts packages/ai/test/tool-call-loop-guard.test.ts packages/coding-agent/test/agent-session-tool-call-loop-guard.test.ts`
+    says "N times". Both keep "this turn", and the cumulative prompt differs from
+    upstream's only by the word "consecutive".
+  - The cumulative corrective's result and argument summaries use upstream's limits
+    (200 / 400 chars) and whitespace collapsing.
+  - Exempt tools are never tallied.
+  - `toolCallSignature` ignores the top-level agent-authored intent fields
+    (`INTENT_FIELD`, `__intent`) and object key order, and keeps argument values
+    verbatim.
+  - The fork changes no upstream loop-guard file except the imports and the two call
+    sites in `packages/coding-agent/src/advisor/loop-guard.ts`.
+- **Check:** `bun test packages/coding-agent/test/advisor-tool-call-loop-guard.test.ts packages/coding-agent/test/advisor/cumulative-loop-guard.test.ts packages/ai/test/tool-call-loop-guard.test.ts packages/coding-agent/test/agent-session-tool-call-loop-guard.test.ts`
 
 ### Advisor keeps its context across the primary's per-turn prune
 
