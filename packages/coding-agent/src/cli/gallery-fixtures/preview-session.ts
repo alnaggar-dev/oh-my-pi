@@ -58,8 +58,6 @@ export interface GallerySessionOptions {
 	goalStatus?: "active" | "paused" | "complete" | "budget-limited" | "dropped";
 	/** What `getPromptCacheStatus` reports; absent hides the `cache` marker. */
 	promptCache?: PromptCacheStatus;
-	/** Runs `auto` thinking with this classifier tally. */
-	autoThinking?: { classifying: boolean; classified: number; fallback: number };
 }
 
 /** Deterministic session double for production composer/status renderers. */
@@ -81,8 +79,7 @@ export function createGallerySession(options: GallerySessionOptions = {}): Agent
 		skills: [],
 		model,
 		state: { messages, model, thinkingLevel: "high" },
-		isAutoThinking: options.autoThinking !== undefined,
-		autoThinkingActivity: () => options.autoThinking,
+		isAutoThinking: false,
 		autoResolvedThinkingLevel: () => undefined,
 		isStreaming: false,
 		modelRegistry: { isUsingOAuth: () => options.usingSubscription ?? false },
