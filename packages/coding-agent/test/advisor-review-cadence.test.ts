@@ -3,8 +3,6 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type AdvisorAgent, AdvisorRuntime, type AdvisorRuntimeHost } from "../src/advisor";
 import { reviewGate } from "../src/advisor/review-cadence";
 import { Settings } from "../src/config/settings";
-import type { ToolSession } from "../src/tools";
-import { HubTool } from "../src/tools/hub";
 
 /**
  * `advisor.reviewOn`, as the `reviewGate` handed to `AdvisorRuntime.onTurnEnd`,
@@ -147,56 +145,23 @@ describe("advisor review cadence", () => {
 		}
 	});
 
-	it("exempts hub inspection ops but reviews hub process and coordination ops under reviewOn=mutation", async () => {
-		// The hub carve-out is parameter-discriminated, so it is invisible to the
-		// tool-name table above: `isHubReviewExempt` must keep inspection out of
-		// the advisor's way without hiding a job kill or a peer steer.
+	it("skips `wait` but reviews a peer message sent with `write` under reviewOn=mutation", async () => {
+		// Upstream replaced `hub` with the read-tier `wait` tool plus `write` to
+		// `agent://` (peer message) and `proc://` (job cancel, service stop/stdin).
+		// A peer message is read-tier for approval, yet steering a peer is exactly
+		// the mid-flight decision an advisor should see: `write` is never exempt.
 		const { runtime, messages, promptInputs } = newRuntime();
 
-		pushStep(messages, "hub-jobs", "hub", { op: "jobs" });
+		pushStep(messages, "waiting", "wait", {});
 		runtime.onTurnEnd(messages, { willContinue: true, shouldReview: reviewGate("mutation") });
 		await settle();
 		expect(promptInputs).toHaveLength(0);
-		expect(runtime.backlog).toBe(0);
 
-		pushStep(messages, "hub-start", "hub", { op: "start", name: "web", application: "bun" });
+		pushStep(messages, "steer-peer", "write", { path: "agent://Peer", content: "stop editing auth.ts" });
 		runtime.onTurnEnd(messages, { willContinue: true, shouldReview: reviewGate("mutation") });
 		await runtime.waitForCatchup(1_000, 1);
 		expect(promptInputs).toHaveLength(1);
-		const text = promptText(promptInputs[0]);
-		expect(text).toContain("hub-start");
-		// The skipped inspection step still rides along.
-		expect(text).toContain("hub-jobs");
-	});
-
-	it("classifies every op in the real hub schema: inspection skipped, everything else reviewed", () => {
-		// Read from the live tool schema so an op upstream adds fails here until
-		// it is deliberately classified.
-		const skipped = ["list", "jobs", "inbox", "logs", "ps", "describe", "wait"];
-		const reviewed = ["start", "stop", "restart", "cancel", "send"];
-		const hubJsonSchema = new HubTool({} as ToolSession).parameters.toJsonSchema() as {
-			properties?: { op?: { enum?: string[] } };
-		};
-		const schemaOps = hubJsonSchema.properties?.op?.enum ?? [];
-		expect([...schemaOps].sort()).toEqual([...skipped, ...reviewed].sort());
-
-		const gate = reviewGate("mutation");
-		if (!gate) throw new Error("mutation cadence must gate mid-turn steps");
-		for (const op of schemaOps) {
-			const messages: AgentMessage[] = [];
-			pushStep(messages, `hub-${op}`, "hub", { op });
-			expect({ op, reviewed: gate(messages, 0) }).toEqual({ op, reviewed: reviewed.includes(op) });
-		}
-	});
-
-	it("reviews a hub call whose op is missing, non-string or unrecognized", () => {
-		const gate = reviewGate("mutation");
-		if (!gate) throw new Error("mutation cadence must gate mid-turn steps");
-		for (const args of [{ to: "Peer" }, { op: 7 }, { op: "kill" }]) {
-			const messages: AgentMessage[] = [];
-			pushStep(messages, "hub-malformed", "hub", args);
-			expect({ args, reviewed: gate(messages, 0) }).toEqual({ args, reviewed: true });
-		}
+		expect(promptText(promptInputs[0])).toContain("steer-peer");
 	});
 
 	it("treats an unrecognized reviewOn value as the `step` default and reviews a read-only mid-turn step", async () => {
