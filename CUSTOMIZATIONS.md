@@ -344,7 +344,10 @@ does what I wanted".
   sync that brings the reset back conflicts instead of silently restoring the old
   cost; the `rebaseAdvisorPrefix` host member), `packages/coding-agent/src/advisor/runtime.ts`
   (`rebaseDeliveredPrefix`, `EVAL_STATE_CONTEXT_TYPE`; the cadence entry's hunks here
-  are named under its **Depends on upstream**).
+  are named under its **Depends on upstream**),
+  `packages/coding-agent/src/session/agent-session.ts` (the `rebaseAdvisorPrefix` host
+  wiring; the file's other fork hunks are named under the status-line and tally
+  entries' **Depends on upstream**).
 - **Depends on upstream:** the prune passes only rewrite tool results, in place, marking
   them with `prunedAt` — the rebase accepts a changed slot only when it is the same
   tool result (`toolCallId`) now carrying `prunedAt`; `#deliveredPrefix` / `#lastCount`
@@ -360,9 +363,7 @@ does what I wanted".
   diagnosable.
   Fork code it relies on in files other entries own: `rebaseDeliveredPrefixes` in
   `packages/coding-agent/src/session/session-advisors.ts` (advise-only entry); the
-  `rebaseAdvisorPrefix` wiring in `packages/coding-agent/src/session/agent-session.ts`
-  (`auto` thinking entry); the per-turn prune paragraph in `docs/advisor-watchdog.md`
-  (cadence entry).
+  per-turn prune paragraph in `docs/advisor-watchdog.md` (cadence entry).
 - **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/coding-agent/src/session/session-maintenance.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/message-fingerprint.ts`, `packages/coding-agent/src/advisor/runtime.ts`
 - **Must still be true:**
   - A per-turn prune of an already-delivered primary tool result does not re-prime the
@@ -425,12 +426,18 @@ does what I wanted".
   to the fixed `medium` default.
 - **Why:** `auto` is a session-level selector with no per-advisor classifier, so
   building an advisor erased it and the advisor reviewed hard turns at medium effort.
-- **Files:** `packages/coding-agent/src/session/agent-session.ts` (the
-  `primaryThinkingLevel` host wiring; the file's other fork hunks are named under the
-  prune, status-line and tally entries' **Depends on upstream**).
-- **Depends on upstream:** the advisor host interface — `primaryThinkingLevel()` is
-  implemented as a live getter, and the inherited level is **derived from the
-  primary's live level each time, never snapshotted at build time**;
+- **Files:** none of its own: all of its code sits in the advisor session file the
+  advise-only entry owns (named under **Depends on upstream**).
+- **Depends on upstream:** the primary `Agent`'s `state.thinkingLevel` (an `Effort`,
+  undefined when thinking is off, `inherit` or unset), read through the advisor host's
+  existing `agent` member. `ModelControls` in
+  `packages/coding-agent/src/session/model-controls.ts` writes it through
+  `#applyThinkingLevelToAgent` (`toReasoningEffort` of the session's level) on every
+  level change — construction, `setThinkingLevel`, `restoreThinkingLevel`,
+  `restoreThinkingSnapshot` and each `applyAutoThinkingLevel` classification — so it is
+  **the primary's live level each time, never snapshotted at build time**. If upstream
+  stops keeping agent state in step with the session's level (for example by applying
+  effort per request instead), the advisor silently falls back to `medium`.
   `AUTO_THINKING`, `concreteThinkingLevel`, `resolveThinkingLevelForModel`,
   `clampAutoThinkingEffort`, `toReasoningEffort`, `shouldDisableReasoning`;
   `resolveModelOverride` / `formatModelSelectorValue`. **The advisor runtime signature
@@ -448,11 +455,11 @@ does what I wanted".
   Fork code it relies on in a file another entry owns, all in
   `packages/coding-agent/src/session/session-advisors.ts` (advise-only entry):
   `#autoAdvisorThinkingLevel`, the one source for build, retune and fallback restore;
-  `#retuneAutoThinkingAdvisors`; the `autoThinking` branch in
-  `#maybeRestoreAdvisorRetryFallbackPrimary`; the `autoThinking` descriptor/advisor flag;
-  the `AUTO_THINKING` substitution in the runtime signature; the host's
-  `primaryThinkingLevel` member.
-- **Tripwire paths:** `packages/tui/src/thinking.ts`, `packages/coding-agent/src/session/role-models.ts`, `packages/coding-agent/src/session/session-advisors.ts`
+  `#retuneAutoThinkingAdvisors` and its call at the top of `onPrimaryTurnEnd`; the
+  `autoThinking` branch in `#maybeRestoreAdvisorRetryFallbackPrimary`; the
+  `autoThinking` descriptor/advisor flag and the build-time `requestedLevel` branch;
+  the `AUTO_THINKING` substitution in the runtime signature.
+- **Tripwire paths:** `packages/tui/src/thinking.ts`, `packages/coding-agent/src/session/role-models.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/model-controls.ts`
 - **Must still be true:**
   - With the primary on `auto`, an `auto` advisor runs at the primary's current
     resolved effort, not `medium`.
@@ -467,6 +474,8 @@ does what I wanted".
     the next review boundary and it is the same instance — model and context survive,
     and so does the cached prefix on `supportsPerMessageEffort` models.
   - An `auto` advisor's runtime signature does not change when the resolved effort does.
+  - After every thinking-level change, the primary agent's `state.thinkingLevel` equals
+    `toReasoningEffort` of the session's level (the advisor's only source).
 - **Check:** `bun test packages/coding-agent/test/advisor-auto-thinking.test.ts packages/coding-agent/test/advisor-devin-thinking.test.ts`
 
 ## Status line and TUI
@@ -513,7 +522,7 @@ does what I wanted".
   `subscribeAutoThinkingActivity` in `packages/coding-agent/src/session/model-controls.ts`
   (tally entry, which also owns the pending hold timer in `AutoThinkingTreeActivity`);
   `autoThinkingActivity()` and `subscribeAutoThinkingActivity` in
-  `packages/coding-agent/src/session/agent-session.ts` (`auto` thinking entry); the
+  `packages/coding-agent/src/session/agent-session.ts` (prune entry); the
   `auto_thinking` segment description in `docs/settings.md` (cadence entry).
 - **Tripwire paths:** `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/metrics.ts`, `packages/tui/src/status-line/footer.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/theme-class.ts`, `packages/tui/src/theme/glyph-bundle.json`, `packages/tui/src/render/render-utils.ts`, `packages/tui/src/tui.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`, `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`
 - **Must still be true:**
@@ -565,7 +574,7 @@ does what I wanted".
   Fork code it relies on in a file another entry owns: the
   `activity: config.autoThinkingActivity` pass-through, `autoThinkingTally()`, the type
   re-exports and `#models.dispose()` in `packages/coding-agent/src/session/agent-session.ts`
-  (`auto` thinking entry).
+  (prune entry).
 - **Tripwire paths:** `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/workpool.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/controllers/tan-command-controller.ts`, `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`
 - **Must still be true:**
   - A classification inside a subagent increments its root session's `classified`
