@@ -6,6 +6,7 @@
 
 - Added passive tool-call context support, allowing hooks and tools to provide additional context that is included with tool results for subsequent model processing.
 - Added automatic output-token limit adjustment so requests fit within the model’s context window.
+- Added `isWorthPruning(tokens)`, which says whether a tool result meets the size floor age-based pruning uses (50 tokens), so code that blanks tool results itself can follow the same policy instead of copying the number ([#13128](https://github.com/can1357/oh-my-pi/pull/13128) by [@alnaggar-dev](https://github.com/alnaggar-dev))
 
 ## [18.3.0] - 2026-09-24
 
