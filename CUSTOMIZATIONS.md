@@ -37,7 +37,7 @@ does what I wanted".
   seeds `#includeThinking`, and the `shouldReview` option with its gate in `onTurnEnd`),
   `docs/advisor-watchdog.md` (its "Controlling token spend" section; the other fork
   paragraphs are named under the read-only, context-slimming, loop-bound and
-  bounded-diffs entries' **Depends on upstream**),
+  preview-redaction entries' **Depends on upstream**),
   `docs/settings.md` (the three `advisor.*` rows, the reworded advisor intro, and the
   `advisor` segment paragraph, named under the advisor-segment entry).
 - **Depends on upstream:** `AdvisorRuntime.onTurnEnd(messages, { willContinue })` and
@@ -76,8 +76,8 @@ does what I wanted".
     to `step` for anything it does not recognize.
   - With `projectContext: false`, a context-file change does not rebuild advisors that
     were built with the setting off, and turning the setting on later uses the latest
-    context prompt — even when the setting was flipped off without the selector's
-    rebuild (for example `Settings.reloadFromDisk()`).
+    context prompt — even when the setting was flipped off without the settings
+    listener's rebuild.
 - **Check:** `bun test packages/coding-agent/test/advisor-live-settings.test.ts packages/coding-agent/test/advisor-review-cadence.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
 
 ### Read-only tools skipped by the `mutation` cadence
@@ -100,7 +100,8 @@ does what I wanted".
   from it at module load, never hardcoded — that is the safety property.** A new
   upstream read tool becomes exempt automatically; a new writing tool is absent and so
   still forces a review. `find` is upstream's semantic search tool and is read-tier on
-  purpose: its only write is a self-cleaning temp dir, so it is correctly exempt.
+  purpose: it reads through the internal-URL filesystem and writes nothing, so it is
+  correctly exempt.
   Also `normalizeToolName` in `packages/coding-agent/src/tools/builtin-names.ts`, and
   the `toolCall` block shape on assistant messages. Ordering constraint:
   `ADVISOR_STATEFUL_READ_TIER_TOOLS` must stay declared *before* the derived table or
@@ -297,7 +298,7 @@ does what I wanted".
   `.threshold` / `.exemptTools`.
   Fork text it relies on in a file another entry owns: the runaway-tool-loop bullet in
   `docs/advisor-watchdog.md` (cadence entry).
-- **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md`, `packages/coding-agent/src/session/stream-guards.ts`, `packages/coding-agent/src/config/settings-schema.ts`, `packages/utils/src/json.ts`
+- **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md`, `packages/coding-agent/src/session/stream-guards.ts`, `packages/coding-agent/src/session/settings.ts`, `packages/utils/src/json.ts`
 - **Must still be true:**
   - An advisor alternating two identical calls gets one corrective once either call
     reaches five times the threshold, and the review aborts if it keeps alternating.
@@ -317,30 +318,21 @@ does what I wanted".
     sites in `packages/coding-agent/src/advisor/loop-guard.ts`.
 - **Check:** `bun test packages/coding-agent/test/advisor-tool-call-loop-guard.test.ts packages/coding-agent/test/advisor/cumulative-loop-guard.test.ts packages/ai/test/tool-call-loop-guard.test.ts packages/coding-agent/test/agent-session-tool-call-loop-guard.test.ts`
 
-### Bounded diffs and tool output inside advisor deltas
+### Redacted one-line previews inside advisor deltas
 
-- **What it does:** Upstream redacts the expanded edit diff (`details.diff`) and cuts it,
-  like other expanded tool input/output, to 8 KiB / 80 lines (#13129). The fork adds two
-  things. (1) The diff gets its own, higher line cap of 300 lines
-  (`EXPANDED_DIFF_MAX_LINES`) under the same 8 KiB byte cap; other expanded tool output
-  keeps 80 lines. A diff within both caps passes through byte-identical. This part is
-  open upstream as PR #13184 (see **Known follow-ups**).
-  (2) One-line previews — tool primary argument, tool intent, user `!`/`$` source,
-  custom/irc/async-result, branch, compaction and file-mention one-liners — are
+- **What it does:** One-line previews — tool primary argument, tool intent, user `!`/`$`
+  source, custom/irc/async-result, branch, compaction and file-mention one-liners — are
   redacted before their 120/80-character cut. Redaction covers the text through the end
   of the word holding the last visible character (at most 8 KiB), so a secret the cut
-  lands in is redacted whole, while text after the cut is never scanned.
-- **Why:** At 80 lines the cut hid the middle hunks of mid-size edits, often the part a
-  review needs most; under the same byte cap the most one diff can cost stays the same.
-  A cut through a plain secret leaves a fragment the later whole-transcript redaction
+  lands in is redacted whole, while text after the cut is never scanned. (The fork's
+  300-line cap for expanded edit diffs landed upstream as #13184 and is upstream code
+  now.)
+- **Why:** A cut through a plain secret leaves a fragment the later whole-transcript redaction
   pass cannot recognize, so the visible half reached the advisor.
 - **Files:** `packages/coding-agent/src/session/session-history-format.ts` (`previewLine`,
-  `primaryArgText`, the `transform` parameters on the preview formatters,
-  `EXPANDED_DIFF_MAX_LINES`, the `maxLines` parameter of `boundedFencedToolContext`, and
-  the `EXPANDED_DIFF_MAX_LINES` argument on the `details.diff` call in `toolCallLine`).
-- **Depends on upstream:** `truncateMiddle` and its `{ maxBytes, maxLines }` options
-  plus the elision marker text; the `details.diff` field on edit tool results and
-  upstream's redact-then-bound call for it in `toolCallLine`;
+  `PREVIEW_TRANSFORM_SCAN_MAX`, `primaryArgText`, and the `transform` parameters on the
+  preview formatters).
+- **Depends on upstream:** upstream's `oneLine` and preview caps;
   `formatSessionHistoryMarkdown`'s option object (`expandEditDiffs`, `expandToolIO`,
   `transformExpandedToolIO`) — the advisor sets all of these, so an upstream default
   change silently changes what it is billed for; the advisor passing its secret
@@ -350,27 +342,14 @@ does what I wanted".
   source past the preview cap is never scanned (its test `does not scan execution source
   after the advisor preview cap`).
   **Open upstream risk — PR #12848** (open) makes `boundedFencedToolContext` return
-  `{ content, truncated }`. If it lands, expect conflicts in
-  `packages/coding-agent/src/session/session-history-format.ts` (the function's
-  signature and its fenced return) and in
-  `packages/coding-agent/test/session/session-history-format.test.ts`. Resolve by
-  keeping #12848's return shape and the fork's `maxLines` in both `truncateMiddle`
-  calls, and check that the `details.diff` call reads `.content` — without it the
-  advisor prompt gets `[object Object]`. Keep the fork's tests when resolving the test
-  conflict.
+  `{ content, truncated }`; it now touches only upstream code, but check the
+  `details.diff` call still reads `.content` if it lands.
   **Known gap (upstream code, left alone):** `obfuscateAdvisorMessage` in
   `packages/coding-agent/src/advisor/runtime.ts` still cuts `bashExecution` and
   `pythonExecution` source with `formatExecutionSourcePreview` (no transform) before
   redacting it.
-  Fork text it relies on in a file another entry owns: the diff-budget sentence in
-  `docs/advisor-watchdog.md` (cadence entry).
-- **Tripwire paths:** `packages/tui/src/tools/streaming-output.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
+- **Tripwire paths:** `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
 - **Must still be true:**
-  - A 400-line diff keeps head and tail, drops the middle, and carries a marker.
-  - A small diff, and a 200-line diff under 8 KiB (past the 80-line tool-output cap,
-    inside the diff's 300-line cap), render byte-identically, with no marker.
-  - Only the `details.diff` call passes the 300-line cap; tool results and `ask` input
-    keep `boundedFencedToolContext`'s 80-line default.
   - A secret straddling a one-line preview's cut (tool command, user `!` command) leaves
     no 8-character piece in the advisor prompt; a token starting after the cut is never
     scanned, and upstream's preview-cap test passes unchanged.
@@ -382,7 +361,7 @@ does what I wanted".
     bring the leak back with no merge conflict. `formatToolResultErrorPreview` keeps
     upstream's `oneLine` on purpose: its input is the whole tool result, already
     redacted.
-- **Check:** `bun test packages/coding-agent/test/session/session-history-format.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
+- **Check:** `bun test packages/coding-agent/test/advisor/advisor.test.ts packages/coding-agent/test/session/session-history-format.test.ts`
 
 ## Status line and TUI
 
@@ -502,7 +481,7 @@ does what I wanted".
   new upstream segment conflicts in all of them; `getAdvisorStatusOverview` and its
   status strings (`running`, `error`, `quota_exhausted`, `paused`);
   `getContextUsageLevel` and `getContextUsageThemeColor` in
-  `packages/tui/src/status-line/context-usage.ts`; `theme.icon.advisor`,
+  `packages/tui/src/chrome/context-thresholds.ts`; `theme.icon.advisor`,
   `theme.icon.context`, `theme.icon.cache` and `statusValue`/`withIcon`; the
   `cache_hit` segment's prompt-token denominator (`cacheRead + cacheWrite + input`),
   which this copies; `loadAdvisorTranscriptCosts`' single pass over advisor
@@ -519,7 +498,7 @@ does what I wanted".
   `getAdvisorUsageSummary`, the `AdvisorUsageSummary` re-export and the
   `promptUsageBySlug` plumbing on both restore paths; the `advisor` segment paragraph
   in `docs/settings.md` (cadence entry).
-- **Tripwire paths:** `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/context-usage.ts`, `packages/tui/src/theme/theme.ts`, `packages/coding-agent/src/advisor/transcript-recorder.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`
+- **Tripwire paths:** `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/chrome/context-thresholds.ts`, `packages/tui/src/theme/symbols.ts`, `packages/coding-agent/src/advisor/transcript-recorder.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`
 - **Must still be true:**
   - With every advisor running the count is the bare total; otherwise it is
     `running/total`.
@@ -608,11 +587,8 @@ does what I wanted".
 - **Hand-copied constant (until upstream exports it).** `MIN_EVICT_TOKENS = 50` in
   `packages/coding-agent/src/advisor/tool-result-eviction.ts` mirrors upstream's unexported
   `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts`. Upstream PR #13128
-  (open) exports `isWorthPruning(tokens)` from that file instead of the constant. Once it
-  merges, replace the two `tokens < MIN_EVICT_TOKENS` checks with
+  (exporting `isWorthPruning(tokens)` instead) was closed unmerged. If upstream ever
+  exports it, replace the two `tokens < MIN_EVICT_TOKENS` checks with
   `!isWorthPruning(tokens)`, delete the copy and its Must-line in the advisor context
   slimming entry, and drop this note. Until then it is a known drift risk: the
   pruning.ts tripwire in that entry flags any upstream change for a manual re-check.
-- **Open upstream PR for the diff cap.** PR #13184 sends the 300-line edit-diff cap from
-  the bounded-diffs entry upstream. Once it merges, take upstream's version at the next
-  sync and trim that entry to the preview redaction.
