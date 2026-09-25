@@ -42,6 +42,7 @@
 - Added opt-in CUDA support to the Nix package for tiny-model inference with the ONNX Runtime CUDA execution provider.
 - Added support for multiple simultaneous browser instances, allowing tabs from browsers such as Chrome and Edge to remain connected and usable at the same time.
 - Added an `advisor` status line segment (in the `full` preset) showing the advisor count, the busiest advisor's context usage, and the session-total advisor cache-hit rate, configurable via `statusLine.segmentOptions.advisor`.
+- Added stale tool-result eviction for advisors: before each review, an advisor replaces its own old `read`/`grep`/`glob` output from finished reviews with a short placeholder, so it stops re-sending that output on every request. The deltas it reviews and the notes it wrote are never touched ([#13238](https://github.com/can1357/oh-my-pi/pull/13238) by [@alnaggar-dev](https://github.com/alnaggar-dev))
 
 ### Changed
 
