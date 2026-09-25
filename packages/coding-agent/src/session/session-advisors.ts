@@ -20,7 +20,6 @@ import {
 	estimateTranscriptTokens,
 	getAnthropicCompactionPayload,
 	isOpenAiRemoteCompactionApi,
-	isTranscriptUsageAnchor,
 	NativeCompactionError,
 	prepareCompaction,
 	type SessionMessageEntry,
@@ -363,24 +362,16 @@ interface ActiveAdvisor {
 	 */
 	providerWaitRetries: number;
 	/**
-	 * Tokens this advisor's stale-tool-result eviction removed since the newest
-	 * provider usage anchor reported its context. That usage still counts the
-	 * evicted bytes, so the anchored estimate subtracts this; reset whenever a
-	 * fresh anchor lands or the message array is replaced.
-	 */
-	evictedSinceAnchor: number;
-	/**
 	 * Memoized {@link SessionAdvisors.getAdvisorUsageSummary} context percent.
 	 * The status line polls at spinner cadence, so the transcript estimate is
 	 * recomputed only when the inputs it reads change: the message array
 	 * (replaced on compaction/reset), its length and tail (append/rollback),
-	 * the eviction correction, and the model (window + tokenizer).
+	 * and the model (window + tokenizer).
 	 */
 	contextPercentCache?: {
 		messages: readonly AgentMessage[];
 		length: number;
 		last: AgentMessage | undefined;
-		evictedSinceAnchor: number;
 		model: Model;
 		percent: number | null;
 	};
@@ -1649,8 +1640,6 @@ export class SessionAdvisors {
 					advisorLoopGuardStopped = false;
 					advisorAgent.reset();
 					appendOnlyContext.log.clear();
-					// No anchor and no messages left to have evicted from.
-					advisorRef.evictedSinceAnchor = 0;
 				},
 				rollbackTo: count => {
 					// Drop the failed user batch + synthetic assistant-error turn
@@ -1661,7 +1650,6 @@ export class SessionAdvisors {
 					}
 					appendOnlyContext.resetSyncCursor();
 					advisorAgent.state.error = undefined;
-					advisorRef.evictedSinceAnchor = 0;
 				},
 				state: advisorAgent.state,
 			};
@@ -1770,7 +1758,6 @@ export class SessionAdvisors {
 				pendingCoveredTurn: 0,
 				retryFallbackPendingSuccess: false,
 				providerWaitRetries: 0,
-				evictedSinceAnchor: 0,
 				signature,
 			};
 			this.#refreshAdvisorProviderIdentity(advisorRef);
@@ -2054,9 +2041,6 @@ export class SessionAdvisors {
 			if (event.message.role === "assistant") {
 				this.#recordAdvisorCost(advisor, event.message);
 				this.#recordAdvisorPromptUsage(advisor, event.message);
-				// A fresh provider usage anchor reports the context as it stands
-				// now — post-eviction — so the correction it carried is spent.
-				if (isTranscriptUsageAnchor(event.message)) advisor.evictedSinceAnchor = 0;
 			}
 			advisor.recorder.record(event.message);
 		});
@@ -2471,6 +2455,9 @@ export class SessionAdvisors {
 		if (cfgAdvisorEvictStaleResults.get(this.#host.settings)) {
 			const eviction = evictStaleToolResults(agent.state.messages, agent.tokenizer);
 			if (eviction.evicted > 0) {
+				// Eviction rewrites results in place without changing the array's
+				// length or tail, so the status-line memo cannot see it.
+				advisor.contextPercentCache = undefined;
 				logger.debug("advisor evicted stale tool results", {
 					advisor: advisor.name,
 					evicted: eviction.evicted,
@@ -2761,9 +2748,6 @@ export class SessionAdvisors {
 
 		agent.replaceMessages([summaryMessage, ...recentMessages]);
 		this.#releaseRefusalPin(advisor);
-		// The retained tail's own anchors are gone with the replaced array; there
-		// is no stale provider usage left for the correction to offset.
-		advisor.evictedSinceAnchor = 0;
 		return false;
 	}
 	/**
@@ -3058,7 +3042,6 @@ export class SessionAdvisors {
 			cached.messages === messages &&
 			cached.length === messages.length &&
 			cached.last === last &&
-			cached.evictedSinceAnchor === advisor.evictedSinceAnchor &&
 			cached.model === model
 		) {
 			return cached.percent;
@@ -3069,7 +3052,6 @@ export class SessionAdvisors {
 			messages,
 			length: messages.length,
 			last,
-			evictedSinceAnchor: advisor.evictedSinceAnchor,
 			model,
 			percent,
 		};
@@ -3264,7 +3246,6 @@ export class SessionAdvisors {
 			skipPrunedAnchors: true,
 			excludeEncryptedReasoning: true,
 		});
-		return Math.max(0, estimate - advisor.evictedSinceAnchor);
 	}
 
 	/**
