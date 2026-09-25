@@ -1125,7 +1125,7 @@ export class SessionAdvisors {
 				: resolveModelServiceTier(advisorTierMap, model);
 
 		// Build-time cost controls: both are baked into the runtimes below, so the
-		// selector rebuilds advisors when either changes.
+		// session's advisor-settings listener rebuilds advisors when either changes.
 		const includeThinking = cfgAdvisorIncludeThinking.get(this.#host.settings);
 		const includeProjectContext = cfgAdvisorProjectContext.get(this.#host.settings);
 
@@ -2490,8 +2490,8 @@ export class SessionAdvisors {
 		// Stored above so a later `advisor.projectContext: true` rebuild picks it
 		// up; with it off, the prompt never reaches the advisor, so no rebuild —
 		// unless the live runtimes predate the setting change (flipped without the
-		// selector's rebuild, e.g. a settings reload from disk): they still carry
-		// the old prompt, and a later selector refresh would find them current.
+		// settings listener's rebuild): they still carry the old prompt, and a later
+		// rebuild check would find them current.
 		if (!cfgAdvisorProjectContext.get(this.#host.settings) && this.#advisorRuntimeMatchesCurrentConfig()) return;
 		this.#stopAdvisorRuntime();
 		this.#buildAdvisorRuntime(true);
