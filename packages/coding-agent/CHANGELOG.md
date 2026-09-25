@@ -37,10 +37,6 @@
 - Added `attachment://` and `conflict://` resource URL handlers.
 - Added a per-server MCP `instructions: false` option to keep a server's guidance out of the system prompt while retaining its tools.
 - Added stale tool-result eviction for advisors: before each review, an advisor replaces its own `read`/`grep`/`glob` output from reviews older than the latest one with a short placeholder, so it stops re-sending that output on every request. The deltas it reviews, the notes it wrote, and other tool results such as `recall` are never touched. Turn it off with `advisor.evictStaleResults` ([#13238](https://github.com/can1357/oh-my-pi/pull/13238) by [@alnaggar-dev](https://github.com/alnaggar-dev))
-- Added trusted additional context support for extension and hook tool results, including `ctx.addAdditionalContext()` for registered tools, allowing instructions to be passed to the model without altering the tool result.
-- Added dictation support to `/btw` follow-up input, including microphone controls on the follow-up line.
-- Added opt-in CUDA support to the Nix package for tiny-model inference with the ONNX Runtime CUDA execution provider.
-- Added support for multiple simultaneous browser instances, allowing tabs from browsers such as Chrome and Edge to remain connected and usable at the same time.
 - Added an `advisor` status line segment (in the `full` preset) showing the advisor count, the busiest advisor's context usage, and the session-total advisor cache-hit rate, configurable via `statusLine.segmentOptions.advisor`.
 
 ### Changed
@@ -113,25 +109,7 @@
 - Terminal OAuth behavior is now consistent between `omp login` and `omp auth-broker login`.
 - Judgment fallback now uses only native candidates, preventing prompted models from replacing failed native judges.
 - Browser screenshot comparisons now tolerate minor rasterizer differences.
-- Updated session compaction logic to support native Anthropic snapshot branches and rewinds
-- Changed browser screenshot pixel comparison to ignore minor rasterizer noise
-- Changed subagents to exclude the wait tool, preventing blocking on wait in nested agents
-- Changed default `bash.autoBackground.strategy` to `catalog`
-- Renamed `Launch` configuration group to `Services`
-- Improved terminal output for pipe-backed shells by normalizing line endings
-- Updated edit mode syntax to use `*** Edit File:`, `*** Find`, and `*** Replace` instead of `SM:` prefixed headers
-- Unified terminal OAuth flow logic across `omp login` and `omp auth-broker login`
-- Included identity account/organization info in terminal login success messages
-- Changed judgment fallback to consider only native candidates, preventing prompted models from replacing failed natives
 - An unrecognized `advisor.reviewOn` value (for example a typo in a hand-edited config) now explicitly reviews every step, like the `step` default.
-
-### Deprecated
-
-- Deprecated `hub` tool in favor of `wait`, `write`, and `proc://` protocols
-
-### Removed
-
-- Removed `irc.timeoutMs` configuration setting
 
 ### Fixed
 
@@ -143,18 +121,6 @@
 - Fixed headless print mode dropping or silently ignoring MCP servers that start slowly; it now waits within the configured timeout and warns when a server is not ready.
 - Fixed reader-mode `fetch` sending inline SVG icons and base64 images as unreadable model input; alt text is retained instead.
 - Fixed long non-Latin judged TTSR output exceeding token limits by applying token-aware truncation.
-- Fixed comma-separated line selectors such as `:19,59` in `read`, `grep` paths, and `fetch` reading from the first number through EOF. A bare number in a list is now that single line; a lone `:50` still reads from line 50.
-- Fixed `write` success text reporting JavaScript string length as bytes. The count is now the UTF-8 byte length.
-- Fixed `read proc://`, `/jobs`, and job details showing a finished job's age as its duration. Completed, failed, and cancelled jobs now show how long they ran, e.g. `bg_1 [bash] completed in 2.0s`.
-- Fixed bash and eval calls that finished in the foreground with auto-background enabled appearing in `read proc://` as `bg_` jobs with a made-up duration. Only calls that actually move to the background become jobs.
-- Fixed background job ids being reused after earlier jobs were cleaned up, which made `proc://bg_1` point to different jobs over a session. Each new background job now gets a new `bg_` number.
-- Fixed a named service started again under an existing name showing the previous process's output in its log, in `read proc://<name>`, and in the bash tool's start result. A new start now begins with an empty log; restarts under the service's restart policy and explicit restarts still keep the earlier output.
-- Fixed `wait` returning `No running background jobs to wait for.` while a subagent's finished result was still on its way to the parent. `wait` now returns that result, keeps waiting when a peer's result is registered after the wait started, and a result that finished while `wait` returned a peer message instead is still delivered.
-- Fixed results from subagents woken again by `write agent://<id>` or `agent://all` never reaching the parent, and later results overwriting earlier ones in `agent://<id>` unseen. Each result from a woken subagent now arrives like the first one (`Background job <id> has completed` plus the result), and `wait` can wait for it.
-- Fixed a `wait` cut short by an incoming message showing as an error (`Operation aborted`). It now returns `Wait interrupted by message.`; stopping the run yourself still reports an abort.
-- Fixed headless print mode (`-p`) silently dropping MCP servers slower than the startup window; print mode now waits for configured servers (bounded by `OMP_MCP_TIMEOUT_MS`) and warns on stderr when one is not ready ([#12188](https://github.com/can1357/oh-my-pi/issues/12188), reported by [@aaronjmars](https://github.com/aaronjmars)).
-- Fixed reader-mode `fetch` output passing inline SVG icons and base64 `data:` images to the model as unreadable payloads; they are now dropped and their alt text is kept ([#13006](https://github.com/can1357/oh-my-pi/pull/13006) by [@H4vC](https://github.com/H4vC)).
-- Fixed judged TTSR rules failing with `max_tokens_exceeded` on long non-Latin outputs: judged content was capped at 60,000 characters, which is ~60k Jev tokens of Chinese against Jev's ~33k-token branch limit. It is now cut to 32,000 Jev tokens counted locally, so long English outputs are also no longer truncated early.
 - Fixed an advisor keeping an outdated project context after `advisor.projectContext` was switched off by a settings reload and then back on in `/settings`.
 - Fixed advisor repeat-call de-duplication reporting a changed file as `[Unchanged since your earlier identical call]` when the only change was text that looks like `read`'s repeat hint (for example in a `:raw` read).
 - Fixed secrets leaking into advisor prompts when a one-line preview (a tool command or other main argument, a tool intent, a user `!`/`$` command, or a branch/compaction/custom one-liner) was cut in the middle of a secret; previews are now redacted before they are cut.
