@@ -23,6 +23,7 @@ export const STATUS_LINE_SEGMENT_IDS = [
 	"cache_write",
 	"cache_hit",
 	"cache",
+	"advisor",
 	"session_name",
 	"usage",
 	"collab",

@@ -44,6 +44,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 			"cache_read",
 			"cache",
 			"cost",
+			"advisor",
 			"context_pct",
 			"time_spent",
 			"time",
