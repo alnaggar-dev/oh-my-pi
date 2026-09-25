@@ -36,7 +36,7 @@ does what I wanted".
   `packages/coding-agent/src/advisor/runtime.ts` (the `includeThinking` host flag that
   seeds `#includeThinking`, and the `shouldReview` option with its gate in `onTurnEnd`),
   `docs/advisor-watchdog.md` (its "Controlling token spend" section; the other fork
-  paragraphs are named under the read-only, context-slimming, loop-bound and
+  paragraphs are named under the read-only, dedupe, loop-bound and
   preview-redaction entries' **Depends on upstream**),
   `docs/settings.md` (the three `advisor.*` rows, the reworded advisor intro, and the
   `advisor` segment paragraph, named under the advisor-segment entry).
@@ -59,7 +59,7 @@ does what I wanted".
   build-time settings (passed to the runtime as `includeThinking`, and gating the
   `<project-context>` block), their two runtime-signature fields and the
   `setContextPrompt` skip (only while the live runtimes match the current config) in
-  `packages/coding-agent/src/session/session-advisors.ts` (context-slimming entry); the
+  `packages/coding-agent/src/session/session-advisors.ts` (dedupe entry); the
   two `cfgAdvisorRuntimeInputs` fields in `packages/coding-agent/src/session/agent-session.ts`
   (auto-thinking entry).
 - **Tripwire paths:** `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
@@ -127,32 +127,26 @@ does what I wanted".
   - A skipped step is not lost: its content lands in the next review that happens.
 - **Check:** `bun test packages/coding-agent/test/advisor-review-cadence.test.ts`
 
-### Advisor context slimming: stale-result eviction and repeat-call de-duplication
+### Advisor repeat-call de-duplication
 
-- **What it does:** Before each advisor request, file contents the advisor read during
-  *finished* reviews are blanked to `[Stale result elided - N tokens]`, with the cut
-  point chosen so the tokens freed beat the bytes that must be re-sent. Inside a
-  review, a call identical to an earlier one whose result is still in context returns
-  `[Unchanged since your earlier identical call]`. This covers every advisor tool
-  except `advise`: by default `read`/`grep`/`glob` (plus `recall` when the memory
-  backend provides it), and any built-in granted through a `WATCHDOG.yml` `tools:`
-  list. For `read`, the comparison ignores the repeat hint upstream `read` appends from
-  the 3rd identical read, but only at the exact spot `read` puts it and only when it
-  names this call's `path`.
-- **Why:** Old investigation output was ~48% of what the advisor re-sent every request,
-  and 13% of its investigation calls were byte-identical repeats that would re-inflate
-  exactly what the eviction just trimmed.
-- **Files:** `packages/coding-agent/src/advisor/tool-result-eviction.ts`,
-  `packages/coding-agent/src/advisor/tool-result-dedupe.ts`,
-  `packages/coding-agent/src/session/session-advisors.ts` (`advisorAnchorSearchStart`
-  and its `prunedAt` cutoff, the eviction step at the top of `#maintainAdvisorContext`,
-  `#estimateAdvisorContextTokens` using that start, and the dedupe branch in the advisor
-  `afterToolCall` hook; the file's other fork hunks are named under the cadence and
-  advisor-segment entries' **Depends on upstream**).
-- **Depends on upstream:** the in-place rewrite contract for tool results — `prunedAt`
-  on `ToolResultMessage` and `invalidateMessageCache`; `Tokenizer.countMessage`;
-  `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts` (not exported —
-  `MIN_EVICT_TOKENS = 50` is a hand-kept copy); `appendRepeatReadHint` in
+- **What it does:** Inside a review, a call identical to an earlier one whose result is
+  still in context returns `[Unchanged since your earlier identical call]`. This covers
+  every advisor tool except `advise`: by default `read`/`grep`/`glob` (plus `recall`
+  when the memory backend provides it), and any built-in granted through a
+  `WATCHDOG.yml` `tools:` list. For `read`, the comparison ignores the repeat hint
+  upstream `read` appends from the 3rd identical read, but only at the exact spot
+  `read` puts it and only when it names this call's `path`. (The stale-result eviction
+  that used to live in this entry landed upstream as #13238 and is upstream code now.)
+- **Why:** 13% of advisor investigation calls were byte-identical repeats, each one
+  re-inflating the context that upstream's stale-result eviction trims.
+- **Files:** `packages/coding-agent/src/advisor/tool-result-dedupe.ts`,
+  `packages/coding-agent/src/session/session-advisors.ts` (the `AdvisorToolResultDedupe`
+  import, the per-runtime `toolResultDedupe` instance, and the dedupe branch in the
+  advisor `afterToolCall` hook; the file's other fork hunks are named under the cadence
+  and advisor-segment entries' **Depends on upstream**).
+- **Depends on upstream:** `prunedAt` on `ToolResultMessage` — a result upstream's
+  `evictStaleToolResults` (`packages/coding-agent/src/advisor/tool-result-eviction.ts`)
+  or any other prune blanked carries it and reads as a miss; `appendRepeatReadHint` in
   `packages/coding-agent/src/tools/read.ts` — its exact hint text, that it goes at the
   end of the first text block, and that it quotes the call's `path` argument verbatim
   (matched by `stripRepeatReadHint` in
@@ -162,8 +156,7 @@ does what I wanted".
   (`appendOutputNotice` in `packages/coding-agent/src/tools/output-meta.ts`,
   `formatOutputNotice` in `packages/tui/src/tools/output-meta.ts`) and the agent loop
   keeping `details` on the `ToolResultMessage`; the `AfterToolCallResult` shape
-  including `useless`; `isTranscriptUsageAnchor` and `estimateTranscriptTokens`; the `prunedAt` staleness
-  rule of `findRequestUsageAnchor`, which `advisorAnchorSearchStart` copies.
+  including `useless`.
   Upstream's advisor `afterToolCall` hook in `session-advisors.ts` (added by #13132: a
   turn whose only tool calls are `advise` ends the review). The fork only swaps its
   first line for the dedupe branch, so an upstream rewrite of that line conflicts
@@ -171,39 +164,28 @@ does what I wanted".
   Fork code it relies on in files other entries own: `toolCallSignature` in
   `packages/coding-agent/src/advisor/cumulative-loop-guard.ts` (loop-bound entry),
   which must keep ignoring the agent-authored intent fields and key order and keep
-  argument values verbatim; maintenance step 1 and the repeat-call paragraph in
-  `docs/advisor-watchdog.md` (cadence entry).
+  argument values verbatim; the repeat-call paragraph in `docs/advisor-watchdog.md`
+  (cadence entry).
   **Open upstream risk — PR #12516** (open): it moves the advisor onto the shared
   compaction code, whose per-turn prune follows `compaction.supersedeReads` and
   `compaction.dropUseless` (both on by default). On the advisor's history, a newer
   identical `read` whose result is the dedupe stub could supersede the original that
   stub points to and blank it, leaving the advisor neither copy. (`dropUseless`
   eliding the stubs themselves is expected: they are flagged `useless` for that.) If
-  it lands, re-check dedupe and eviction against the shared prune.
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/types.ts`, `packages/agent/src/agent-loop.ts`, `packages/agent/src/compaction/message-cache.ts`, `packages/agent/src/compaction/compaction.ts`, `packages/agent/src/compaction/transcript-tokens.ts`, `packages/agent/src/compaction/pruning.ts`, `packages/coding-agent/src/tools/read.ts`, `packages/coding-agent/src/tools/output-meta.ts`, `packages/tui/src/tools/output-meta.ts`, `packages/coding-agent/src/session/session-advisors.ts`
+  it lands, re-check dedupe against the shared prune.
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/types.ts`, `packages/agent/src/agent-loop.ts`, `packages/coding-agent/src/advisor/tool-result-eviction.ts`, `packages/coding-agent/src/tools/read.ts`, `packages/coding-agent/src/tools/output-meta.ts`, `packages/tui/src/tools/output-meta.ts`, `packages/coding-agent/src/session/session-advisors.ts`
 - **Must still be true:**
-  - After a review finishes, the next request carries a short elision stub in place of
-    that review's large file output, while the primary deltas and the advisor's notes
-    are unchanged.
-  - An already-blanked result is not blanked again; results under the small-result
-    floor are left alone.
   - A repeated identical investigation call returns the "unchanged" stub, but the full
     output is served again if the earlier result was evicted, rolled back, errored,
     held an image, or the file changed.
-  - `MIN_EVICT_TOKENS` equals upstream `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts`.
   - The 3rd and later identical `read` calls still return the "unchanged" stub even
     though upstream `read` appends a repeat hint with a rising count, including when an
     output notice such as `[Showing lines …]` follows the hint.
   - A `read` whose content changed is served in full even when the change is
     hint-shaped text: a hint naming another path, or one not where `read` appends it.
-  - Right after an eviction, no compaction fires that only the pre-eviction token count
-    would have triggered.
-  - A usage report made at or before the newest `prunedAt` never anchors the advisor's
-    context estimate; a report made after it anchors again.
-  - Eviction runs before the compaction gate, and runs even when compaction is off.
   - Dedupe runs only for successful non-`advise` tool calls; the `advise` branch of the
     `afterToolCall` hook stays upstream's, unchanged.
-- **Check:** `bun test packages/coding-agent/test/advisor/tool-result-eviction.test.ts packages/coding-agent/test/advisor/tool-result-dedupe.test.ts packages/coding-agent/test/advisor-tool-result-eviction.test.ts packages/coding-agent/test/advisor-context-maintenance.test.ts packages/coding-agent/test/advisor-advise-terminal.test.ts`
+- **Check:** `bun test packages/coding-agent/test/advisor/tool-result-dedupe.test.ts packages/coding-agent/test/advisor-tool-result-eviction.test.ts packages/coding-agent/test/advisor-advise-terminal.test.ts`
 
 ### Cache breakpoint in front of a rewritten region (Anthropic)
 
@@ -490,7 +472,7 @@ does what I wanted".
   which this copies; `loadAdvisorTranscriptCosts`' single pass over advisor
   transcripts and the cost-restore snapshot barrier; `AssistantMessage.usage`.
   Fork code it relies on in files other entries own: in
-  `packages/coding-agent/src/session/session-advisors.ts` (context-slimming entry)
+  `packages/coding-agent/src/session/session-advisors.ts` (dedupe entry)
   `#advisorPromptUsage`, `#recordAdvisorPromptUsage` in the recorder feed, its clears
   and restores in `clearCost`, `restoreCost`, `beginCostRestoreSnapshot`,
   `restoreInitialCost` and the re-prime path, `AdvisorUsageSummary`,
@@ -582,16 +564,3 @@ does what I wanted".
     measured-before-unmeasured, and a user-set account priority still take precedence
     over reset order.
 - **Check:** `bun test packages/ai/test/auth-storage-codex-selection.test.ts packages/ai/test/auth-storage-claude-fable-fallback.test.ts packages/ai/test/auth-storage-antigravity-selection.test.ts packages/coding-agent/test/auth-storage-rotation.test.ts`
-
----
-
-## Known follow-ups
-
-- **Hand-copied constant (until upstream exports it).** `MIN_EVICT_TOKENS = 50` in
-  `packages/coding-agent/src/advisor/tool-result-eviction.ts` mirrors upstream's unexported
-  `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts`. Upstream PR #13128
-  (exporting `isWorthPruning(tokens)` instead) was closed unmerged. If upstream ever
-  exports it, replace the two `tokens < MIN_EVICT_TOKENS` checks with
-  `!isWorthPruning(tokens)`, delete the copy and its Must-line in the advisor context
-  slimming entry, and drop this note. Until then it is a known drift risk: the
-  pruning.ts tripwire in that entry flags any upstream change for a manual re-check.

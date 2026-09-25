@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
+import { DEDUPED_RESULT_NOTICE } from "@oh-my-pi/pi-coding-agent/advisor/tool-result-dedupe";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -142,5 +143,24 @@ describe("advisor stale tool-result eviction", () => {
 		const calls = await runThreeReviews(false);
 
 		expect(toolResultTexts(calls[3].context.messages)).toContain(FILE_CONTENTS);
+	});
+
+	it("collapses a byte-identical repeat read inside one review", async () => {
+		const {
+			session: live,
+			advisor,
+			advisorMock,
+		} = createAdvisor(
+			[{ content: [READ_CALL] }, { content: [READ_CALL] }, { content: ["Reviewed the retry path."] }],
+			1,
+		);
+
+		await live.prompt("first update: change the retry budget");
+		expect(await live.waitForAdvisorCatchup(2_000)).toBe(true);
+
+		expect(advisorMock.calls).toHaveLength(3);
+		expect(advisor.state.error).toBeUndefined();
+		const results = toolResultTexts(advisorMock.calls[2].context.messages);
+		expect(results).toEqual([FILE_CONTENTS, DEDUPED_RESULT_NOTICE]);
 	});
 });
