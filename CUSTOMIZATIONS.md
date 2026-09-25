@@ -144,9 +144,9 @@ does what I wanted".
   exactly what the eviction just trimmed.
 - **Files:** `packages/coding-agent/src/advisor/tool-result-eviction.ts`,
   `packages/coding-agent/src/advisor/tool-result-dedupe.ts`,
-  `packages/coding-agent/src/session/session-advisors.ts` (`evictedSinceAnchor` and its
-  resets, the eviction step at the top of `#maintainAdvisorContext`,
-  `#estimateAdvisorContextTokens` subtracting it, and the dedupe branch in the advisor
+  `packages/coding-agent/src/session/session-advisors.ts` (`advisorAnchorSearchStart`
+  and its `prunedAt` cutoff, the eviction step at the top of `#maintainAdvisorContext`,
+  `#estimateAdvisorContextTokens` using that start, and the dedupe branch in the advisor
   `afterToolCall` hook; the file's other fork hunks are named under the cadence and
   advisor-segment entries' **Depends on upstream**).
 - **Depends on upstream:** the in-place rewrite contract for tool results — `prunedAt`
@@ -162,7 +162,8 @@ does what I wanted".
   (`appendOutputNotice` in `packages/coding-agent/src/tools/output-meta.ts`,
   `formatOutputNotice` in `packages/tui/src/tools/output-meta.ts`) and the agent loop
   keeping `details` on the `ToolResultMessage`; the `AfterToolCallResult` shape
-  including `useless`; `isTranscriptUsageAnchor` and `estimateTranscriptTokens`.
+  including `useless`; `isTranscriptUsageAnchor` and `estimateTranscriptTokens`; the `prunedAt` staleness
+  rule of `findRequestUsageAnchor`, which `advisorAnchorSearchStart` copies.
   Upstream's advisor `afterToolCall` hook in `session-advisors.ts` (added by #13132: a
   turn whose only tool calls are `advise` ends the review). The fork only swaps its
   first line for the dedupe branch, so an upstream rewrite of that line conflicts
@@ -197,6 +198,8 @@ does what I wanted".
     hint-shaped text: a hint naming another path, or one not where `read` appends it.
   - Right after an eviction, no compaction fires that only the pre-eviction token count
     would have triggered.
+  - A usage report made at or before the newest `prunedAt` never anchors the advisor's
+    context estimate; a report made after it anchors again.
   - Eviction runs before the compaction gate, and runs even when compaction is off.
   - Dedupe runs only for successful non-`advise` tool calls; the `advise` branch of the
     `afterToolCall` hook stays upstream's, unchanged.
@@ -492,8 +495,8 @@ does what I wanted".
   and restores in `clearCost`, `restoreCost`, `beginCostRestoreSnapshot`,
   `restoreInitialCost` and the re-prime path, `AdvisorUsageSummary`,
   `getAdvisorUsageSummary`, `#advisorContextPercent` and the `contextPercentCache`
-  memo (keyed on the message array, its length and tail, `evictedSinceAnchor` and the
-  model, and computed with `#estimateAdvisorContextTokens`); in
+  memo (keyed on the message array, its length and tail and the model, cleared after an
+  eviction, and computed with `#estimateAdvisorContextTokens`); in
   `packages/coding-agent/src/session/agent-session.ts` (auto-thinking entry)
   `getAdvisorUsageSummary`, the `AdvisorUsageSummary` re-export and the
   `promptUsageBySlug` plumbing on both restore paths; the `advisor` segment paragraph
