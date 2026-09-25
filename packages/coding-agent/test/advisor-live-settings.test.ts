@@ -4,6 +4,11 @@ import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Context } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import {
+	cfgAdvisorIncludeThinking,
+	cfgAdvisorProjectContext,
+	cfgAdvisorReviewOn,
+} from "@oh-my-pi/pi-coding-agent/advisor/settings";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -52,11 +57,11 @@ describe("advisor live request settings", () => {
 			"retry.enabled": false,
 			"todo.enabled": false,
 		});
-		// Mutable settings must live in the layer Settings.set updates, not the
+		// Mutable settings must live in the layer setting handles update, not the
 		// higher-priority overrides supplied to Settings.isolated.
-		settings.set("advisor.includeThinking", true);
-		settings.set("advisor.projectContext", true);
-		settings.set("advisor.reviewOn", "turn");
+		cfgAdvisorIncludeThinking.set(settings, true);
+		cfgAdvisorProjectContext.set(settings, true);
+		cfgAdvisorReviewOn.set(settings, "turn");
 		const live = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",
@@ -123,7 +128,7 @@ describe("advisor live request settings", () => {
 		expectContent(await runTurn("thinking_enabled"), "thinking_enabled", true, true);
 
 		// Match the settings selector: persist the setting, then refresh the live advisor.
-		settings.set("advisor.includeThinking", false);
+		cfgAdvisorIncludeThinking.set(settings, false);
 		expect(live.setAdvisorEnabled(true)).toBe(true);
 		const hidden = await runTurn("thinking_disabled");
 		expectContent(hidden, "thinking_disabled", false, true);
@@ -131,7 +136,7 @@ describe("advisor live request settings", () => {
 		// back out through the advisor's cached conversation after the rebuild.
 		expect(JSON.stringify(hidden.messages)).not.toContain("THINKING_thinking_enabled");
 
-		settings.set("advisor.includeThinking", true);
+		cfgAdvisorIncludeThinking.set(settings, true);
 		expect(live.setAdvisorEnabled(true)).toBe(true);
 		expectContent(await runTurn("thinking_restored"), "thinking_restored", true, true);
 	});
@@ -140,18 +145,18 @@ describe("advisor live request settings", () => {
 		const { live, settings, runTurn } = createSession();
 		expectContent(await runTurn("project_enabled"), "project_enabled", true, true);
 
-		settings.set("advisor.projectContext", false);
+		cfgAdvisorProjectContext.set(settings, false);
 		expect(live.setAdvisorEnabled(true)).toBe(true);
 		expectContent(await runTurn("project_disabled"), "project_disabled", true, false);
 
-		settings.set("advisor.projectContext", true);
+		cfgAdvisorProjectContext.set(settings, true);
 		expect(live.setAdvisorEnabled(true)).toBe(true);
 		expectContent(await runTurn("project_restored"), "project_restored", true, true);
 	});
 
 	it("keeps the advisor conversation across a context-file change while projectContext is off", async () => {
 		const { live, settings, requests, runTurn } = createSession();
-		settings.set("advisor.projectContext", false);
+		cfgAdvisorProjectContext.set(settings, false);
 		expect(live.setAdvisorEnabled(true)).toBe(true);
 		await runTurn("project_off");
 
@@ -162,7 +167,7 @@ describe("advisor live request settings", () => {
 		expect(JSON.stringify(after.systemPrompt)).not.toContain("UPDATED_CONTEXT_SENTINEL");
 
 		// The skipped rebuild still stored the prompt: turning the setting on uses it.
-		settings.set("advisor.projectContext", true);
+		cfgAdvisorProjectContext.set(settings, true);
 		expect(live.setAdvisorEnabled(true)).toBe(true);
 		await runTurn("project_on");
 		expect(JSON.stringify(requests[requests.length - 1].systemPrompt)).toContain(updated);
@@ -171,10 +176,10 @@ describe("advisor live request settings", () => {
 	it("uses a context change made while projectContext was switched off without a rebuild", async () => {
 		const { live, settings, runTurn } = createSession();
 		// A settings reload from disk flips the value without the selector's rebuild.
-		settings.set("advisor.projectContext", false);
+		cfgAdvisorProjectContext.set(settings, false);
 		live.setAdvisorContextPrompt("<project-context>UPDATED_CONTEXT_SENTINEL</project-context>");
 
-		settings.set("advisor.projectContext", true);
+		cfgAdvisorProjectContext.set(settings, true);
 		expect(live.setAdvisorEnabled(true)).toBe(true);
 		const system = JSON.stringify((await runTurn("project_on")).systemPrompt);
 		expect(system).toContain("UPDATED_CONTEXT_SENTINEL");
@@ -185,7 +190,7 @@ describe("advisor live request settings", () => {
 		const { live, settings, requests, runTurn } = createSession();
 		await runTurn("turn_cadence");
 
-		settings.set("advisor.reviewOn", "step");
+		cfgAdvisorReviewOn.set(settings, "step");
 		await runTurn("step_cadence", 1);
 		expect(JSON.stringify(requests[1].messages)).toContain(ADVISOR_HISTORY);
 
