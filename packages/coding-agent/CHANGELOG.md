@@ -42,7 +42,6 @@
 - Added opt-in CUDA support to the Nix package for tiny-model inference with the ONNX Runtime CUDA execution provider.
 - Added support for multiple simultaneous browser instances, allowing tabs from browsers such as Chrome and Edge to remain connected and usable at the same time.
 - Added an `advisor` status line segment (in the `full` preset) showing the advisor count, the busiest advisor's context usage, and the session-total advisor cache-hit rate, configurable via `statusLine.segmentOptions.advisor`.
-- Added stale tool-result eviction for advisors: before each review, an advisor replaces its own old `read`/`grep`/`glob` output from finished reviews with a short placeholder, so it stops re-sending that output on every request. The deltas it reviews and the notes it wrote are never touched ([#13238](https://github.com/can1357/oh-my-pi/pull/13238) by [@alnaggar-dev](https://github.com/alnaggar-dev))
 
 ### Changed
 
@@ -275,11 +274,7 @@
 - Expanded browser security and resilience controls with configurable HTTPS error handling, domain allow-listing, and automatic tab recycling when security-sensitive state changes.
 - Updated background job notifications to deliver output as follow-up messages and discourage unnecessary polling.
 - Expanded the bash tool's documented auxiliary utilities and removed its truncation footer notice.
-- The advisor now evicts the oversized tool results of finished reviews from its own context before the next review (blanked to `[Stale result elided - N tokens]`), and answers a byte-identical repeat `read`/`grep`/`glob` call with `[Unchanged since your earlier identical call]` while the earlier result is still in context. Measured over 895 advisor transcripts, stale investigation output was ~48% of the context the advisor re-sent on every request; the deltas it reviews and the notes it writes are untouched. The eviction cut is placed where the freed tokens outweigh the prompt-cache re-write behind it.
-### Changed
-
-- npm and compiled builds embed `models.json` as JSON text instead of an object literal, cutting ~100 ms from bundle launch.
-- The advisor now evicts the oversized tool results of finished reviews from its own context before the next review (blanked to `[Stale result elided - N tokens]`), and answers a byte-identical repeat investigation call (by default `read`/`grep`/`glob`) with `[Unchanged since your earlier identical call]` while the earlier result is still in context. Measured over 895 advisor transcripts, stale investigation output was ~48% of the context the advisor re-sent on every request; the deltas it reviews and the notes it writes are untouched. The eviction cut is placed where the freed tokens outweigh the prompt-cache re-write behind it.
+- The advisor now answers a byte-identical repeat investigation call (by default `read`/`grep`/`glob`) with `[Unchanged since your earlier identical call]` while the earlier result is still in its context. Measured over 895 advisor transcripts, 13% of advisor investigation calls were such repeats.
 
 ### Fixed
 

@@ -408,10 +408,9 @@ Advisor usage is separate model usage. `/advisor status` reports advisor token c
 
 The advisor has its own append-only context. Before each advisor prompt, `AgentSession` estimates incoming tokens and may maintain advisor context:
 
-1. evict the oversized tool results (`read`/`grep`/`glob` output) of finished reviews from the advisor's own history. Measured over 895 transcripts, that output was ~48% of the context the advisor re-sent on every request; the deltas it reviewed and the notes it wrote are never touched. Each evicted result is blanked to `[Stale result elided - N tokens]`. The cut is cache-aware: it is placed where the tokens it frees outweigh the bytes the provider must re-write behind it, so a small result deep in the history is left alone rather than paying to reach it.
-2. try model-level context promotion when enabled and a larger compatible model is available
-3. if promotion cannot fit enough context, compact the advisor's own message history
-4. for readable history, re-prime from the current bounded primary transcript if compaction has no candidates or still cannot fit
+1. try model-level context promotion when enabled and a larger compatible model is available
+2. if promotion cannot fit enough context, compact the advisor's own message history
+3. for readable history, re-prime from the current bounded primary transcript if compaction has no candidates or still cannot fit
 
 Inside a review, a call to any advisor tool except `advise` (by default `read`/`grep`/`glob`) that byte-matches an earlier call whose result is still in the advisor's context returns `[Unchanged since your earlier identical call]` instead of the full output again (13% of advisor investigation calls were such repeats). An evicted, rolled-back, or errored earlier result does not count — the full result is served again.
 
