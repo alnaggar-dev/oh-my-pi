@@ -31,8 +31,8 @@ does what I wanted".
   in the advisor's system prompt or not).
 - **Why:** One review per step on a long turn was the biggest advisor bill; a review
   averages ~$0.11.
-- **Files:** `packages/coding-agent/src/config/settings-schema.ts`,
-  `packages/coding-agent/src/modes/controllers/selector-controller.ts`,
+- **Files:** `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorReviewOn`,
+  `AdvisorReviewCadence`, `cfgAdvisorIncludeThinking`, `cfgAdvisorProjectContext`),
   `packages/coding-agent/src/advisor/runtime.ts` (the `includeThinking` host flag that
   seeds `#includeThinking`, and the `shouldReview` option with its gate in `onTurnEnd`),
   `docs/advisor-watchdog.md` (its "Controlling token spend" section; the other fork
@@ -42,20 +42,27 @@ does what I wanted".
   `advisor` segment paragraph, named under the advisor-segment entry).
 - **Depends on upstream:** `AdvisorRuntime.onTurnEnd(messages, { willContinue })` and
   its `willContinue` flag — the gate must run after `#latestMessages` is set and
-  before `#renderDelta`, which advances the review cursor; the settings-schema entry
-  shape, its `ui.condition: "advisorEnabled"` gate and `SettingValue<>` type
-  derivation; the settings-change rebuild switch in `selector-controller.ts` and the
-  runtime signature in `session-advisors.ts`, which includes both build-time content
-  settings; `formatSessionHistoryMarkdown`'s `includeThinking` option; the advisor
-  system-prompt assembly, `#advisorContextPrompt` and `setContextPrompt`.
+  before `#renderDelta`, which advances the review cursor; the settings registry
+  (`register`, `SettingValueOf`, handle `.get`/`.set` in
+  `packages/coding-agent/src/config/registry.ts`, domains listed in
+  `packages/coding-agent/src/config/all-settings.ts`), its `ui.condition:
+  "advisorEnabled"` gate, and its rule that an invalid configured enum value reads as
+  the default; the `cfgAdvisorRuntimeInputs` listener in `agent-session.ts` that
+  rebuilds a running advisor when an input changes (the fork adds `includeThinking`
+  and `projectContext` to it) and the runtime signature in `session-advisors.ts`,
+  which includes both build-time content settings; `formatSessionHistoryMarkdown`'s
+  `includeThinking` option; the advisor system-prompt assembly,
+  `#advisorContextPrompt` and `setContextPrompt`.
   Fork code it relies on in files other entries own: `reviewGate` in
   `packages/coding-agent/src/advisor/review-cadence.ts` (read-only entry), including its
   `default:` fallback to `step`; the per-step gate in `onPrimaryTurnEnd`, the two
   build-time settings (passed to the runtime as `includeThinking`, and gating the
   `<project-context>` block), their two runtime-signature fields and the
   `setContextPrompt` skip (only while the live runtimes match the current config) in
-  `packages/coding-agent/src/session/session-advisors.ts` (context-slimming entry).
-- **Tripwire paths:** `packages/coding-agent/src/config/settings-schema.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/modes/controllers/selector-controller.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
+  `packages/coding-agent/src/session/session-advisors.ts` (context-slimming entry); the
+  two `cfgAdvisorRuntimeInputs` fields in `packages/coding-agent/src/session/agent-session.ts`
+  (auto-thinking entry).
+- **Tripwire paths:** `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
 - **Must still be true:**
   - With `reviewOn: turn`, no advisor request is made for any mid-turn step, and that
     work still appears in the single end-of-turn review — nothing is dropped.
@@ -64,8 +71,9 @@ does what I wanted".
     `projectContext: false` keeps the `<project-context>` block out of its prompt.
   - Changing `includeThinking` or `projectContext` mid-session rebuilds the advisors;
     changing `reviewOn` does not need a rebuild.
-  - An unrecognized `reviewOn` value (a hand-edited typo; `Settings.get` does not
-    validate enums) behaves like the schema default `step`: every step is reviewed.
+  - An unrecognized `reviewOn` value behaves like the default `step`: the registry
+    reads an invalid configured value as the default, and `reviewGate` still falls back
+    to `step` for anything it does not recognize.
   - With `projectContext: false`, a context-file change does not rebuild advisors that
     were built with the setting off, and turning the setting on later uses the latest
     context prompt — even when the setting was flipped off without the selector's
