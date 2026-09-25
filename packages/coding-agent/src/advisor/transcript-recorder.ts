@@ -53,6 +53,19 @@ export interface LoadAdvisorTranscriptCostsOptions {
 	 * scan (#10129).
 	 */
 	providersBySlug?: Map<string, Set<string>>;
+	/**
+	 * When provided, receives each advisor slug's persisted prompt-token split
+	 * (populated only for slugs with nonzero usage), so resume restores the
+	 * status-line cache-hit totals from the same scan as spend.
+	 */
+	promptUsageBySlug?: Map<string, AdvisorPromptUsage>;
+}
+
+/** Session-total prompt-token split for one advisor slug. */
+export interface AdvisorPromptUsage {
+	cacheRead: number;
+	cacheWrite: number;
+	input: number;
 }
 
 interface AdvisorTranscriptCostFileSnapshot {
@@ -105,6 +118,7 @@ export async function loadAdvisorTranscriptCosts(
 	for (const snapshot of snapshots) {
 		let total = 0;
 		const providers = new Set<string>();
+		const promptUsage: AdvisorPromptUsage = { cacheRead: 0, cacheWrite: 0, input: 0 };
 		let validHeader: boolean | undefined;
 		try {
 			await visitEntriesFromFileStream(
@@ -121,6 +135,12 @@ export async function loadAdvisorTranscriptCosts(
 					if (!validHeader || !isObject || entry.type !== "message") return;
 					const message = entry.message;
 					if (!message || typeof message !== "object" || message.role !== "assistant") return;
+					const usage = message.usage;
+					if (usage && typeof usage === "object") {
+						if (Number.isFinite(usage.cacheRead)) promptUsage.cacheRead += usage.cacheRead;
+						if (Number.isFinite(usage.cacheWrite)) promptUsage.cacheWrite += usage.cacheWrite;
+						if (Number.isFinite(usage.input)) promptUsage.input += usage.input;
+					}
 					// One malformed usage block must cost that entry only, not the
 					// whole transcript's total.
 					const total_ = message.usage?.cost?.total;
@@ -140,6 +160,9 @@ export async function loadAdvisorTranscriptCosts(
 		if (total > 0) {
 			costs.set(snapshot.slug, total);
 			if (options.providersBySlug && providers.size > 0) options.providersBySlug.set(snapshot.slug, providers);
+		}
+		if (options.promptUsageBySlug && promptUsage.cacheRead + promptUsage.cacheWrite + promptUsage.input > 0) {
+			options.promptUsageBySlug.set(snapshot.slug, promptUsage);
 		}
 	}
 	return costs;
