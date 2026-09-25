@@ -53,6 +53,7 @@ import {
 	AdvisorLoopGuard,
 	type AdvisorMessageDetails,
 	type AdvisorNote,
+	type AdvisorPromptUsage,
 	AdvisorOutputQuarantinedError,
 	AdvisorRuntime,
 	type AdvisorRuntimeStatus,
@@ -298,6 +299,21 @@ interface ActiveAdvisor {
 	 * fresh anchor lands or the message array is replaced.
 	 */
 	evictedSinceAnchor: number;
+	/**
+	 * Memoized {@link SessionAdvisors.getAdvisorUsageSummary} context percent.
+	 * The status line polls at spinner cadence, so the transcript estimate is
+	 * recomputed only when the inputs it reads change: the message array
+	 * (replaced on compaction/reset), its length and tail (append/rollback),
+	 * the eviction correction, and the model (window + tokenizer).
+	 */
+	contextPercentCache?: {
+		messages: readonly AgentMessage[];
+		length: number;
+		last: AgentMessage | undefined;
+		evictedSinceAnchor: number;
+		model: Model;
+		percent: number | null;
+	};
 	signature: string;
 }
 /** First index whose provider usage may anchor the advisor's context estimate. */
@@ -461,6 +477,16 @@ export interface AdvisorStatusOverviewEntry {
 	yielded: boolean;
 }
 
+/** Advisor usage slice for the status-line `advisor` segment. */
+export interface AdvisorUsageSummary {
+	/** Context usage of the busiest live advisor, or null when none reports a window. */
+	contextPercent: number | null;
+	/** Session-total prompt-token split across every advisor, independent of retained history. */
+	cacheRead: number;
+	cacheWrite: number;
+	input: number;
+}
+
 /** Owns advisor runtimes, delivery policy, context maintenance, and status reporting. */
 export class SessionAdvisors {
 	readonly #host: SessionAdvisorsHost;
@@ -483,6 +509,12 @@ export class SessionAdvisors {
 	#advisorStatuses = new Map<string, { name: string; status: AdvisorRuntimeStatus }>();
 	#advisorProviderSessionIds = new Map<string, string>();
 	#advisorCosts = new Map<string, number>();
+	/**
+	 * Session-total prompt-token split per advisor slug, accumulated on
+	 * message_end like {@link #advisorCosts}. Summing the advisor transcript
+	 * instead would lose everything advisor compaction replaces.
+	 */
+	#advisorPromptUsage = new Map<string, AdvisorPromptUsage>();
 	/**
 	 * Slugs whose recorded spend ran on an OAuth/subscription model. Kept in
 	 * lockstep with {@link #advisorCosts} so {@link isUsingSubscription} can
@@ -648,16 +680,23 @@ export class SessionAdvisors {
 	clearCost(): void {
 		this.#advisorCosts.clear();
 		this.#advisorSubscriptionSlugs.clear();
+		this.#advisorPromptUsage.clear();
 	}
 
 	/**
 	 * Replace the ledger with the spend recorded for the session becoming active.
 	 * `providersBySlug` (from {@link loadAdvisorTranscriptCosts}) re-derives the
-	 * subscription attribution the torn-down runtime can no longer report.
+	 * subscription attribution the torn-down runtime can no longer report;
+	 * `promptUsageBySlug` from the same scan restores the cache-hit totals.
 	 */
-	restoreCost(costs: ReadonlyMap<string, number>, providersBySlug?: ReadonlyMap<string, ReadonlySet<string>>): void {
+	restoreCost(
+		costs: ReadonlyMap<string, number>,
+		providersBySlug?: ReadonlyMap<string, ReadonlySet<string>>,
+		promptUsageBySlug: ReadonlyMap<string, AdvisorPromptUsage> = new Map(),
+	): void {
 		this.#advisorCosts = new Map(costs);
 		this.#advisorSubscriptionSlugs = this.#deriveSubscriptionSlugs(costs, providersBySlug);
+		this.#advisorPromptUsage = new Map(promptUsageBySlug);
 	}
 
 	/**
@@ -690,20 +729,24 @@ export class SessionAdvisors {
 	}
 	/**
 	 * Freeze active recorder writes after everything billed so far. The returned
-	 * baseline and byte snapshot therefore describe the same turn boundary.
+	 * baselines and byte snapshot therefore describe the same turn boundary.
 	 */
 	beginCostRestoreSnapshot(): {
 		costsAtSnapshot: ReadonlyMap<string, number>;
+		promptUsageAtSnapshot: ReadonlyMap<string, AdvisorPromptUsage>;
 		ready: Promise<unknown>;
 		release: () => void;
 	} {
 		const costsAtSnapshot = this.costSnapshot();
+		// Entries are replaced, never mutated, so a shallow copy is a stable baseline.
+		const promptUsageAtSnapshot = new Map(this.#advisorPromptUsage);
 		const gate = Promise.withResolvers<void>();
 		this.#advisorCostSnapshotBarrier = gate.promise;
 		const ready = Promise.all(this.#advisors.map(advisor => advisor.recorder.blockWritesUntil(gate.promise)));
 		let released = false;
 		return {
 			costsAtSnapshot,
+			promptUsageAtSnapshot,
 			ready,
 			release: () => {
 				if (released) return;
@@ -715,15 +758,17 @@ export class SessionAdvisors {
 	}
 
 	/**
-	 * Restore spend persisted at `costsAtSnapshot`, then add only the process-local
-	 * delta billed after that fixed transcript snapshot. This preserves turns
-	 * completed while the background scan runs without double-counting entries
-	 * the scan already includes.
+	 * Restore spend and prompt usage persisted at the snapshot baselines, then
+	 * add only the process-local delta recorded after that fixed transcript
+	 * snapshot. This preserves turns completed while the background scan runs
+	 * without double-counting entries the scan already includes.
 	 */
 	restoreInitialCost(
 		costs: ReadonlyMap<string, number>,
 		costsAtSnapshot: ReadonlyMap<string, number>,
 		providersBySlug?: ReadonlyMap<string, ReadonlySet<string>>,
+		promptUsageBySlug: ReadonlyMap<string, AdvisorPromptUsage> = new Map(),
+		promptUsageAtSnapshot: ReadonlyMap<string, AdvisorPromptUsage> = new Map(),
 	): void {
 		const restored = new Map(costs);
 		const subscription = this.#deriveSubscriptionSlugs(costs, providersBySlug);
@@ -736,6 +781,18 @@ export class SessionAdvisors {
 		}
 		this.#advisorCosts = restored;
 		this.#advisorSubscriptionSlugs = subscription;
+
+		const restoredUsage = new Map(promptUsageBySlug);
+		for (const [slug, current] of this.#advisorPromptUsage) {
+			const base = promptUsageAtSnapshot.get(slug);
+			const prior = restoredUsage.get(slug);
+			restoredUsage.set(slug, {
+				cacheRead: (prior?.cacheRead ?? 0) + current.cacheRead - (base?.cacheRead ?? 0),
+				cacheWrite: (prior?.cacheWrite ?? 0) + current.cacheWrite - (base?.cacheWrite ?? 0),
+				input: (prior?.input ?? 0) + current.input - (base?.input ?? 0),
+			});
+		}
+		this.#advisorPromptUsage = restoredUsage;
 	}
 
 	/**
@@ -881,6 +938,7 @@ export class SessionAdvisors {
 		if (!preserveCost) {
 			this.#advisorCosts.clear();
 			this.#advisorSubscriptionSlugs.clear();
+			this.#advisorPromptUsage.clear();
 		}
 		// Mute the recorder across the re-prime: AdvisorRuntime.reset() aborts the advisor
 		// loop, and that abort can emit an `aborted` message_end we must not attribute to
@@ -1615,6 +1673,17 @@ export class SessionAdvisors {
 		}
 	}
 
+	#recordAdvisorPromptUsage(advisor: ActiveAdvisor, message: AssistantMessage): void {
+		const { cacheRead, cacheWrite, input } = message.usage;
+		const totals = this.#advisorPromptUsage.get(advisor.slug);
+		// Replace rather than mutate: restore snapshots hold shallow copies of this map.
+		this.#advisorPromptUsage.set(advisor.slug, {
+			cacheRead: (totals?.cacheRead ?? 0) + cacheRead,
+			cacheWrite: (totals?.cacheWrite ?? 0) + cacheWrite,
+			input: (totals?.input ?? 0) + input,
+		});
+	}
+
 	/** Subscribe the advisor agent's finalized messages into the transcript recorder.
 	 *  Idempotent-by-replacement: callers detach the prior feed first. Kept separate
 	 *  so the re-prime path can mute the feed across an abort-driven reset. */
@@ -1623,6 +1692,7 @@ export class SessionAdvisors {
 			if (event.type !== "message_end") return;
 			if (event.message.role === "assistant") {
 				this.#recordAdvisorCost(advisor, event.message);
+				this.#recordAdvisorPromptUsage(advisor, event.message);
 				// A fresh provider usage anchor reports the context as it stands
 				// now — post-eviction — so the correction it carried is spent.
 				if (isTranscriptUsageAnchor(event.message)) advisor.evictedSinceAnchor = 0;
@@ -2520,6 +2590,58 @@ export class SessionAdvisors {
 		for (const advisorCost of this.#advisorCosts.values()) cost += advisorCost;
 		return cost;
 	}
+
+	/**
+	 * Advisor usage for the status line. Cache totals are O(advisors); the
+	 * context percent reuses a per-advisor memo so render frames never re-walk
+	 * transcripts. Undefined when no advisor has a live runtime or recorded usage.
+	 */
+	getAdvisorUsageSummary(): AdvisorUsageSummary | undefined {
+		let contextPercent: number | null = null;
+		for (const advisor of this.#advisors) {
+			const percent = this.#advisorContextPercent(advisor);
+			if (percent !== null && (contextPercent === null || percent > contextPercent)) contextPercent = percent;
+		}
+		let cacheRead = 0;
+		let cacheWrite = 0;
+		let input = 0;
+		for (const usage of this.#advisorPromptUsage.values()) {
+			cacheRead += usage.cacheRead;
+			cacheWrite += usage.cacheWrite;
+			input += usage.input;
+		}
+		if (this.#advisors.length === 0 && this.#advisorPromptUsage.size === 0) return undefined;
+		return { contextPercent, cacheRead, cacheWrite, input };
+	}
+
+	#advisorContextPercent(advisor: ActiveAdvisor): number | null {
+		const messages = advisor.agent.state.messages;
+		const model = advisor.agent.state.model;
+		const last = messages.at(-1);
+		const cached = advisor.contextPercentCache;
+		if (
+			cached &&
+			cached.messages === messages &&
+			cached.length === messages.length &&
+			cached.last === last &&
+			cached.evictedSinceAnchor === advisor.evictedSinceAnchor &&
+			cached.model === model
+		) {
+			return cached.percent;
+		}
+		const contextWindow = model.contextWindow ?? 0;
+		const percent = contextWindow > 0 ? (this.#estimateAdvisorContextTokens(advisor) / contextWindow) * 100 : null;
+		advisor.contextPercentCache = {
+			messages,
+			length: messages.length,
+			last,
+			evictedSinceAnchor: advisor.evictedSinceAnchor,
+			model,
+			percent,
+		};
+		return percent;
+	}
+
 	/**
 	 * Whether advisor spend should be attributed to an OAuth/subscription plan.
 	 * With live advisors it reflects their current models; once the runtime is

@@ -19,6 +19,8 @@
 ### Changed
 
 - Updated the settings selector so clearing an input field fully unsets the corresponding setting.
+- Added push-to-talk dictation to `Input`, including live transcription text and `cursorOverride` support.
+- Added the `advisor` status line segment and the optional `StatusLineSession.getAdvisorUsageSummary()` it reads.
 
 ### Fixed
 

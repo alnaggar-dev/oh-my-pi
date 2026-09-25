@@ -60,6 +60,10 @@ export interface StatusLineSession {
 	getGoalModeState(): { goal?: { status: string; tokensUsed: number; tokenBudget?: number } } | undefined;
 	getAdvisorStatusOverview?(): { configured: boolean; advisors: readonly { status: string; yielded: boolean }[] };
 	getAdvisorCost?(): number;
+	/** Busiest live advisor's context percent plus session-total advisor prompt-token split. */
+	getAdvisorUsageSummary?():
+		| { contextPercent: number | null; cacheRead: number; cacheWrite: number; input: number }
+		| undefined;
 	isAdvisorUsingSubscription?(): boolean;
 }
 

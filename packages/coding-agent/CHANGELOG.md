@@ -37,6 +37,11 @@
 - Added `attachment://` and `conflict://` resource URL handlers.
 - Added a per-server MCP `instructions: false` option to keep a server's guidance out of the system prompt while retaining its tools.
 - Added stale tool-result eviction for advisors: before each review, an advisor replaces its own `read`/`grep`/`glob` output from reviews older than the latest one with a short placeholder, so it stops re-sending that output on every request. The deltas it reviews, the notes it wrote, and other tool results such as `recall` are never touched. Turn it off with `advisor.evictStaleResults` ([#13238](https://github.com/can1357/oh-my-pi/pull/13238) by [@alnaggar-dev](https://github.com/alnaggar-dev))
+- Added trusted additional context support for extension and hook tool results, including `ctx.addAdditionalContext()` for registered tools, allowing instructions to be passed to the model without altering the tool result.
+- Added dictation support to `/btw` follow-up input, including microphone controls on the follow-up line.
+- Added opt-in CUDA support to the Nix package for tiny-model inference with the ONNX Runtime CUDA execution provider.
+- Added support for multiple simultaneous browser instances, allowing tabs from browsers such as Chrome and Edge to remain connected and usable at the same time.
+- Added an `advisor` status line segment (in the `full` preset) showing the advisor count, the busiest advisor's context usage, and the session-total advisor cache-hit rate, configurable via `statusLine.segmentOptions.advisor`.
 
 ### Changed
 

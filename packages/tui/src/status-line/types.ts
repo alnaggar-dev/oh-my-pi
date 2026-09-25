@@ -39,6 +39,7 @@ export interface StatusLineSegmentOptions {
 	path?: { abbreviate?: boolean; maxLength?: number; stripWorkPrefix?: boolean };
 	git?: { showBranch?: boolean; showStaged?: boolean; showUnstaged?: boolean; showUntracked?: boolean };
 	time?: { format?: "12h" | "24h"; showSeconds?: boolean };
+	advisor?: { showCount?: boolean; showContext?: boolean; showCacheHit?: boolean };
 }
 
 export interface StatusLineSettings {

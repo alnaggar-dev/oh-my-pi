@@ -3,11 +3,16 @@ import type { AgentSession } from "../../session/agent-session";
 
 export const GALLERY_CONTEXT_WINDOW = 200_000;
 
+type AdvisorPreviewStatus = "running" | "quota_exhausted" | "error" | "paused";
+
 export interface GallerySessionOptions {
 	contextTokens?: number;
 	fastMode?: boolean;
-	advisorStatus?: "running" | "quota_exhausted" | "error" | "paused";
+	advisorStatus?: AdvisorPreviewStatus;
+	/** Multi-advisor roster; overrides {@link advisorStatus}. */
+	advisorStatuses?: readonly AdvisorPreviewStatus[];
 	advisorYielded?: boolean;
+	advisorUsage?: { contextPercent: number | null; cacheRead: number; cacheWrite: number; input: number };
 	usingSubscription?: boolean;
 	cost?: number;
 	premiumRequests?: number;
@@ -27,6 +32,7 @@ export function createGallerySession(options: GallerySessionOptions = {}): Agent
 	};
 	const messages = [{ role: "user", content: "Show the production preview" }];
 	const goalStatus = options.goalStatus ?? "active";
+	const advisorStatuses = options.advisorStatuses ?? (options.advisorStatus ? [options.advisorStatus] : []);
 	return {
 		messages,
 		systemPrompt: [],
@@ -66,14 +72,15 @@ export function createGallerySession(options: GallerySessionOptions = {}): Agent
 		getGoalModeState: () => ({
 			goal: { status: goalStatus, tokensUsed: 12_400, tokenBudget: 50_000 },
 		}),
-		getAdvisorStatusOverview: () =>
-			options.advisorStatus
-				? {
-						configured: true,
-						advisors: [{ status: options.advisorStatus, yielded: options.advisorYielded ?? false }],
-					}
-				: { configured: false, advisors: [] },
+		getAdvisorStatusOverview: () => ({
+			configured: advisorStatuses.length > 0,
+			advisors: advisorStatuses.map(status => ({ status, yielded: options.advisorYielded ?? false })),
+		}),
 		getAdvisorCost: () => options.advisorCost ?? 0.08,
+		getAdvisorUsageSummary: () =>
+			advisorStatuses.length > 0
+				? (options.advisorUsage ?? { contextPercent: 12, cacheRead: 44_200, cacheWrite: 2_800, input: 3_000 })
+				: undefined,
 		isAdvisorUsingSubscription: () => false,
 		getPrewalkState: () => false,
 		compactionSpeculation: "idle",

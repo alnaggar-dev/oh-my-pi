@@ -115,8 +115,8 @@ describe("AgentSession advisor toggle", () => {
 			usage: {
 				input: 1,
 				output: 1,
-				cacheRead: 0,
-				cacheWrite: 0,
+				cacheRead: 8,
+				cacheWrite: 1,
 				totalTokens: 2,
 				cost: { input: 0, output: cost, cacheRead: 0, cacheWrite: 0, total: cost },
 			},
@@ -633,6 +633,22 @@ describe("AgentSession advisor toggle", () => {
 		expect(session.getAdvisorStats().cost).toBeCloseTo(0.5, 8);
 		expect(session.formatAdvisorStatus()).toContain("$0.5000");
 	});
+	it("keeps advisor cache totals when the advisor transcript is replaced", () => {
+		const advisor = enableAdvisor();
+		const cached = advisorMessage(0.1, 1);
+		cached.usage = { ...cached.usage, input: 100, cacheRead: 800, cacheWrite: 100 };
+		advisor.emitExternalEvent({ type: "message_end", message: cached });
+		const before = session.getAdvisorUsageSummary();
+		expect(before).toMatchObject({ cacheRead: 800, cacheWrite: 100, input: 100 });
+		expect(before?.contextPercent).toBeGreaterThan(0);
+
+		// Advisor compaction swaps the message array; the cache split is session
+		// spend, while the context percent must track the replaced transcript.
+		advisor.replaceMessages([]);
+		const after = session.getAdvisorUsageSummary();
+		expect(after).toMatchObject({ cacheRead: 800, cacheWrite: 100, input: 100 });
+		expect(after?.contextPercent).toBeLessThan(before?.contextPercent ?? 0);
+	});
 	it("retains cumulative advisor cost when reloading the same session", async () => {
 		const advisor = enableAdvisor();
 		appendAdvisorCost(advisor, 0.5, 1);
@@ -677,6 +693,7 @@ describe("AgentSession advisor toggle", () => {
 
 		expect(await session.switchSession(targetSessionFile)).toBe(true);
 		expect(session.getAdvisorCost()).toBeCloseTo(0.25, 8);
+		expect(session.getAdvisorUsageSummary()).toMatchObject({ cacheRead: 8, cacheWrite: 1, input: 1 });
 		await session.dispose();
 		expect((await loadAdvisorTranscriptCosts(targetSessionFile)).get("")).toBeCloseTo(0.25, 8);
 	});
@@ -724,6 +741,8 @@ describe("AgentSession advisor toggle", () => {
 			// backfill signal the session exposes rather than a wall-clock guess.
 			await result.session.advisorCostRestore;
 			expect(result.session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+			// Cache totals hydrate from the same scan, excluding the subagent advisor.
+			expect(result.session.getAdvisorUsageSummary()).toMatchObject({ cacheRead: 8, cacheWrite: 1, input: 1 });
 		} finally {
 			await result.session.dispose();
 		}
@@ -769,6 +788,7 @@ describe("AgentSession advisor toggle", () => {
 		const load = vi.spyOn(advisorModule, "loadAdvisorTranscriptCosts").mockImplementation(async (_file, options) => {
 			await options?.beforeSnapshot;
 			options?.onSnapshot?.();
+			options?.promptUsageBySlug?.set("", { cacheRead: 80, cacheWrite: 10, input: 10 });
 			return restore.promise;
 		});
 		try {
@@ -779,6 +799,8 @@ describe("AgentSession advisor toggle", () => {
 			await session.advisorCostRestore;
 
 			expect(session.getAdvisorCost()).toBeCloseTo(0.75, 8);
+			// Persisted split plus the turn recorded after the snapshot, counted once.
+			expect(session.getAdvisorUsageSummary()).toMatchObject({ cacheRead: 88, cacheWrite: 11, input: 11 });
 			expect(events).toContain("advisor_cost_changed");
 		} finally {
 			unsubscribe();
