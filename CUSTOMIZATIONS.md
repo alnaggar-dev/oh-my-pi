@@ -38,7 +38,8 @@ does what I wanted".
   `docs/advisor-watchdog.md` (its "Controlling token spend" section; the other fork
   paragraphs are named under the read-only, context-slimming, loop-bound and
   bounded-diffs entries' **Depends on upstream**),
-  `docs/settings.md` (the three `advisor.*` rows and the reworded advisor intro).
+  `docs/settings.md` (the three `advisor.*` rows, the reworded advisor intro, and the
+  `advisor` segment paragraph, named under the advisor-segment entry).
 - **Depends on upstream:** `AdvisorRuntime.onTurnEnd(messages, { willContinue })` and
   its `willContinue` flag — the gate must run after `#latestMessages` is set and
   before `#renderDelta`, which advances the review cursor; the settings-schema entry
@@ -137,8 +138,8 @@ does what I wanted".
   `packages/coding-agent/src/session/session-advisors.ts` (`evictedSinceAnchor` and its
   resets, the eviction step at the top of `#maintainAdvisorContext`,
   `#estimateAdvisorContextTokens` subtracting it, and the dedupe branch in the advisor
-  `afterToolCall` hook; the file's other fork hunks are named under the cadence entry's
-  **Depends on upstream**).
+  `afterToolCall` hook; the file's other fork hunks are named under the cadence and
+  advisor-segment entries' **Depends on upstream**).
 - **Depends on upstream:** the in-place rewrite contract for tool results — `prunedAt`
   on `ToolResultMessage` and `invalidateMessageCache`; `Tokenizer.countMessage`;
   `MIN_PRUNE_TOKENS` in `packages/agent/src/compaction/pruning.ts` (not exported —
@@ -463,6 +464,67 @@ does what I wanted".
   - Classifier activity is never an `AgentSessionEvent`, and no RPC or collab surface
     forwards the `auto-thinking:activity` channel.
 - **Check:** `bun test packages/coding-agent/test/status-line-auto-thinking.test.ts packages/coding-agent/test/auto-thinking-tally.test.ts`
+
+### Advisor status line segment (count, busiest context, cache-hit rate)
+
+- **What it does:** A new `advisor` status line segment, in the `full` preset, shows the
+  advisor eye (colored by the worst status in the roster) with the advisor count (`2`,
+  or `1/2` when some are not running), the busiest live advisor's context percent in the
+  `context_pct` warning colors, and the session-total advisor cache-hit rate. It is
+  hidden when no advisor is configured. `statusLine.segmentOptions.advisor.showCount`,
+  `showContext` and `showCacheHit` turn parts off. The cache split is counted on every
+  advisor `message_end` and restored on resume from the same transcript scan as spend.
+- **Why:** With several advisors there was no way to see at a glance how many were
+  running, which one was close to compaction, or whether the advisors were hitting
+  cache; the model segment's eye badge only shows status.
+- **Files:** `packages/tui/src/status-line/segments.ts` (`advisorSegment`,
+  `advisorBadgeColor`, which the model segment's badge now also calls, and the
+  `advisor` row in `SEGMENTS`), `packages/tui/src/status-line/schema.ts` (the `advisor`
+  id), `packages/tui/src/status-line/presets.ts` (`advisor` in the `full` preset),
+  `packages/tui/src/status-line/types.ts` (`StatusLineSegmentOptions.advisor`),
+  `packages/tui/src/status-line/host.ts` (optional
+  `StatusLineSession.getAdvisorUsageSummary`),
+  `packages/coding-agent/src/advisor/transcript-recorder.ts` (`AdvisorPromptUsage` and
+  the `promptUsageBySlug` option of `loadAdvisorTranscriptCosts`),
+  `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`
+  (`advisorStatuses`, `advisorUsage`, the fake `getAdvisorUsageSummary`),
+  `packages/coding-agent/src/cli/gallery-fixtures/segments.ts` (the `advisor` variants).
+- **Depends on upstream:** the status line keeping its segment list by hand in
+  `schema.ts`, `SEGMENTS` and the presets, plus the gallery's `variantsFor` switch — a
+  new upstream segment conflicts in all of them; `getAdvisorStatusOverview` and its
+  status strings (`running`, `error`, `quota_exhausted`, `paused`);
+  `getContextUsageLevel` and `getContextUsageThemeColor` in
+  `packages/tui/src/status-line/context-usage.ts`; `theme.icon.advisor`,
+  `theme.icon.context`, `theme.icon.cache` and `statusValue`/`withIcon`; the
+  `cache_hit` segment's prompt-token denominator (`cacheRead + cacheWrite + input`),
+  which this copies; `loadAdvisorTranscriptCosts`' single pass over advisor
+  transcripts and the cost-restore snapshot barrier; `AssistantMessage.usage`.
+  Fork code it relies on in files other entries own: in
+  `packages/coding-agent/src/session/session-advisors.ts` (context-slimming entry)
+  `#advisorPromptUsage`, `#recordAdvisorPromptUsage` in the recorder feed, its clears
+  and restores in `clearCost`, `restoreCost`, `beginCostRestoreSnapshot`,
+  `restoreInitialCost` and the re-prime path, `AdvisorUsageSummary`,
+  `getAdvisorUsageSummary`, `#advisorContextPercent` and the `contextPercentCache`
+  memo (keyed on the message array, its length and tail, `evictedSinceAnchor` and the
+  model, and computed with `#estimateAdvisorContextTokens`); in
+  `packages/coding-agent/src/session/agent-session.ts` (auto-thinking entry)
+  `getAdvisorUsageSummary`, the `AdvisorUsageSummary` re-export and the
+  `promptUsageBySlug` plumbing on both restore paths; the `advisor` segment paragraph
+  in `docs/settings.md` (cadence entry).
+- **Tripwire paths:** `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/status-line/context-usage.ts`, `packages/tui/src/theme/theme.ts`, `packages/coding-agent/src/advisor/transcript-recorder.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`
+- **Must still be true:**
+  - With every advisor running the count is the bare total; otherwise it is
+    `running/total`.
+  - The segment is hidden when no advisor is configured.
+  - Advisor compaction replacing the transcript keeps the cache totals and lowers the
+    context percent.
+  - Resuming or switching to a session restores the cache totals from its advisor
+    transcripts; a turn recorded while the restore scan runs is counted exactly once.
+  - The status line never walks advisor transcripts on a render frame whose inputs did
+    not change.
+  - The model segment's eye badge colors are unchanged: error, then warning, then
+    success, else dim.
+- **Check:** `bun test packages/tui/test/status-line-advisor.test.ts packages/coding-agent/test/advisor-toggle.test.ts`
 
 ## Accounts
 

@@ -43,6 +43,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 			"token_rate",
 			"cache_read",
 			"cost",
+			"advisor",
 			"context_pct",
 			"time_spent",
 			"time",
