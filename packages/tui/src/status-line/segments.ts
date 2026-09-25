@@ -322,14 +322,7 @@ function modelAdvisorBadge(ctx: SegmentContext): { icon: string; color: ThemeCol
 	// implement getAdvisorStatusOverview skip the badge instead of crashing.
 	const advisorStats = ctx.session.getAdvisorStatusOverview?.();
 	if (!advisorStats?.configured || advisorStats.advisors.length === 0) return undefined;
-	const statuses = advisorStats.advisors.map(a => a.status);
-	const color: ThemeColor = statuses.includes("error")
-		? "error"
-		: statuses.includes("quota_exhausted")
-			? "warning"
-			: statuses.includes("running")
-				? "success"
-				: "dim";
+	const color = advisorBadgeColor(advisorStats.advisors);
 	// Closed eye once every advisor has finished reviewing the yielded
 	// turn — no more comments until a new primary turn starts.
 	const allYielded = advisorStats.advisors.every(a => a.yielded);
@@ -392,6 +385,22 @@ const modelSegment: StatusLineSegment = {
 		return segView(spans, "model", slowModeLabel ? "warning" : undefined);
 	},
 };
+
+/**
+ * Advisor eye color for the worst status in the roster: error, then
+ * quota-exhausted (warning), then any running (success), else dim for an
+ * all-paused/no-model roster.
+ */
+function advisorBadgeColor(advisors: readonly { status: string }[]): ThemeColor {
+	const statuses = advisors.map(a => a.status);
+	return statuses.includes("error")
+		? "error"
+		: statuses.includes("quota_exhausted")
+			? "warning"
+			: statuses.includes("running")
+				? "success"
+				: "dim";
+}
 
 function formatGoalBudget(current: number, budget?: number): string {
 	const used = formatNumber(current);
@@ -1023,6 +1032,69 @@ const cacheHitSegment: StatusLineSegment = {
 	},
 };
 
+/**
+ * Advisor roster as one block in the advisor role color (`accent`):
+ * eye + running count (`N`, or `running/N` when some are not running), the
+ * busiest live advisor's context percent (in `context_pct` warning colors),
+ * and the session-total advisor cache-hit rate. Reads only live counters and
+ * the session's memoized context percent, never advisor transcripts.
+ */
+const advisorSegment: StatusLineSegment = {
+	id: "advisor",
+	render(ctx) {
+		const overview = ctx.session.getAdvisorStatusOverview?.();
+		if (!overview?.configured || overview.advisors.length === 0) return { content: "", visible: false };
+		const opts = ctx.options.advisor ?? {};
+
+		const parts: string[] = [];
+		const eye = theme.icon.advisor ? theme.fg(advisorBadgeColor(overview.advisors), theme.icon.advisor) : "";
+		if (opts.showCount !== false) {
+			const total = overview.advisors.length;
+			const running = overview.advisors.filter(a => a.status === "running").length;
+			const count = running === total ? `${total}` : `${running}/${total}`;
+			parts.push(withIcon(eye, theme.fg("accent", count)));
+		} else if (eye) {
+			parts.push(eye);
+		}
+
+		const usage = ctx.session.getAdvisorUsageSummary?.();
+		if (opts.showContext !== false && usage && usage.contextPercent !== null) {
+			const color = getContextUsageThemeColor(getContextUsageLevel(usage.contextPercent, 0));
+			const pct = theme.fg(color, `${Math.round(usage.contextPercent)}%`);
+			parts.push(withIcon(theme.icon.context ? theme.fg("accent", theme.icon.context) : "", pct));
+		}
+		if (opts.showCacheHit !== false && usage?.cacheRead) {
+			// Same prompt-token denominator as `cache_hit`.
+			const rate = (usage.cacheRead / (usage.cacheRead + usage.cacheWrite + usage.input)) * 100;
+			const hit = theme.fg("accent", `${rate.toFixed(2)}%`);
+			parts.push(withIcon(theme.icon.cache ? theme.fg("accent", theme.icon.cache) : "", hit));
+		}
+		if (parts.length === 0) return { content: "", visible: false };
+		return { content: parts.join("  "), visible: true };
+	},
+	describe(ctx) {
+		const overview = ctx.session.getAdvisorStatusOverview?.();
+		if (!overview?.configured || overview.advisors.length === 0) return null;
+		const opts = ctx.options.advisor ?? {};
+		const spans: TspSpan[] = [];
+		if (opts.showCount !== false) {
+			const total = overview.advisors.length;
+			const running = overview.advisors.filter(a => a.status === "running").length;
+			spans.push(span(running === total ? `${total}` : `${running}/${total}`, "accent"));
+		}
+		const usage = ctx.session.getAdvisorUsageSummary?.();
+		if (opts.showContext !== false && usage && usage.contextPercent !== null) {
+			const color = getContextUsageThemeColor(getContextUsageLevel(usage.contextPercent, 0));
+			spans.push(span(`${spans.length ? " " : ""}${Math.round(usage.contextPercent)}%`, color));
+		}
+		if (opts.showCacheHit !== false && usage?.cacheRead) {
+			const rate = (usage.cacheRead / (usage.cacheRead + usage.cacheWrite + usage.input)) * 100;
+			spans.push(span(`${spans.length ? " " : ""}${rate.toFixed(2)}%`, "accent"));
+		}
+		return segView(spans, "advisor", toneOf(advisorBadgeColor(overview.advisors)));
+	},
+};
+
 const sessionNameSegment: StatusLineSegment = {
 	id: "session_name",
 	render(ctx) {
@@ -1302,6 +1374,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	cache_read: cacheReadSegment,
 	cache_write: cacheWriteSegment,
 	cache_hit: cacheHitSegment,
+	advisor: advisorSegment,
 	session_name: sessionNameSegment,
 	usage: usageSegment,
 	collab: collabSegment,
