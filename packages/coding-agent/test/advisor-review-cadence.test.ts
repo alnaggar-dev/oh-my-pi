@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type AdvisorAgent, AdvisorRuntime, type AdvisorRuntimeHost } from "../src/advisor";
 import { reviewGate } from "../src/advisor/review-cadence";
-import { Settings } from "../src/config/settings";
+import type { AdvisorReviewCadence } from "../src/advisor/settings";
 
 /**
  * `advisor.reviewOn`, as the `reviewGate` handed to `AdvisorRuntime.onTurnEnd`,
@@ -165,10 +165,10 @@ describe("advisor review cadence", () => {
 	});
 
 	it("treats an unrecognized reviewOn value as the `step` default and reviews a read-only mid-turn step", async () => {
-		// Settings.get does not validate enum values from a hand-edited config;
-		// the fail-safe reading of a typo is "review every step", not a cheaper cadence.
-		const cadence = Settings.isolated({ "advisor.reviewOn": "mutations" }).get("advisor.reviewOn");
-		expect(cadence as string).toBe("mutations");
+		// The settings registry now falls back to `step` for an invalid configured
+		// value, but `reviewGate` keeps its own fail-safe: a typo reaching it still
+		// means "review every step", not a cheaper cadence.
+		const cadence = "mutations" as AdvisorReviewCadence;
 		const { runtime, messages, promptInputs } = newRuntime();
 
 		pushStep(messages, "typo-read", "read");
