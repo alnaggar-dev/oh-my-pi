@@ -2,7 +2,7 @@
 
 What this fork changes, why, and what must still be true after an upstream sync.
 
-**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `Accounts`), one
+**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `Accounts`, `Browser`), one
 `###` per feature under it, seven fields per feature: **What it does**, **Why**, **Files**
 (the files the feature *owns* — every changed file is in exactly one entry's **Files**;
 an entry whose code sits in a file another entry owns names that file and its symbols
@@ -564,3 +564,30 @@ does what I wanted".
     measured-before-unmeasured, and a user-set account priority still take precedence
     over reset order.
 - **Check:** `bun test packages/ai/test/auth-storage-codex-selection.test.ts packages/ai/test/auth-storage-claude-fable-fallback.test.ts packages/ai/test/auth-storage-antigravity-selection.test.ts packages/coding-agent/test/auth-storage-rotation.test.ts`
+
+## Browser
+
+### Browser prompt forbids dismissing Chrome's debugging bar
+
+- **What it does:** The browser tool prompt tells the agent never to dismiss Chrome's
+  "started debugging this browser" bar, because its X or Cancel detaches every relay
+  tab until that tab navigates. Upstream now opens a tab that a relay page session asks
+  for in that page's own browser (`097470cc9e`, which took over #14865), so the fork no
+  longer changes the bridge.
+- **Why:** In a real session an agent opened a separate Chrome window, then clicked the
+  X on that window's debugging bar, which detached every relay tab, and it looped on
+  "No page targets available" until the user stepped in.
+- **Files:** `packages/coding-agent/src/prompts/tools/browser.md` (the "NEVER dismiss
+  Chrome's 'started debugging this browser' bar" bullet).
+- **Depends on upstream:** `#onTabDetached` in
+  `packages/coding-agent/src/tools/browser/relay/bridge.ts` banning a tab the user
+  detached until its URL changes (`#onTabUpsert` clears the ban), and Chrome's infobar
+  X/Cancel detaching every debugger session of the extension. The bullet sits among the
+  browser prompt's application-mode bullets, which upstream rewrites often.
+- **Tripwire paths:** `packages/coding-agent/src/tools/browser/relay/bridge.ts`, `packages/coding-agent/src/prompts/tools/browser.md`, `packages/browser-relay/extension/background.ts`
+- **Must still be true:**
+  - The browser tool prompt still tells the agent never to dismiss Chrome's debugging
+    bar.
+  - A tab the user detached (not relay-initiated) is banned and retracted until its URL
+    changes; if upstream re-attaches it on its own, the bullet's warning is stale.
+- **Check:** `bun test packages/coding-agent/test/tools/browser-relay-bridge.test.ts packages/coding-agent/test/tools/browser-relay-server.test.ts`
