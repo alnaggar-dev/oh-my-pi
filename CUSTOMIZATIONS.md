@@ -2,7 +2,7 @@
 
 What this fork changes, why, and what must still be true after an upstream sync.
 
-**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `Accounts`), one
+**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `Accounts`, `Browser`), one
 `###` per feature under it, seven fields per feature: **What it does**, **Why**, **Files**
 (the files the feature *owns* — every changed file is in exactly one entry's **Files**;
 an entry whose code sits in a file another entry owns names that file and its symbols
@@ -564,3 +564,53 @@ does what I wanted".
     measured-before-unmeasured, and a user-set account priority still take precedence
     over reset order.
 - **Check:** `bun test packages/ai/test/auth-storage-codex-selection.test.ts packages/ai/test/auth-storage-claude-fable-fallback.test.ts packages/ai/test/auth-storage-antigravity-selection.test.ts packages/coding-agent/test/auth-storage-rotation.test.ts`
+
+## Browser
+
+### Relay keeps page-requested tabs in the page's own browser
+
+- **What it does:** A `Target.createTarget` sent on a relay page session (for example
+  `page.createCDPSession().send("Target.createTarget", { newWindow: true })` inside
+  `tab.run`) is no longer forwarded raw to Chrome. The relay opens the tab through the
+  extension that owns that page, as a normal tab, and replies with a relay target id.
+  `Target.closeTarget` and `Target.activateTarget` sent on a page session with a relay
+  target id go through the relay's own handlers, so the caller can close or focus the
+  tab it just created. The browser tool prompt also tells the agent never to dismiss
+  Chrome's "started debugging this browser" bar. The new tab opens in Chrome's
+  last-focused window; the relay does not pin it to the user's working window.
+- **Why:** In a real session an agent sent a raw page-level `newWindow: true` create,
+  which opened a separate Chrome window. It then clicked the X on that window's
+  debugging bar, which detached every relay tab, and it looped on "No page targets
+  available" until the user stepped in.
+- **Files:** `packages/coding-agent/src/tools/browser/relay/bridge.ts` (the
+  `Target.createTarget` and relay-id `Target.closeTarget`/`Target.activateTarget`
+  branches in `#forwardToTab`, and `#createTab`, which the browser-level
+  `Target.createTarget` case now shares),
+  `packages/coding-agent/src/prompts/tools/browser.md` (the "NEVER dismiss Chrome's
+  'started debugging this browser' bar" bullet).
+- **Depends on upstream:** The bridge's session routing: page-session commands reach
+  `#forwardToTab` (from `#handlePageSessionCommand` and the real-session map) and are
+  otherwise sent raw through the extension's `send` op. The extension's `createTab` op
+  calling `chrome.tabs.create({ url })` with no window or `newWindow` option. The
+  relay's target ids (`PAGE<code>.<tabId>`, `TAB<code>.<tabId>`) and `parseTargetId`.
+  The browser-level `Target.closeTarget`/`Target.activateTarget` handlers in
+  `#handleBrowserCommand` resolving those ids to the owning instance with
+  `#instanceFor`. Instance ownership: page sessions route by `tab.instanceId`, while
+  browser-wide requests use `#lastHello()`; `#createTab` must receive the page's
+  instance, never the last-hello one. `#claimTab` and `#onTabUpsert`. For the prompt
+  bullet: `#onTabDetached` banning a user-detached tab until it navigates, and Chrome's
+  infobar X/Cancel detaching every debugger session of the extension.
+- **Tripwire paths:** `packages/coding-agent/src/tools/browser/relay/bridge.ts`, `packages/coding-agent/src/tools/browser/relay/protocol.ts`, `packages/browser-relay/extension/background.ts`, `packages/coding-agent/src/prompts/tools/browser.md`, `packages/browser-relay/README.md`
+- **Must still be true:**
+  - A `Target.createTarget` on a relay page session never reaches Chrome as a raw
+    `send`; it becomes a `createTab` RPC to the extension that owns that page, even with
+    `newWindow: true` and even when another browser instance said hello later.
+  - Its reply is a relay target id (`PAGE<code>.<tabId>`) and the new tab is claimed by
+    the requesting connection.
+  - `Target.closeTarget` / `Target.activateTarget` on a page session with a relay target
+    id become `removeTab` / `activateTab` RPCs; with any other id they are still
+    forwarded unchanged.
+  - A browser-level `Target.createTarget` still routes to the last-hello instance.
+  - The browser tool prompt still tells the agent never to dismiss Chrome's debugging
+    bar.
+- **Check:** `bun test packages/coding-agent/test/tools/browser-relay-bridge.test.ts packages/coding-agent/test/tools/browser-relay-server.test.ts`
