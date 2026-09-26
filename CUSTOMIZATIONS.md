@@ -406,7 +406,14 @@ does what I wanted".
   bar unless `showHookStatus` is false, and inside the `status` segment, both through
   `sanitizeStatusText`, which strips color. Superseded detection is
   `promptGeneration() !== generation` in `applyAutoThinkingLevel`; `classifyDifficulty`
-  and its 4 s timeout decide classified vs fallback. The readout shows only while
+  and its 4 s timeout decide classified vs fallback. `applyAutoThinkingLevel` is the only
+  caller of `classifyDifficulty` and carries upstream's `complexity` parameter (task-spawned
+  turns pass the delegator's rationale through `PromptOptions.complexity` and
+  `#promptWithMessage`); the fork's frames wrap that one call, so a second upstream caller
+  or a classifier call moved elsewhere would classify without frames. The fork's version
+  of that method has conflicted on every sync that touched its signature: keep upstream's
+  parameters and the fork's `begin`/`end` emits. The `ultrathink` branch skips the
+  classifier and emits no frames. The readout shows only while
   `viewSession.isAutoThinking`, re-checked on bus frames, hold expiry and the root
   session's `thinking_level_changed`, so a focus switch to a subagent with a different
   `auto` state shows at the next such event. Theme reads: `theme.thinking.autoPending`,
@@ -425,6 +432,8 @@ does what I wanted".
   - A subagent's classification counts into its root's readout; a failed or unparseable
     one counts as a fallback; a superseded one releases its in-flight share without
     counting.
+  - A task-spawned turn that passes a `complexity` rationale still emits begin/end
+    frames and counts into the root's readout.
   - Child-only activity updates an idle parent's readout, including the final
     hold-expiry update.
   - Cold revival counts into the tree whose `subagentEventBus` it revives on.
