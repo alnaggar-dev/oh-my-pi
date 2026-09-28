@@ -18,10 +18,23 @@ var DEFAULT_PORT = 9224;
 var PING_INTERVAL_MS = 20000;
 var RECONNECT_MIN_MS = 1000;
 var RECONNECT_MAX_MS = 1e4;
+var OPENER_WAIT_MS = 100;
 var ws = null;
 var reconnectDelay = RECONNECT_MIN_MS;
 var pingTimer = null;
 var relayInitiatedDetachTabs = new Set;
+var openerTabs = new Map;
+var pendingCreated = new Map;
+function flushCreated(tabId) {
+  const pending = pendingCreated.get(tabId);
+  if (!pending)
+    return;
+  pendingCreated.delete(tabId);
+  clearTimeout(pending.timer);
+  const snap = snapshot(pending.tab);
+  if (snap)
+    post({ t: "tabCreated", tab: snap });
+}
 var instanceId = null;
 async function ensureInstanceId() {
   if (instanceId)
@@ -52,7 +65,8 @@ function snapshot(tab) {
     discarded: tab.discarded === true,
     windowId: tab.windowId,
     pinned: tab.pinned,
-    groupId: tab.groupId
+    groupId: tab.groupId,
+    openerTabId: openerTabs.get(tab.id)
   };
 }
 var ompGroupTitle = null;
@@ -136,6 +150,7 @@ async function buildHello() {
   return {
     t: "hello",
     instanceId: await ensureInstanceId(),
+    extensionVersion: chrome.runtime.getManifest().version,
     userAgent: navigator.userAgent,
     browserVersion: versionMatch?.[0] ?? "Chrome/unknown",
     discardedTabsProtocol: 1,
@@ -246,11 +261,13 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   post({ t: "detached", tabId: source.tabId, reason, relayInitiated });
 });
 chrome.tabs.onCreated.addListener((tab) => {
-  const snap = snapshot(tab);
-  if (snap)
-    post({ t: "tabCreated", tab: snap });
+  const tabId = tab.id;
+  if (tabId === undefined)
+    return;
+  pendingCreated.set(tabId, { tab, timer: setTimeout(() => flushCreated(tabId), OPENER_WAIT_MS) });
 });
-chrome.tabs.onUpdated.addListener((_tabId, _changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
+  flushCreated(tabId);
   const snap = snapshot(tab);
   if (snap)
     post({ t: "tabUpdated", tab: snap });
@@ -263,7 +280,22 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   }).catch(() => {});
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
+  clearTimeout(pendingCreated.get(tabId)?.timer);
+  pendingCreated.delete(tabId);
+  openerTabs.delete(tabId);
   post({ t: "tabRemoved", tabId });
+});
+chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
+  openerTabs.set(details.tabId, details.sourceTabId);
+  if (pendingCreated.has(details.tabId)) {
+    flushCreated(details.tabId);
+    return;
+  }
+  chrome.tabs.get(details.tabId).then((tab) => {
+    const snap = snapshot(tab);
+    if (snap)
+      post({ t: "tabUpdated", tab: snap });
+  }, () => {});
 });
 chrome.alarms.create("omp-relay-keepalive", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {

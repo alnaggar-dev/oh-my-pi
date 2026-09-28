@@ -31,6 +31,13 @@ interface ChromeTabChangeInfo {
 	status?: string;
 }
 
+/** `webNavigation.onCreatedNavigationTarget` details (subset). */
+interface ChromeCreatedNavigationTargetDetails {
+	/** Tab whose page opened the new tab (link with a target, `window.open`). */
+	sourceTabId: number;
+	tabId: number;
+}
+
 /** Debuggee with the Chrome 125+ flat-session extension. */
 interface ChromeDebuggerSession {
 	tabId?: number;
@@ -90,6 +97,9 @@ declare const chrome: {
 		};
 		onChanged: ChromeEvent<(changes: Record<string, unknown>, areaName: string) => void>;
 	};
+	webNavigation: {
+		onCreatedNavigationTarget: ChromeEvent<(details: ChromeCreatedNavigationTargetDetails) => void>;
+	};
 	alarms: {
 		create(name: string, alarmInfo: { periodInMinutes?: number; delayInMinutes?: number }): void;
 		onAlarm: ChromeEvent<(alarm: { name: string }) => void>;
@@ -101,6 +111,7 @@ declare const chrome: {
 	};
 	runtime: {
 		openOptionsPage(): Promise<void>;
+		getManifest(): { version: string };
 		onInstalled: ChromeEvent<() => void>;
 		onStartup: ChromeEvent<() => void>;
 	};

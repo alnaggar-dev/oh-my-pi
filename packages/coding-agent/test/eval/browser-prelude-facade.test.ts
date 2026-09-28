@@ -40,6 +40,12 @@ function responseFor(parameters: unknown): FacadeResponse {
 			details: { value: typeof field(parameters, "fn") === "string" ? 8 : { ok: true } },
 		};
 	}
+	if (action === "goal") {
+		return {
+			text: "",
+			details: { value: { status: "DONE", steps: ['CLICK g1 "Docs"'], url: "https://example.test/docs" } },
+		};
+	}
 	if (action === "call") {
 		const method = firstChainMethod(parameters);
 		const values: Record<string, unknown> = {
@@ -123,6 +129,11 @@ describe("browser JavaScript facade", () => {
 		expect(await runInContext('tab.evaluate(value => value.length, "save", /save/i, undefined)', context)).toBe(9);
 		expect(await runInContext("tab.run((_scope, count) => count + 1, { args: [7], timeout: 2 })", context)).toBe(8);
 		expect(await runInContext('tab.run("return { ok: true };")', context)).toEqual({ ok: true });
+		expect(await runInContext('tab.goal("open the docs", { max_steps: 5, timeout: 30 })', context)).toEqual({
+			status: "DONE",
+			steps: ['CLICK g1 "Docs"'],
+			url: "https://example.test/docs",
+		});
 		expect(await runInContext('browser.tab("other").title()', context)).toBe("page title");
 		await runInContext('browser.close({ name: "docs", action: "run" })', context);
 
@@ -140,6 +151,12 @@ describe("browser JavaScript facade", () => {
 		);
 		await expect(runInContext("tab.run(Math.max)", context)).rejects.toThrow(
 			"tab.run() cannot serialize a native or bound function; pass an arrow or function expression",
+		);
+		await expect(runInContext('tab.goal("  ")', context)).rejects.toThrow(
+			"tab.goal() expects a non-empty goal string",
+		);
+		await expect(runInContext('tab.goal("open the docs", 5)', context)).rejects.toThrow(
+			"tab.goal() expects an options object",
 		);
 		expect(() => runInContext("tab.evaluate(Math.max)", context)).toThrow(
 			"tab helper argument cannot serialize a native or bound function; pass an arrow or function expression",
@@ -175,6 +192,7 @@ describe("browser JavaScript facade", () => {
 				timeout: 2,
 			},
 			{ action: "run", name: "docs", code: "return { ok: true };" },
+			{ action: "goal", name: "docs", goal: "open the docs", max_steps: 5, timeout: 30 },
 			{ action: "call", name: "other", chain: [{ method: "title", args: [] }] },
 			{ action: "close", name: "docs" },
 		]);
@@ -303,6 +321,38 @@ describe("browser facade in real Eval runtimes", () => {
 		expect(result.exitCode).toBe(0);
 		expect(calls).toContainEqual({ action: "open", name: "py-opts", timeout: 7, persist: true });
 		expect(calls).toContainEqual({ action: "open", name: "py-plain" });
+	});
+
+	it("forwards Python tab.goal budget arguments and returns the report", async () => {
+		const calls: unknown[] = [];
+		let definitions: readonly EvalPreludeDefinition[] = [];
+		const session = makeSession(() => definitions);
+		definitions = [recorderDefinition(session, calls)];
+		const result = await executePython(
+			[
+				'tab = await browser.open(name="py-goal")',
+				'report = await tab.goal("open the docs", max_steps=5, timeout=30)',
+				'print(report["status"], report["steps"][0])',
+				'await tab.goal("open the docs")',
+			].join("\n"),
+			{
+				cwd: process.cwd(),
+				sessionId: `browser-facade-py-goal-${crypto.randomUUID()}`,
+				toolSession: session,
+				kernelMode: "per-call",
+			},
+		);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.output.trim().split("\n")).toContain('DONE CLICK g1 "Docs"');
+		expect(calls).toContainEqual({
+			action: "goal",
+			name: "py-goal",
+			goal: "open the docs",
+			max_steps: 5,
+			timeout: 30,
+		});
+		expect(calls).toContainEqual({ action: "goal", name: "py-goal", goal: "open the docs" });
 	});
 });
 

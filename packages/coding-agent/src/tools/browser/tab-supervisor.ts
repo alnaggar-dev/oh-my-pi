@@ -1667,6 +1667,9 @@ async function buildInitPayload(browser: PuppeteerBrowserHandle, opts: AcquireTa
 		ignoreHttpsErrors: opts.ignoreHttpsErrors,
 		activateForScreenshot,
 		userDriven,
+		// Relay tabs are usually hidden behind the user's active tab, where Chrome drops typed
+		// text and stalls rAF; emulate focus so they stay interactive without being raised.
+		emulateFocus: browser.kind.kind === "relay",
 	};
 }
 
@@ -1761,7 +1764,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 		// Unblock a wedged page (open JS dialog, hung navigation) before adopting it —
 		// otherwise init stalls, times out, and the tab gets force-killed.
 		recover: true,
-		emulateFocus: tab.kindTag === "headless",
+		emulateFocus: tab.kindTag === "headless" || tab.kindTag === "relay",
 		activateForScreenshot: tab.activateForScreenshot,
 		userDriven: tab.kindTag === "connected" || tab.kindTag === "relay",
 	};

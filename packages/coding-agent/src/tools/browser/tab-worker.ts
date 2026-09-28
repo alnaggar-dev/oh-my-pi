@@ -327,6 +327,8 @@ const HANDLE_ACTION_INVALIDATION_TIMEOUT_MS = 500;
 const FRAME_SNAPSHOT_TIMEOUT_MS = 5_000;
 /** Bound on Puppeteer exposing a page Chromium still has; the supervisor's init budget caps the whole attach anyway. */
 const ATTACHED_TARGET_EXPOSE_TIMEOUT_MS = 5_000;
+/** Bounded well inside the supervisor's 750ms close grace, leaving room for the rest of teardown. */
+const FOCUS_EMULATION_RELEASE_TIMEOUT_MS = 250;
 
 /** Queue a wheel event without treating a delayed renderer acknowledgement as dispatch failure. */
 export async function dispatchScroll(
@@ -1479,6 +1481,8 @@ export class WorkerCore {
 	#activateForScreenshot = true;
 	/** The upload route this worker's browser connection takes, and the tab's staging folder. */
 	#uploads?: UploadStaging;
+	/** Focus emulation this worker enabled on a tab it hands back to the user on close. */
+	#releaseFocusOnClose = false;
 	#dialogs?: RuntimeDialogController;
 	#network?: BrowserNetworkManager;
 	#initScripts?: InitScriptManager;
@@ -1669,6 +1673,8 @@ export class WorkerCore {
 				// IntersectionObserver, and input acknowledgements. Keep owned tabs
 				// interactive without raising a window; explicit settle-freeze still applies.
 				await this.#page.emulateFocusedPage(true);
+				// Relay tabs keep their debugger attachment after this worker disconnects.
+				this.#releaseFocusOnClose = payload.mode !== "headless";
 			}
 			this.#webmcp = await installWebMcp(this.#page);
 			await installVitalsObservers(this.#page);
@@ -3366,6 +3372,15 @@ export class WorkerCore {
 		this.#uninstallRejectionGuard();
 		this.#clearElementCache();
 		const page = this.#page;
+		if (this.#releaseFocusOnClose && page && !page.isClosed()) {
+			// First, so a slow teardown step (recording finalization) cannot outlast the close
+			// grace and leave the user's tab emulating focus under the relay's lingering attachment.
+			await withTimeout(
+				page.emulateFocusedPage(false),
+				FOCUS_EMULATION_RELEASE_TIMEOUT_MS,
+				"Timed out releasing focus emulation",
+			).catch(() => undefined);
+		}
 		await this.#recording.close().catch(error => {
 			this.#log("warn", "Failed to finalize active browser recording during tab close", {
 				error: error instanceof Error ? error.message : String(error),

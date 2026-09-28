@@ -136,3 +136,49 @@ export const cfgBrowserScreenshotDir = register({
 			"Directory to save screenshots. If unset, screenshots go to a temp file. Supports ~. Examples: ~/Downloads, ~/Desktop, /sdcard/Download (Android)",
 	},
 });
+
+export const cfgBrowserGoalEnabled = register({
+	id: "browser.goal.enabled",
+	type: "enum",
+	values: ["auto", "off"] as const,
+	default: "auto",
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Browser Goal Mode",
+		description:
+			"Enable tab.goal(): a fast judge-driven loop that completes a multi-step browser task in one call. Auto enables it only when the judge role resolves to a native System One model",
+		options: [
+			{
+				value: "auto",
+				label: "Auto",
+				description: "Enable when the judge role resolves to a native System One model",
+			},
+			{ value: "off", label: "Off", description: "Disable tab.goal()" },
+		],
+	},
+});
+
+export const cfgBrowserGoalMaxSteps = register({
+	id: "browser.goal.maxSteps",
+	type: "number",
+	default: 60,
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Browser Goal Step Limit",
+		description: "Default maximum page actions per tab.goal() run when the call sets no max_steps",
+	},
+});
+
+export const cfgBrowserGoalTextModel = register({
+	id: "browser.goal.textModel",
+	type: "string",
+	default: undefined,
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Browser Goal Text Model",
+		description: "Model selector that writes field values for tab.goal(), empty = smol role",
+	},
+});
