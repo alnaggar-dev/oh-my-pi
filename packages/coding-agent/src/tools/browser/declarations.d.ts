@@ -179,6 +179,32 @@ interface BrowserRunOptions<TArgs extends unknown[] = unknown[]> {
 	timeout?: number;
 }
 
+/** Budget for `BrowserTab.goal`. */
+interface BrowserGoalOptions {
+	/** Maximum page actions; defaults to the `browser.goal.maxSteps` setting (60). */
+	max_steps?: number;
+	/** Whole-run timeout in seconds; defaults to 120. */
+	timeout?: number;
+}
+
+/** Compact outcome of a `BrowserTab.goal` run. */
+interface BrowserGoalReport {
+	/** `DONE` still needs verification by the caller. */
+	status: "DONE" | "BLOCKED" | "STEP_LIMIT" | "TIMEOUT" | "ABORTED" | "ERROR";
+	/** Why the run stopped; set only for `BLOCKED`. */
+	reason?: "judge" | "no_progress" | "needs_value" | "needs_approval" | "dialog" | "unsupported";
+	/** Stop detail: element name, dialog type and message, frame or new-tab URLs, error message. */
+	detail?: string;
+	/** Actions taken, e.g. `CLICK g2 "One way"`, `TYPE_TEXT g3 "Where from?" = "Zurich"`. */
+	steps: string[];
+	/** Page URL when the run stopped. */
+	url: string;
+	/** Run wall time in milliseconds. */
+	elapsed_ms: number;
+	/** Session artifact id holding the full step log, when saved. */
+	log_artifact?: string;
+}
+
 /** Options for a direct tab navigation. */
 interface BrowserGotoOptions {
 	/** Navigation lifecycle to await. */
@@ -1607,6 +1633,8 @@ interface BrowserTab extends BrowserTabHelpers {
 	): Promise<R>;
 	/** Run a JavaScript function body in the tab runtime. */
 	run<R = unknown>(code: string, options?: BrowserRunOptions): Promise<R>;
+	/** Drive this tab toward a plain-language goal with omp's fast action loop and return its report. */
+	goal(goal: string, options?: BrowserGoalOptions): Promise<BrowserGoalReport>;
 	/** Release this managed tab. */
 	close(options?: BrowserTabCloseOptions): Promise<void>;
 }

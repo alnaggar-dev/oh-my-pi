@@ -236,6 +236,17 @@
 			const details = await invoke("run", parameters);
 			return details.value;
 		};
+		tab.goal = async (goal, options) => {
+			if (typeof goal !== "string" || goal.trim().length === 0) {
+				throw new TypeError("tab.goal() expects a non-empty goal string");
+			}
+			const opts = validateOptions("tab.goal", options);
+			const parameters = { name, goal };
+			if (opts.max_steps !== undefined) parameters.max_steps = opts.max_steps;
+			if (opts.timeout !== undefined) parameters.timeout = opts.timeout;
+			const details = await invoke("goal", parameters);
+			return details.value;
+		};
 		tab.close = async options => {
 			const opts = validateOptions("tab.close", options);
 			await invoke("close", { ...opts, name });

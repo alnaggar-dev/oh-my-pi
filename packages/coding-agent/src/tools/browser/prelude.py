@@ -579,6 +579,21 @@ def _make_browser():
             )
             return details.get("value")
 
+        async def goal(self, goal, max_steps=None, timeout=None):
+            """Drive this tab toward a plain-language goal and return the run report."""
+            if not isinstance(goal, str) or not goal.strip():
+                raise TypeError("tab.goal() expects a non-empty goal string")
+            details = await _invoke(
+                "goal",
+                {
+                    "name": self._name,
+                    "goal": goal,
+                    "max_steps": max_steps,
+                    "timeout": timeout,
+                },
+            )
+            return details.get("value")
+
         async def close(self, *, kill=None, timeout=None):
             """Close this tab handle's host-side tab."""
             await _invoke(
