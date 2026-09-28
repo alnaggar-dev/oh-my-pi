@@ -62,7 +62,7 @@ does what I wanted".
   `packages/coding-agent/src/session/session-advisors.ts` (dedupe entry); the
   two `cfgAdvisorRuntimeInputs` fields in `packages/coding-agent/src/session/agent-session.ts`
   (auto-thinking entry).
-- **Tripwire paths:** `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
+- **Tripwire paths:** `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`, `packages/agent/src/agent-loop.ts`
 - **Must still be true:**
   - With `reviewOn: turn`, no advisor request is made for any mid-turn step, and that
     work still appears in the single end-of-turn review — nothing is dropped.
@@ -232,10 +232,10 @@ does what I wanted".
   - A shallow rewrite near the tail changes nothing.
   - Once a later assistant turn postdates the rewrite, the extra breakpoint disappears.
   - With several rewrites, the boundary comes from the newest batch only.
-  - When the head already spends 3 of the 4 breakpoints (OAuth identity block, the
-    stable-system anchor in front of a `<memories>` recall suffix, and the tool
-    anchor), the one remaining message breakpoint stays on the trailing message and the
-    boundary anchor is dropped.
+  - When the head is heaviest (OAuth identity block plus a `<memories>` recall suffix),
+    upstream moves the identity breakpoint onto the stable-system anchor, so the head
+    spends two of the 4 breakpoints and the boundary still fits beside the trailing
+    message; the request never exceeds 4.
   - In a long session (15+ user turns) the boundary outranks upstream's decimation
     anchors: with two message breakpoints the layout is trailing + boundary; with
     three, the newest decimation anchor stays and the oldest drops. The trailing
@@ -407,8 +407,8 @@ does what I wanted".
   `sanitizeStatusText`, which strips color. Superseded detection is
   `promptGeneration() !== generation` in `applyAutoThinkingLevel`; `classifyDifficulty`
   and its 4 s timeout decide classified vs fallback. `applyAutoThinkingLevel` is the only
-  caller of `classifyDifficulty` and carries upstream's `complexity` parameter (task-spawned
-  turns pass the delegator's rationale through `PromptOptions.complexity` and
+  caller of `classifyDifficulty` and carries upstream's `solutionSpace` parameter (task-spawned
+  turns pass the delegator's rationale through `PromptOptions.solutionSpace` and
   `#promptWithMessage`); the fork's frames wrap that one call, so a second upstream caller
   or a classifier call moved elsewhere would classify without frames. The fork's version
   of that method has conflicted on every sync that touched its signature: keep upstream's
@@ -432,7 +432,7 @@ does what I wanted".
   - A subagent's classification counts into its root's readout; a failed or unparseable
     one counts as a fallback; a superseded one releases its in-flight share without
     counting.
-  - A task-spawned turn that passes a `complexity` rationale still emits begin/end
+  - A task-spawned turn that passes a `solutionSpace` rationale still emits begin/end
     frames and counts into the root's readout.
   - Child-only activity updates an idle parent's readout, including the final
     hold-expiry update.
@@ -476,7 +476,7 @@ does what I wanted".
   status strings (`running`, `error`, `quota_exhausted`, `paused`);
   `getContextUsageLevel` and `getContextUsageThemeColor` in
   `packages/tui/src/chrome/context-thresholds.ts`; `theme.icon.advisor`,
-  `theme.icon.context`, `theme.icon.cache` and `statusValue`/`withIcon`; the
+  `theme.icon.context`, `theme.icon.cache` and `withIcon`; the
   `cache_hit` segment's prompt-token denominator (`cacheRead + cacheWrite + input`),
   which this copies; `loadAdvisorTranscriptCosts`' single pass over advisor
   transcripts and the cost-restore snapshot barrier; `AssistantMessage.usage`.
@@ -517,8 +517,8 @@ does what I wanted".
   equal fall back to upstream's required-drain order. Applies to every provider whose
   ranking strategy reports a long window, in both OAuth and API-key ranking: Claude,
   Codex, Kimi Code (its `7d` window), Z.ai (its second-shortest window), Alibaba Token
-  Plan (`credits:7d`), OpenCode Go (`weekly`) and xAI OAuth (`credits:1w`, else
-  `included:1mo`). **Not Antigravity:** its
+  Plan (`credits:7d`), OpenCode Go (`weekly`), xAI OAuth (`credits:1w`, else
+  `included:1mo`) and Cursor (the requested model's monthly billing pool). **Not Antigravity:** its
   `findWindowLimits` deliberately returns no secondary window, so every Antigravity
   account gets `secondaryResetAt = ∞` and the new rule never separates them.
 - **Why:** A policy choice, not an upstream bug fix. Upstream ranks by required drain
@@ -562,7 +562,7 @@ does what I wanted".
   Codex's `findWindowLimits` still returns it as the secondary through its `7d`
   window-id fallback, so the rule sees its reset time. If that fallback goes, such an
   account gets no reset time and sorts last.
-- **Tripwire paths:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`, `packages/ai/src/auth/usage-report.ts`, `packages/ai/src/auth/affinity.ts`, `packages/ai/src/usage.ts`, `packages/ai/src/usage/claude.ts`, `packages/ai/src/usage/openai-codex.ts`, `packages/ai/src/usage/google-antigravity.ts`, `packages/ai/src/usage/kimi.ts`, `packages/ai/src/usage/zai.ts`, `packages/ai/src/usage/alibaba-token-plan.ts`, `packages/ai/src/usage/opencode-go.ts`, `packages/ai/src/usage/xai-oauth.ts`, `packages/ai/src/usage/registry.ts`
+- **Tripwire paths:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`, `packages/ai/src/auth/usage-report.ts`, `packages/ai/src/auth/affinity.ts`, `packages/ai/src/usage.ts`, `packages/ai/src/usage/claude.ts`, `packages/ai/src/usage/openai-codex.ts`, `packages/ai/src/usage/google-antigravity.ts`, `packages/ai/src/usage/kimi.ts`, `packages/ai/src/usage/zai.ts`, `packages/ai/src/usage/alibaba-token-plan.ts`, `packages/ai/src/usage/opencode-go.ts`, `packages/ai/src/usage/xai-oauth.ts`, `packages/ai/src/usage/cursor.ts`, `packages/ai/src/usage/registry.ts`
 - **Must still be true:**
   - Among unblocked, measured accounts below the 5h hot threshold, the one whose weekly
     window resets earliest is selected, regardless of how much of it is already used.
@@ -679,9 +679,11 @@ does what I wanted".
   chain's first candidate is native) gates both the docs and the action, so a change in
   chain order or in `kindOf` hides the feature or runs it on a prompted judge whose
   probabilities do not fit the loop's fixed thresholds (risk 0.5, done check 0.5 and
-  0.8); `resolveJudge` rethrowing the abort reason, which the loop reports as `TIMEOUT`
-  or `ABORTED`; `journalJudgmentUsage`, which books the judge and the text model under
-  purpose `browser-goal`. The judgment types in `packages/ai/src/judgment/types.ts`
+  0.8); `ChainJudge.withCandidate` (returned by `resolveJudge`) rethrowing the abort
+  reason, which the loop reports as `TIMEOUT` or `ABORTED`; `journalJudgmentUsage`
+  (session manager only), with the judge's purpose set by the required
+  `JudgeDeps.purpose: "browser-goal"` and the text model's by the required
+  `JudgmentUsage.purpose` that `goal/text.ts` sets. The judgment types in `packages/ai/src/judgment/types.ts`
   (`ChoiceQuestion`, `NoulQuestion` and their `criteria`, `ChoiceAnswer` with `choice`
   and `probabilities`, `NoulAnswer.noul`), which `questions.ts` validates by hand: a
   renamed field makes every answer invalid and the run ends `ERROR`. For the text
@@ -718,7 +720,7 @@ does what I wanted".
   new-tab detection needs on relay tabs; `seedOwnedProfilePreferences` in
   `packages/coding-agent/src/tools/browser/launch.ts` (password-leak entry), without
   which a click after a password submit is dropped.
-- **Tripwire paths:** `packages/coding-agent/src/judgment/index.ts`, `packages/ai/src/judgment/types.ts`, `packages/ai/src/judgment/typesafe.ts`, `packages/ai/src/index.ts`, `packages/ai/src/stream.ts`, `packages/ai/src/oneshot-retry.ts`, `packages/coding-agent/src/config/model-resolver.ts`, `packages/coding-agent/src/config/model-registry.ts`, `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/run-code.ts`, `packages/coding-agent/src/tools/browser/dialogs.ts`, `patches/puppeteer-core@25.3.0.patch`, `package.json`, `packages/coding-agent/src/eval/preludes.ts`, `packages/coding-agent/src/tools/eval.ts`, `packages/coding-agent/src/eval/js/tool-bridge.ts`, `packages/coding-agent/src/eval/bridge-timeout.ts`, `packages/coding-agent/src/tools/tool-timeouts.ts`, `packages/coding-agent/src/tools/tool-result.ts`, `packages/coding-agent/src/tools/browser.ts`, `packages/coding-agent/src/tools/browser/prelude.js`, `packages/coding-agent/src/tools/browser/prelude.py`, `packages/coding-agent/src/tools/browser/prelude-definition.ts`, `packages/coding-agent/src/tools/browser/declarations.d.ts`, `packages/coding-agent/src/tools/browser/settings.ts`, `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`
+- **Tripwire paths:** `packages/coding-agent/src/judgment/index.ts`, `packages/ai/src/judgment/types.ts`, `packages/ai/src/judgment/typesafe.ts`, `packages/ai/src/index.ts`, `packages/ai/src/stream.ts`, `packages/ai/src/oneshot-retry.ts`, `packages/coding-agent/src/config/model-resolver.ts`, `packages/coding-agent/src/config/model-registry.ts`, `packages/coding-agent/src/config/model-roles.ts`, `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/run-code.ts`, `packages/coding-agent/src/tools/browser/dialogs.ts`, `patches/puppeteer-core@25.3.0.patch`, `package.json`, `packages/coding-agent/src/eval/preludes.ts`, `packages/coding-agent/src/tools/eval.ts`, `packages/coding-agent/src/eval/js/tool-bridge.ts`, `packages/coding-agent/src/eval/bridge-timeout.ts`, `packages/coding-agent/src/tools/tool-timeouts.ts`, `packages/coding-agent/src/tools/tool-result.ts`, `packages/coding-agent/src/tools/browser.ts`, `packages/coding-agent/src/tools/browser/prelude.js`, `packages/coding-agent/src/tools/browser/prelude.py`, `packages/coding-agent/src/tools/browser/prelude-definition.ts`, `packages/coding-agent/src/tools/browser/declarations.d.ts`, `packages/coding-agent/src/tools/browser/settings.ts`, `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`
 - **Must still be true:**
   - With `browser.goal.enabled: auto`, the action and its docs exist only when the judge
     role's first candidate is native; otherwise the call fails with a "disabled" error
@@ -914,11 +916,15 @@ does what I wanted".
   broker Chrome runs on it (Chromium reads `Preferences` only at startup and rewrites
   it from memory); Chromium's `profile.password_manager_leak_detection` pref and its
   `Default` profile layout. Relay and connected browsers use the user's own profile and
-  are never seeded.
+  are never seeded. **Known gap (upstream paths, left alone):** two other OMP-owned
+  profiles are not seeded either — Chromium spawned through `app.path`
+  (`resolveSpawnArgs` in `packages/coding-agent/src/tools/browser/attach.ts`) and the
+  headful SSO sign-in browser (`captureBrowserSession` in
+  `packages/coding-agent/src/utils/browser-session.ts`).
 - **Tripwire paths:** `packages/coding-agent/src/tools/browser/launch.ts`, `packages/coding-agent/src/tools/browser/shared-daemon.ts`, `packages/coding-agent/src/launch/paths.ts`
 - **Must still be true:**
-  - Every Chromium OMP launches on a profile it owns starts with password leak
-    detection off.
+  - Chromium on the OMP-launched temp profile and on the shared broker profile starts
+    with password leak detection off.
   - Seeding keeps a reused profile's other preferences and creates the file on a fresh
     profile.
   - A profile the caller passes with `--user-data-dir` is never written.
