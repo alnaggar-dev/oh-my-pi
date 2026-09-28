@@ -669,7 +669,8 @@ async function goalBrowser(
 		settings: session.settings,
 		registry,
 		sessionId: session.getSessionId?.() ?? undefined,
-		onUsage: journalJudgmentUsage(session.sessionManager, "browser-goal"),
+		purpose: "browser-goal",
+		onUsage: journalJudgmentUsage(session.sessionManager),
 	});
 	const page = createTabPageDriver({ name, session });
 	let report: GoalReport;
