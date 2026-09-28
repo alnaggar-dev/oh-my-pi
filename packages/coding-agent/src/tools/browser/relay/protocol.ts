@@ -19,6 +19,13 @@ export interface TabSnapshot {
 	pinned: boolean;
 	/** Chrome tab group id; -1 when ungrouped. */
 	groupId: number;
+	/**
+	 * Tab whose page opened this one (link with a target, `window.open`), from
+	 * `webNavigation.onCreatedNavigationTarget`; the relay reports it as the page target's
+	 * `openerId`. Chrome fires that event after `tabs.onCreated`, so it first arrives in a
+	 * `tabUpdated`. Absent for tabs no page opened, and on extensions before 0.2.0.
+	 */
+	openerTabId?: number;
 }
 
 /** RPCs the relay may ask the extension to perform. */
@@ -66,6 +73,8 @@ export type ExtToRelayMessage =
 			 * reuses tab ids: target ids embed it, so an old target id never names a new tab. Absent on older extensions.
 			 */
 			browserSession?: string;
+			/** Relay extension version (manifest `version`). Absent on extensions before 0.2.0. */
+			extensionVersion?: string;
 	  }
 	| { t: "cdpEvent"; tabId: number; sessionId?: string; method: string; params?: Record<string, unknown> }
 	| { t: "detached"; tabId: number; reason: string; relayInitiated?: boolean }
