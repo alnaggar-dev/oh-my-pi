@@ -629,6 +629,18 @@
 - In terminals that speak the Tern Surface Protocol, a sent prompt's bubble shows its attached images above the text (click one to open the file) and keeps its attachment, skill and model-mention tokens highlighted as the composer drew them
 - In terminals that speak the Tern Surface Protocol there is no status bar: the session name (and the branch's PR) is the tab title, Tern's pane header shows the path and branch, each finished turn ends with its time, tokens and cost, the composer carries a model chip (click to switch), an effort meter (click to cycle), a context hairline along its top edge and the context share and session cost, and other configured status segments sit as small facts in the composer; background jobs get a HUD pill
 - Added the `/ratchet [flow and goal]` command: the agent asks one batched round of setup questions, builds (or reuses) an eval for the flow you name, gets three approvals (inputs, grader, plan), then hillclimbs it unattended, keeping a change only when it beats the best round on both train and held-out cases. It enables a new `ratchet(flow)` eval global for the session (docs at `xd://eval/ratchet`; persist with `ratchet.enabled`) that stores state in `.omp/ratchet/<flow>/`, invalidates approvals when the approved files change, and prices runs from the model catalog ([#13672](https://github.com/can1357/oh-my-pi/pull/13672) by [@H4vC](https://github.com/H4vC))
+### Added
+
+- Added unified predictive text engine with pluggable N-gram, SmolLM2, and macOS native providers
+- Added `omp predict` CLI command for evaluating completion engine performance
+- Added cross-process prediction daemon for managing state, history ingestion, and engine fallbacks
+- Added support for dynamic eval prelude guidance via hidden session notices
+- Added a required `complexity` rationale field to the `task` tool for improved auto-thinking depth classification
+- Added the `wait` tool automatically to agents that use `task` or `bash` to improve background process coordination
+- Added a context-aware hint system for empty composers that displays suggestions based on agent activity and effort
+- Added an optional `scope` to the `retain` and `learn` tools, offered when `mnemopi.scoping` is `global` or `per-project-tagged`: `scope: "global"` stores a memory or lesson in the Mnemopi bank every project recalls instead of the current project's bank ([#13324](https://github.com/can1357/oh-my-pi/pull/13324) by [@alphastorm](https://github.com/alphastorm)).
+- Added `/btw` to the commands available from a focused subagent view; it asks about the focused agent's transcript instead of the main session's, and its answers can be copied or followed up but not branched into the main session ([#13412](https://github.com/can1357/oh-my-pi/pull/13412) by [@H4vC](https://github.com/H4vC))
+- Added `tab.goal(goal, { max_steps, timeout })` to the browser eval prelude: a fast judge-driven loop that finishes a multi-step form, search, or navigation task on an open tab in one call (needs a native System One judge; see the `browser.goal.*` settings)
 
 ### Changed
 
@@ -643,6 +655,13 @@
 - The default image model chain now uses `openai/gpt-image-2`, `openai-codex/gpt-image-2`, and the GA `gemini-3-pro-image` (Google and OpenRouter) instead of `gpt-image-1` and the Gemini preview id.
 - Reduced CPU while streaming replies and tool calls: the reveal no longer deep-compares frozen leading content on every flush, streamed argument extraction no longer re-verifies the whole prefix, and deltas no longer queue extension notifications when no extension listens for `message_update` ([#13650](https://github.com/can1357/oh-my-pi/pull/13650) by [@H4vC](https://github.com/H4vC)).
 - Reduced CPU and allocations for in-memory reads (URLs, notebooks, converted documents), tool-result spill checks, write read-projection guards, and hashline prefix stripping ([#13650](https://github.com/can1357/oh-my-pi/pull/13650) by [@H4vC](https://github.com/H4vC)).
+- Updated the OMP Browser Relay extension to 0.2.0 so relay tabs report which tab opened them; run `omp browser-relay install` and reload the extension to get it
+- Updated `spelling.autocomplete` to an enum-based configuration for engine selection
+- Optimized mid-session `/computer` toggles to bypass full system-prompt rebuilds
+- Updated window input policy to default to background actions and replaced the `delivery` option with a `takeover` boolean flag for opt-in activation
+- Aligned orchestrator task documentation and prompts to a Target/Change/Acceptance format
+- Migrated all hardcoded keyboard and slash-command shortcut labels to dynamic, platform-aware UI hints
+- Centralized usage tracking for slash commands and hints to a persistent, namespaced storage system
 
 ### Fixed
 
@@ -840,6 +859,10 @@
 - Preserved MCP `structuredContent` in live tool-result details so evaluation callers can consume server data without reparsing model-facing JSON; spilled results continue to retain an artifact reference without duplicating the payload in session history.
 - Fixed Collab hosts becoming unable to reclaim a room after a brief network interruption; hosts now retry room recovery without losing guests or queued updates.
 - Fixed one-shot commands that stopped before completing, such as `omp config set` on a fresh Windows profile, incorrectly exiting successfully without output; they now report failure with diagnostic guidance.
+- Fixed typed text being dropped in a browser relay tab that is not the active Chrome tab
+- Fixed `page.waitForNetworkIdle` in `tab.run` timing out on a request started by an earlier `tab.run`
+- Fixed browser runs failing with `Failed to restore browser request interception after browser.run` on pages with busy cross-origin frames
+- Fixed coordinate clicks being dropped after a password form submit in OMP-launched Chromium
 - Preserved MCP `structuredContent` in live tool result `details`, allowing eval callers to consume server data without parsing the model-facing JSON rendering; spilled results omit the duplicate structured payload from session persistence while retaining the artifact reference ([#13397](https://github.com/can1357/oh-my-pi/issues/13397), [#13398](https://github.com/can1357/oh-my-pi/pull/13398) by [@shawnkoh](https://github.com/shawnkoh)).
 - Fixed a Collab host ending with `a host is already connected for this room` after a brief network drop: when the relay still holds the dropped connection, the host now retries every few seconds for up to 150 s and reclaims its room, and a refused retry no longer resets the guest list or drops queued updates ([#12514](https://github.com/can1357/oh-my-pi/issues/12514), [#13355](https://github.com/can1357/oh-my-pi/pull/13355) by [@alphastorm](https://github.com/alphastorm))
 - Fixed a one-shot command that stopped before completing (for example `omp config set` on a fresh Windows profile) exiting 0 with no output; it now exits 1 with a stderr line naming the command and pointing at `PI_DEBUG_STARTUP` ([#13373](https://github.com/can1357/oh-my-pi/pull/13373) by [@alphastorm](https://github.com/alphastorm))

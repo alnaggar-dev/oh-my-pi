@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -320,6 +321,8 @@ const REQUEST_INTERCEPTION_CLEANUP_TIMEOUT_MS = 500;
 const HANDLE_ACTION_INVALIDATION_TIMEOUT_MS = 500;
 /** Bound on reading every iframe in one observation; a frame whose renderer is stuck in script never answers. */
 const FRAME_SNAPSHOT_TIMEOUT_MS = 5_000;
+/** Bounded well inside the supervisor's 750ms close grace, leaving room for the rest of teardown. */
+const FOCUS_EMULATION_RELEASE_TIMEOUT_MS = 250;
 
 /** Queue a wheel event without treating a delayed renderer acknowledgement as dispatch failure. */
 export async function dispatchScroll(
@@ -878,123 +881,187 @@ class NavigationTimeoutError extends ToolError {}
 
 interface RunPageScope {
 	page: Page;
+	/** Run user code in this scope's async context; listeners it adds through the real Page become run-owned. */
+	enter<T>(fn: () => T): T;
 	/** Restore the page's own listener methods and remove every handler this run registered. */
 	detach(): void;
 	/** Return request interception to the tab's persistent route/allowlist state. */
 	restoreInterception(): Promise<void>;
 }
 
+/** A run-owned registration: `listener` is what the emitter holds, `handler` what the run passed. */
+interface OwnedListener {
+	handler: unknown;
+	listener: unknown;
+}
+
+/** Async context of one run's user code; the store is the owning run page scope's token. */
+const runPageContext = new AsyncLocalStorage<object>();
+
 /**
  * Expose the tab page while retaining every event handler created by this run.
- * The facade removes only run-owned listeners, preserving worker-level routing,
- * request logging, dialogs, and console capture. Raw interception is restored
- * to the tab's persistent route/allowlist state after a run that changed it.
+ * User code gets a proxy whose listener methods track only its own registrations.
+ * The proxy is escapable — `page.mainFrame().page()`, `page.target().page()`, and
+ * `browser.pages()` return the real Page — so for the run's duration the real Page
+ * also gets own `on`/`off`: `on` records a registration as run-owned only when it is
+ * made from this run's async context (`enter`); puppeteer's `once` goes through
+ * `on`, and `off` resolves an owned handler to its registered listener. Owned
+ * handlers are registered wrapped so they run in that context too: events are
+ * dispatched from the CDP socket callback, and a listener added from inside a
+ * run-owned handler must still be run-owned. Puppeteer's internal subscriptions
+ * (in-flight request tracking subscribes on every `request` event) are made from
+ * that socket callback, outside the context, so they pass through untracked and,
+ * like worker-level routing, request logging, dialogs, and console capture, survive
+ * cleanup. When the run calls `setRequestInterception`, interception is restored to
+ * the tab's persistent route/allowlist state after the run. Runs that never touch it
+ * skip the restore: the first puppeteer toggle broadcasts Fetch/Network commands to
+ * every attached target, and a busy out-of-process frame (e.g. a Cloudflare
+ * challenge) can leave that broadcast unanswered for seconds.
  */
 function createRunPageScope(page: Page, restoreInterception: () => Promise<void>): RunPageScope {
-	const handlers = new Map<unknown, unknown[]>();
+	const owned = new Map<unknown, OwnedListener[]>();
+	// Captured before the own `on`/`off` below, so proxy registrations are recorded once.
 	const on = page.on;
 	const off = page.off;
 	const once = page.once;
 	const setRequestInterception = page.setRequestInterception;
-	const onDescriptor = Object.getOwnPropertyDescriptor(page, "on");
-	const offDescriptor = Object.getOwnPropertyDescriptor(page, "off");
-	const onceDescriptor = Object.getOwnPropertyDescriptor(page, "once");
-	const removeAllDescriptor = Object.getOwnPropertyDescriptor(page, "removeAllListeners");
-	const interceptionDescriptor = Object.getOwnPropertyDescriptor(page, "setRequestInterception");
-	let interceptionChanged = false;
+	const owner = {};
+	const ownOn = Object.getOwnPropertyDescriptor(page, "on");
+	const ownOff = Object.getOwnPropertyDescriptor(page, "off");
+	let interceptionTouched = false;
 
-	const remember = (type: unknown, handler: unknown): void => {
-		const owned = handlers.get(type);
-		if (owned) owned.push(handler);
-		else handlers.set(type, [handler]);
+	const own = (type: unknown, handler: unknown, invoke: unknown = handler): OwnedListener => {
+		const entry: OwnedListener = {
+			handler,
+			listener:
+				typeof invoke === "function"
+					? // The result is kept: puppeteer awaits a `request` handler's promise before resolving
+						// cooperative interception.
+						(event: unknown): unknown =>
+							runPageContext.run(owner, () => Reflect.apply(invoke, undefined, [event]))
+					: invoke,
+		};
+		const entries = owned.get(type);
+		if (entries) entries.push(entry);
+		else owned.set(type, [entry]);
+		Reflect.apply(on, page, [type, entry.listener]);
+		return entry;
 	};
+	const drop = (type: unknown, entry: OwnedListener): void => {
+		const entries = owned.get(type);
+		const index = entries?.indexOf(entry) ?? -1;
+		if (!entries || index < 0) return;
+		Reflect.apply(off, page, [type, entry.listener]);
+		entries.splice(index, 1);
+		if (entries.length === 0) owned.delete(type);
+	};
+	const findOwned = (type: unknown, handler: unknown): OwnedListener | undefined =>
+		owned.get(type)?.findLast(entry => entry.handler === handler);
 	const forget = (type: unknown, handler?: unknown): void => {
-		const owned = handlers.get(type);
-		if (!owned) return;
-		if (handler === undefined) {
-			for (const registered of owned) Reflect.apply(off, page, [type, registered]);
-			handlers.delete(type);
+		if (handler !== undefined) {
+			const entry = findOwned(type, handler);
+			if (entry) drop(type, entry);
 			return;
 		}
-		const index = owned.lastIndexOf(handler);
-		if (index < 0) return;
-		Reflect.apply(off, page, [type, handler]);
-		owned.splice(index, 1);
-		if (owned.length === 0) handlers.delete(type);
+		for (const entry of owned.get(type) ?? []) Reflect.apply(off, page, [type, entry.listener]);
+		owned.delete(type);
 	};
 
-	Object.defineProperties(page, {
-		on: {
-			configurable: true,
-			value: (type: unknown, handler: unknown): Page => {
-				Reflect.apply(on, page, [type, handler]);
-				remember(type, handler);
-				return page;
-			},
+	Object.defineProperty(page, "on", {
+		configurable: true,
+		writable: true,
+		value: (type: unknown, handler: unknown): Page => {
+			if (runPageContext.getStore() === owner) own(type, handler);
+			else Reflect.apply(on, page, [type, handler]);
+			return page;
 		},
-		once: {
-			configurable: true,
-			value: (type: unknown, handler: unknown): Page => {
-				if (typeof handler !== "function") {
-					Reflect.apply(once, page, [type, handler]);
-					return page;
-				}
-				const wrapper = (event: unknown): void => {
-					forget(type, wrapper);
-					Reflect.apply(handler, page, [event]);
-				};
-				remember(type, wrapper);
-				Reflect.apply(on, page, [type, wrapper]);
+	});
+	// Puppeteer's `once` and rxjs teardown call `off` with the handler they passed to `on`.
+	Object.defineProperty(page, "off", {
+		configurable: true,
+		writable: true,
+		value: (type: unknown, handler?: unknown): Page => {
+			const entry = handler === undefined ? undefined : findOwned(type, handler);
+			if (entry) {
+				drop(type, entry);
 				return page;
-			},
+			}
+			if (handler === undefined) owned.delete(type);
+			Reflect.apply(off, page, [type, handler]);
+			return page;
 		},
-		off: {
-			configurable: true,
-			value: (type: unknown, handler?: unknown): Page => {
-				forget(type, handler);
-				return page;
-			},
+	});
+
+	const overrides: Record<string, unknown> = {
+		setRequestInterception: (value: boolean): Promise<void> => {
+			interceptionTouched = true;
+			return Reflect.apply(setRequestInterception, page, [value]);
 		},
-		removeAllListeners: {
-			configurable: true,
-			value: (type?: unknown): Page => {
-				if (type !== undefined) forget(type);
-				else {
-					// Map iteration tolerates deletion of the current key by forget().
-					for (const ownedType of handlers.keys()) forget(ownedType);
-				}
-				return page;
-			},
+		on: (type: unknown, handler: unknown): Page => {
+			own(type, handler);
+			return scoped;
 		},
-		setRequestInterception: {
-			configurable: true,
-			value: (value: boolean): Promise<void> => {
-				interceptionChanged = true;
-				return Reflect.apply(setRequestInterception, page, [value]);
-			},
+		once: (type: unknown, handler: unknown): Page => {
+			if (typeof handler !== "function") {
+				Reflect.apply(once, page, [type, handler]);
+				return scoped;
+			}
+			const entry = own(type, handler, (event: unknown): unknown => {
+				drop(type, entry);
+				return Reflect.apply(handler, scoped, [event]);
+			});
+			return scoped;
+		},
+		off: (type: unknown, handler?: unknown): Page => {
+			forget(type, handler);
+			return scoped;
+		},
+		removeAllListeners: (type?: unknown): Page => {
+			if (type !== undefined) forget(type);
+			else {
+				// Map iteration tolerates deletion of the current key by forget().
+				for (const ownedType of owned.keys()) forget(ownedType);
+			}
+			return scoped;
+		},
+	};
+	// Bind forwarded methods to the real page so puppeteer's `#private` fields resolve;
+	// cache per function so `scoped.goto === scoped.goto` holds.
+	const bound = new WeakMap<object, unknown>();
+	const scoped: Page = new Proxy(page, {
+		get(target, prop) {
+			if (typeof prop === "string" && Object.hasOwn(overrides, prop)) return overrides[prop];
+			const value: unknown = Reflect.get(target, prop, target);
+			if (typeof value !== "function") return value;
+			let method = bound.get(value);
+			if (!method) {
+				method = value.bind(target);
+				bound.set(value, method);
+			}
+			return method;
+		},
+		set(target, prop, value) {
+			return Reflect.set(target, prop, value, target);
 		},
 	});
 
 	return {
-		page,
+		page: scoped,
+		enter<T>(fn: () => T): T {
+			return runPageContext.run(owner, fn);
+		},
 		detach() {
-			if (onDescriptor) Object.defineProperty(page, "on", onDescriptor);
+			if (ownOn) Object.defineProperty(page, "on", ownOn);
 			else Reflect.deleteProperty(page, "on");
-			if (offDescriptor) Object.defineProperty(page, "off", offDescriptor);
+			if (ownOff) Object.defineProperty(page, "off", ownOff);
 			else Reflect.deleteProperty(page, "off");
-			if (onceDescriptor) Object.defineProperty(page, "once", onceDescriptor);
-			else Reflect.deleteProperty(page, "once");
-			if (removeAllDescriptor) Object.defineProperty(page, "removeAllListeners", removeAllDescriptor);
-			else Reflect.deleteProperty(page, "removeAllListeners");
-			if (interceptionDescriptor) Object.defineProperty(page, "setRequestInterception", interceptionDescriptor);
-			else Reflect.deleteProperty(page, "setRequestInterception");
-			for (const [type, owned] of handlers) {
-				for (const handler of owned) Reflect.apply(off, page, [type, handler]);
+			for (const [type, entries] of owned) {
+				for (const entry of entries) Reflect.apply(off, page, [type, entry.listener]);
 			}
-			handlers.clear();
+			owned.clear();
 		},
 		async restoreInterception() {
-			if (!interceptionChanged) return;
+			if (!interceptionTouched) return;
 			try {
 				await withTimeout(
 					restoreInterception(),
@@ -1359,6 +1426,8 @@ export class WorkerCore {
 	#uninstallRejectionGuard: () => void;
 	#mode?: WorkerInitPayload["mode"];
 	#activateForScreenshot = true;
+	/** Focus emulation this worker enabled on a tab it hands back to the user on close. */
+	#releaseFocusOnClose = false;
 	#dialogs?: RuntimeDialogController;
 	#network?: BrowserNetworkManager;
 	#initScripts?: InitScriptManager;
@@ -1520,6 +1589,8 @@ export class WorkerCore {
 				// IntersectionObserver, and input acknowledgements. Keep owned tabs
 				// interactive without raising a window; explicit settle-freeze still applies.
 				await this.#page.emulateFocusedPage(true);
+				// Relay tabs keep their debugger attachment after this worker disconnects.
+				this.#releaseFocusOnClose = payload.mode !== "headless";
 			}
 			this.#webmcp = await installWebMcp(this.#page);
 			await installVitalsObservers(this.#page);
@@ -1698,7 +1769,8 @@ export class WorkerCore {
 		try {
 			throwIfAborted(signal);
 			await untilAborted(signal, () => this.#emulation?.reapply() ?? Promise.resolve());
-			runPage = createRunPageScope(this.#requirePage(), () => this.#requireNetwork().restoreInterception());
+			const pageScope = createRunPageScope(this.#requirePage(), () => this.#requireNetwork().restoreInterception());
+			runPage = pageScope;
 			const browser = this.#requireBrowser();
 			const tabApi = this.#createTabApi(msg.name, msg.timeoutMs, signal, msg.session, output, screenshots, active);
 			const runtime = this.#ensureRuntime(msg.session);
@@ -1770,10 +1842,12 @@ export class WorkerCore {
 					onFloatingRejection,
 					async () =>
 						await Promise.race([
-							runtime.run(msg.code, `browser-run-${msg.id}.js`, hooks, {
-								runId: msg.id,
-								cwd: msg.session.cwd,
-							}),
+							pageScope.enter(() =>
+								runtime.run(msg.code, `browser-run-${msg.id}.js`, hooks, {
+									runId: msg.id,
+									cwd: msg.session.cwd,
+								}),
+							),
 							cancelRejection,
 							floatingFailure.promise,
 						]),
@@ -3127,6 +3201,15 @@ export class WorkerCore {
 		this.#uninstallRejectionGuard();
 		this.#clearElementCache();
 		const page = this.#page;
+		if (this.#releaseFocusOnClose && page && !page.isClosed()) {
+			// First, so a slow teardown step (recording finalization) cannot outlast the close
+			// grace and leave the user's tab emulating focus under the relay's lingering attachment.
+			await withTimeout(
+				page.emulateFocusedPage(false),
+				FOCUS_EMULATION_RELEASE_TIMEOUT_MS,
+				"Timed out releasing focus emulation",
+			).catch(() => undefined);
+		}
 		await this.#recording.close().catch(error => {
 			this.#log("warn", "Failed to finalize active browser recording during tab close", {
 				error: error instanceof Error ? error.message : String(error),

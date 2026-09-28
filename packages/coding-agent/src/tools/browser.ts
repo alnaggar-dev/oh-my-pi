@@ -2,6 +2,7 @@ import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { isRecord, logger, untilAborted } from "@oh-my-pi/pi-utils";
 import type { EvalPreludeContext, EvalPreludeDefinition } from "../eval/preludes";
+import { journalJudgmentUsage, resolveJudge } from "../judgment";
 import type { ToolSession } from "../sdk";
 import { enforceInlineByteCap } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { resolveCmuxKind } from "./browser/cmux/rpc";
@@ -20,6 +21,8 @@ import { resolveInitScriptSources } from "./browser/open-options";
 import { resolveRelayKind } from "./browser/relay/kind";
 import { resolveTernKind } from "./browser/tern/kind";
 import { isTernUnavailable } from "./browser/tern/wire";
+import { isBrowserGoalEnabled } from "./browser/goal/enabled";
+import type { GoalReport } from "./browser/goal/loop";
 import type { AriaSnapshotOptions } from "./browser/aria/aria-snapshot";
 import type { ScreenshotResult } from "./browser/tab-protocol";
 import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
@@ -46,6 +49,7 @@ import { clampTimeout } from "./tool-timeouts";
 import {
 	cfgBrowserCdpUrl,
 	cfgBrowserCmux,
+	cfgBrowserGoalMaxSteps,
 	cfgBrowserHeadless,
 	cfgBrowserIdleCloseSec,
 	cfgBrowserRelay,
@@ -91,6 +95,10 @@ export type { Observation, ObservationEntry } from "./browser/tab-protocol";
 
 const DEFAULT_TAB_NAME = "main";
 const BROWSER_RUN_SCOPE: readonly string[] = ["tab", "page", "browser", "wait", "assert"];
+/** Default whole-run timeout in seconds for `action: "goal"`. */
+const GOAL_DEFAULT_TIMEOUT_SEC = 120;
+/** Goal text shown in the status line before truncation. */
+const GOAL_STATUS_CHARS = 40;
 
 const appSchema = type({
 	"path?": type("string").describe("binary path to spawn"),
@@ -107,7 +115,7 @@ const tabCallStepSchema = type({
 });
 
 const browserSchema = type({
-	action: type("'open' | 'close' | 'run' | 'call' | 'tabs'").describe("operation"),
+	action: type("'open' | 'close' | 'run' | 'call' | 'tabs' | 'goal'").describe("operation"),
 	"name?": type("string").describe("tab id (default 'main')"),
 	"url?": type("string").describe("url to open"),
 	"app?": appSchema,
@@ -131,6 +139,8 @@ const browserSchema = type({
 	"fn?": type("string").describe("serialized JavaScript function to run in tab"),
 	"args?": type("unknown[]").describe("arguments passed to a serialized function"),
 	"chain?": tabCallStepSchema.array(),
+	"goal?": type("string").describe("plain-language goal for the fast action loop"),
+	"max_steps?": type("number").describe("action limit for the goal loop"),
 	"timeout?": type("number").describe("timeout in seconds"),
 	"all?": type("boolean").describe("release every managed tab"),
 	"kill?": type("boolean").describe("also kill spawned-app browsers"),
@@ -141,7 +151,7 @@ type BrowserParams = typeof browserSchema.infer;
 
 interface BrowserPreludeDetails {
 	meta?: OutputMeta;
-	action: "open" | "close" | "run" | "call" | "tabs";
+	action: "open" | "close" | "run" | "call" | "tabs" | "goal";
 	name: string;
 	url?: string;
 	browser?: BrowserKindTag;
@@ -266,7 +276,21 @@ function describeBrowserCall(parameters: unknown, result: AgentToolResult<unknow
 			return `${name}.${renderCallChain(parsed.chain ?? [])}`;
 		case "tabs":
 			return "tabs";
+		case "goal":
+			return describeGoalCall(name, parsed.goal ?? "", result);
 	}
+}
+
+/** `main.goal("search one-way flights…") → DONE 12 steps`; the outcome is omitted when there is no report. */
+function describeGoalCall(name: string, goal: string, result: AgentToolResult<unknown>): string {
+	const text = goal.trim().replace(/\s+/g, " ");
+	const shown = text.length > GOAL_STATUS_CHARS ? `${text.slice(0, GOAL_STATUS_CHARS)}…` : text;
+	const call = `${name}.goal(${JSON.stringify(shown)})`;
+	const value = isRecord(result.details) ? result.details.value : undefined;
+	if (!isRecord(value) || typeof value.status !== "string") return call;
+	const reason = typeof value.reason === "string" ? ` ${value.reason}` : "";
+	const count = Array.isArray(value.steps) ? value.steps.length : 0;
+	return `${call} → ${value.status}${reason} ${count} step${count === 1 ? "" : "s"}`;
 }
 
 /** Drop headless tabs so a browser mode change applies to the next open. */
@@ -307,7 +331,8 @@ async function invokeBrowser(
 
 	try {
 		throwIfAborted(context.signal);
-		const timeoutSeconds = clampTimeout("browser", parsed.timeout, cfgToolsMaxTimeout.get(session.settings));
+		const rawTimeout = parsed.action === "goal" ? (parsed.timeout ?? GOAL_DEFAULT_TIMEOUT_SEC) : parsed.timeout;
+		const timeoutSeconds = clampTimeout("browser", rawTimeout, cfgToolsMaxTimeout.get(session.settings));
 		const timeoutMs = timeoutSeconds * 1000;
 		const name = parsed.name ?? DEFAULT_TAB_NAME;
 		const details: BrowserPreludeDetails = { action: parsed.action, name };
@@ -323,6 +348,8 @@ async function invokeBrowser(
 			case "run":
 			case "call":
 				return await runBrowser(session, name, parsed, details, timeoutMs, context.signal);
+			case "goal":
+				return await goalBrowser(session, name, parsed, details, timeoutMs, context.signal);
 		}
 	} catch (error) {
 		if (error instanceof ToolAbortError) throw error;
@@ -594,6 +621,94 @@ async function runBrowser(
 		.done();
 }
 
+/**
+ * Drive an open puppeteer tab toward `params.goal` with the fast judge loop
+ * (`browser/goal/loop.ts`). Returns the compact report as `details.value`; the
+ * full step log, probabilities included, goes to a session artifact only.
+ */
+async function goalBrowser(
+	session: ToolSession,
+	name: string,
+	params: BrowserParams,
+	details: BrowserPreludeDetails,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<AgentToolResult<unknown>> {
+	const goal = params.goal?.trim();
+	if (!goal) throw new ToolError("Action 'goal' requires a non-empty 'goal'.");
+	const maxSteps = params.max_steps ?? cfgBrowserGoalMaxSteps.get(session.settings);
+	if (!Number.isInteger(maxSteps) || maxSteps < 1) {
+		throw new ToolError("Action 'goal' requires 'max_steps' to be a positive integer.");
+	}
+	const registry = session.modelRegistry;
+	if (!registry || !isBrowserGoalEnabled(session)) {
+		throw new ToolError(
+			"tab.goal() is disabled: it needs `browser.goal.enabled` set to auto and a judge role that resolves to a native System One model.",
+		);
+	}
+	const tab = getTab(name);
+	if (!tab || tab.state === "dead") {
+		throw new ToolError(`Tab ${JSON.stringify(name)} is not alive. Open it first with action:"open".`);
+	}
+	if (tab.backend === "cmux") {
+		throw new ToolError(
+			`Tab ${JSON.stringify(name)} is a cmux browser surface; tab.goal() supports puppeteer tabs only.`,
+		);
+	}
+	details.browser = tab.browser.kind.kind;
+	details.url = tab.info.url;
+
+	// First-use boundary, like the prelude assets: the loop and its in-page
+	// snapshot script load only when a goal runs, not at tool registration.
+	const [{ runGoal }, { createTabPageDriver }, { createTextValueFn }] = await Promise.all([
+		import("./browser/goal/loop"),
+		import("./browser/goal/page"),
+		import("./browser/goal/text"),
+	]);
+	const judge = resolveJudge({
+		settings: session.settings,
+		registry,
+		sessionId: session.getSessionId?.() ?? undefined,
+		onUsage: journalJudgmentUsage(session.sessionManager, "browser-goal"),
+	});
+	const page = createTabPageDriver({ name, session });
+	let report: GoalReport;
+	try {
+		report = await runGoal({
+			goal,
+			maxSteps,
+			timeoutMs,
+			signal,
+			judge,
+			page,
+			textValue: createTextValueFn(session),
+		});
+	} finally {
+		await page.release();
+	}
+
+	const logArtifact = await saveBrowserOutputArtifact(
+		session,
+		JSON.stringify(
+			{ goal, status: report.status, reason: report.reason, detail: report.detail, log: report.log },
+			null,
+			2,
+		),
+	);
+	// A run that failed before its first page read has no URL: keep the tab's URL from before the run.
+	if (report.url) details.url = report.url;
+	details.value = {
+		status: report.status,
+		...(report.reason !== undefined && { reason: report.reason }),
+		...(report.detail !== undefined && { detail: report.detail }),
+		steps: report.steps,
+		url: details.url,
+		elapsed_ms: report.elapsed_ms,
+		...(logArtifact !== undefined && { log_artifact: logArtifact }),
+	};
+	return toolResult(details).done();
+}
+
 /** Persist over-cap browser run output as a session artifact; mirrors the bash minimizer's save path. */
 async function saveBrowserOutputArtifact(session: ToolSession, fullText: string): Promise<string | undefined> {
 	try {
@@ -620,8 +735,14 @@ function describeBrowser(handle: BrowserHandle): string {
 			return `spawned ${handle.kind.path} (pid ${handle.pid ?? "?"})`;
 		case "connected":
 			return `connected ${handle.cdpUrl ?? handle.kind.cdpUrl}`;
-		case "relay":
-			return `relay ${handle.cdpUrl ?? handle.kind.cdpUrl}`;
+		case "relay": {
+			const version = handle.relayExtensionVersion;
+			const stale = version !== undefined && !Bun.semver.satisfies(version, ">=0.2.0");
+			const note = stale
+				? " (relay extension predates 0.2.0: tab.goal cannot follow new tabs a page opens; update it with `omp browser-relay install`)"
+				: "";
+			return `relay ${handle.cdpUrl ?? handle.kind.cdpUrl}${note}`;
+		}
 	}
 }
 

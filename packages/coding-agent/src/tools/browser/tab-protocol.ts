@@ -84,7 +84,7 @@ export type WorkerInitPayload =
 			 * previously force-killed the tab). Never set for first-time Electron attach.
 			 */
 			recover?: boolean;
-			/** Restore focus emulation when recycling an OMP-owned tab, never a borrowed user tab. */
+			/** Emulate focus for OMP-owned and relay tabs; never for other borrowed user tabs. */
 			emulateFocus?: boolean;
 			/**
 			 * Whether the worker may raise this tab before capturing a screenshot. Unset
