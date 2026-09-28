@@ -673,7 +673,11 @@ does what I wanted".
   getter), `packages/coding-agent/src/tools/browser/declarations.d.ts`
   (`BrowserGoalOptions`, `BrowserGoalReport`, `BrowserTab.goal`),
   `packages/coding-agent/src/tools/browser/prelude.js` and
-  `packages/coding-agent/src/tools/browser/prelude.py` (`tab.goal`).
+  `packages/coding-agent/src/tools/browser/prelude.py` (`tab.goal`),
+  `packages/coding-agent/src/judgment/index.ts` (only `cachedJudgeRoleChain` keying its
+  1 s chain reuse on `settings.revision` as well as the `Settings` instance; upstream
+  keyed it on the instance alone, so a judge-role switch left `hasNativeJudge` reporting
+  native while the next judge still ran the cached chat model).
 - **Depends on upstream:** The judgment module in
   `packages/coding-agent/src/judgment/index.ts`: `hasNativeJudge` (the judge role
   chain's first candidate is native) gates both the docs and the action, so a change in
@@ -746,7 +750,9 @@ does what I wanted".
     run budget is left, or when the done check's answer is invalid.
   - The JavaScript and Python facades forward `goal`, `max_steps` and `timeout` and
     reject an empty goal.
-- **Check:** `bun test packages/coding-agent/test/tools/browser-goal.test.ts packages/coding-agent/test/tools/browser-goal-page.test.ts packages/coding-agent/test/tools/browser-goal-snapshot.test.ts packages/coding-agent/test/eval/browser-prelude-facade.test.ts`
+  - Right after the judge role changes, the judge a gated feature resolves routes to
+    the same first candidate `hasNativeJudge` just reported, never a cached older chain.
+- **Check:** `bun test packages/coding-agent/test/tools/browser-goal.test.ts packages/coding-agent/test/tools/browser-goal-page.test.ts packages/coding-agent/test/tools/browser-goal-snapshot.test.ts packages/coding-agent/test/eval/browser-prelude-facade.test.ts packages/coding-agent/test/judgment-chain.test.ts`
 
 ### Relay reports each tab's opener and the extension version (extension 0.2.0)
 
