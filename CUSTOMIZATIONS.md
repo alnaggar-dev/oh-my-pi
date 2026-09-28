@@ -737,8 +737,11 @@ does what I wanted".
   - Budgets end the run: `STEP_LIMIT` at `max_steps` actions or twice that many step
     judgments, `TIMEOUT` at the deadline, `ABORTED` on cancel, `BLOCKED no_progress`
     after 4 actions that change nothing.
-  - A `DONE` answer is checked by a done question; a rejected one makes the loop judge
-    again, and a firm second rejection on the same page stops it `BLOCKED`.
+  - A `DONE` answer is checked by a done question; a rejection (probability above 0.5)
+    makes the loop judge again. After two rejections on the same page state, the next
+    `DONE` there stands unchecked, unless either rejection was firm (0.8 or more): then
+    the run stops `BLOCKED judge`. `DONE` also stands unchecked when less than 1 s of the
+    run budget is left, or when the done check's answer is invalid.
   - The JavaScript and Python facades forward `goal`, `max_steps` and `timeout` and
     reject an empty goal.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-goal.test.ts packages/coding-agent/test/tools/browser-goal-page.test.ts packages/coding-agent/test/tools/browser-goal-snapshot.test.ts packages/coding-agent/test/eval/browser-prelude-facade.test.ts`
