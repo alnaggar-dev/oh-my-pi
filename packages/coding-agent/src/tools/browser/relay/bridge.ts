@@ -80,6 +80,8 @@ interface TargetInfo {
 	title: string;
 	url: string;
 	attached: boolean;
+	/** Target id of the opener page; puppeteer's `Target.opener()` resolves it. */
+	openerId?: string;
 	canAccessOpener: boolean;
 }
 
@@ -130,12 +132,14 @@ interface ExtInstance {
 	/** Short code derived from the instance id and browser run; names target ids (`TAB<code>.<tabId>`). */
 	code: string;
 	socket: RelaySocket | null;
+	/** `extensionVersion` is null for extensions that predate reporting it (before 0.2.0). */
 	info: {
 		userAgent: string;
 		browserVersion: string;
 		discardedTabsProtocol?: number;
 		ompVersion?: string;
 		reloadProtocol?: number;
+		extensionVersion: string | null;
 	} | null;
 	/** Chrome extension id from the socket's `Origin`; null when the upgrade carried none. */
 	extensionId: string | null;
@@ -187,6 +191,8 @@ class TabState {
 	pinned: boolean;
 	/** Chrome tab group id from the last snapshot; -1 when ungrouped. */
 	groupId: number;
+	/** Chrome tab id of the tab that opened this one, if Chrome recorded one. */
+	openerTabId: number | undefined;
 	/** Whether `chrome.debugger` is currently attached to this tab. */
 	attached = false;
 	/**
@@ -247,6 +253,7 @@ class TabState {
 		this.windowId = snap.windowId;
 		this.pinned = snap.pinned;
 		this.groupId = snap.groupId;
+		this.openerTabId = snap.openerTabId;
 	}
 
 	update(snap: TabSnapshot): void {
@@ -257,6 +264,7 @@ class TabState {
 		this.windowId = snap.windowId;
 		this.pinned = snap.pinned;
 		this.groupId = snap.groupId;
+		this.openerTabId = snap.openerTabId;
 	}
 }
 
@@ -471,7 +479,10 @@ export class RelayBridge {
 		return this.#conns.size;
 	}
 
-	/** Payload for `GET /json/version`. */
+	/**
+	 * Payload for `GET /json/version`. `OMP-Extension-Version` is the connected extension's
+	 * version, empty for extensions before 0.2.0 (they cannot report tab openers).
+	 */
 	versionInfo(wsUrl: string): Record<string, string | number> {
 		const info = this.#lastHello()?.info;
 		let hasCompatibleExtension = false;
@@ -499,6 +510,7 @@ export class RelayBridge {
 			"User-Agent": ua,
 			"V8-Version": "",
 			"WebKit-Version": "",
+			"OMP-Extension-Version": info?.extensionVersion ?? "",
 			webSocketDebuggerUrl: wsUrl,
 			ompRelayVersion: VERSION,
 			ompRelayDiscardedTabsProtocol: String(DISCARDED_TABS_PROTOCOL_VERSION),
@@ -684,6 +696,7 @@ export class RelayBridge {
 			discardedTabsProtocol: msg.discardedTabsProtocol,
 			ompVersion: typeof msg.ompVersion === "string" ? msg.ompVersion : undefined,
 			reloadProtocol: msg.reloadProtocol,
+			extensionVersion: typeof msg.extensionVersion === "string" ? msg.extensionVersion : null,
 		};
 		this.#lastHelloInstance = instanceId;
 		this.#extensionSeen = true;
@@ -2044,12 +2057,14 @@ export class RelayBridge {
 	}
 
 	#pageInfo(tab: TabState, attached: boolean): TargetInfo {
+		const opener = tab.openerTabId === undefined ? undefined : this.#tabs.get(tabKeyOf(tab.extCode, tab.openerTabId));
 		return {
 			targetId: pageTargetIdFromKey(tab.tabKey),
 			type: "page",
 			title: tab.title,
 			url: tab.url || "about:blank",
 			attached,
+			...(opener && { openerId: pageTargetIdFromKey(opener.tabKey) }),
 			canAccessOpener: false,
 		};
 	}

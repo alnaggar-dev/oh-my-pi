@@ -3,7 +3,9 @@ import type { EvalPreludeDefinition } from "../../eval/preludes";
 import { redactUrlForLog } from "../../mcp/json-rpc";
 import relayGuidance from "../../prompts/system/browser-relay.md" with { type: "text" };
 import browserDescription from "../../prompts/tools/browser.md" with { type: "text" };
+import browserGoalDescription from "../../prompts/tools/browser-goal.md" with { type: "text" };
 import type { ToolSession } from "../../sdk";
+import { isBrowserGoalEnabled } from "./goal/enabled";
 // @ts-expect-error Bun imports this JavaScript source as text instead of evaluating its module shape.
 import browserJavascript from "./prelude.js" with { type: "text" };
 import browserPython from "./prelude.py" with { type: "text" };
@@ -21,7 +23,11 @@ export function createBrowserPreludeDefinition(
 	const fallback = host.relayFallback;
 	return {
 		name: "browser",
-		documentation: browserDescription,
+		get documentation() {
+			return isBrowserGoalEnabled(session)
+				? `${browserDescription}\n\n${browserGoalDescription}`
+				: browserDescription;
+		},
 		guidance: fallback
 			? prompt.render(relayGuidance, {
 					// The block reaches the model provider: never echo userinfo or token params.
