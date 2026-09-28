@@ -9,13 +9,36 @@ import { chromiumAvailable } from "./chromium-probe";
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
 // A shared promise, not a per-request resolver: releasing before Chrome's request reaches /slow still lets it finish.
 const slowRelease = Promise.withResolvers<void>();
+const spinStarted = Promise.withResolvers<void>();
 const server = Bun.serve({
 	port: 0,
 	async fetch(request) {
-		const { pathname } = new URL(request.url);
+		const { pathname, port } = new URL(request.url);
 		if (pathname === "/slow") {
 			await slowRelease.promise;
 			return new Response("slow", { headers: { "content-type": "text/plain" } });
+		}
+		if (pathname === "/busy-frame") {
+			// localhost vs 127.0.0.1 is cross-site, so the frame gets its own renderer.
+			return new Response(
+				`<!doctype html><title>busy frame</title><iframe src="http://localhost:${port}/spin"></iframe>`,
+				{ headers: { "content-type": "text/html" } },
+			);
+		}
+		if (pathname === "/spin") {
+			// A synchronous request is the last thing the frame sends before its renderer stops answering.
+			return new Response(
+				`<!doctype html><script>addEventListener("message", () => { const request = new XMLHttpRequest(); request.open("GET", "/spinning", false); request.send(); for (;;) {} });</script>`,
+				{ headers: { "content-type": "text/html" } },
+			);
+		}
+		if (pathname === "/spinning") {
+			spinStarted.resolve();
+			return new Response("spinning", { headers: { "content-type": "text/plain" } });
+		}
+		if (pathname === "/spin-started") {
+			await spinStarted.promise;
+			return new Response("spinning", { headers: { "content-type": "text/plain" } });
 		}
 		return new Response("<!doctype html><title>listeners fixture</title>", {
 			headers: { "content-type": "text/html" },
@@ -279,5 +302,47 @@ return await tab.evaluate(url => fetch(url).then(response => response.text()), $
 			}),
 		);
 		expect(body).toContain("listeners fixture");
+	}, 30_000);
+
+	test("a run that enables interception through an escaped page and throws does not leave requests held", async () => {
+		const invoke = createHost();
+		await invoke({ action: "open", name: "held", url: `${baseUrl}/` });
+		let setupError = "";
+		try {
+			await invoke({
+				action: "run",
+				name: "held",
+				code: `await page.mainFrame().page().setRequestInterception(true);
+throw new Error("setup failed");`,
+			});
+		} catch (error) {
+			setupError = error instanceof Error ? error.message : String(error);
+		}
+		expect(setupError).toContain("setup failed");
+		const body = valueOf(
+			await invoke({
+				action: "run",
+				name: "held",
+				code: `return await tab.evaluate(url => fetch(url).then(response => response.text()), ${JSON.stringify(`${baseUrl}/`)});`,
+				timeout: 5,
+			}),
+		);
+		expect(body).toContain("listeners fixture");
+	}, 30_000);
+
+	test("runs that never touch interception succeed beside an unresponsive cross-site frame", async () => {
+		const invoke = createHost();
+		await invoke({ action: "open", name: "busy", url: `${baseUrl}/busy-frame` });
+		const spinning = valueOf(
+			await invoke({
+				action: "run",
+				name: "busy",
+				code: `await tab.evaluate(() => { document.querySelector("iframe").contentWindow.postMessage("spin", "*"); });
+return await (await fetch(${JSON.stringify(`${baseUrl}/spin-started`)})).text();`,
+			}),
+		);
+		expect(spinning).toBe("spinning");
+		const title = valueOf(await invoke({ action: "run", name: "busy", code: `return await page.title();` }));
+		expect(title).toBe("busy frame");
 	}, 30_000);
 });

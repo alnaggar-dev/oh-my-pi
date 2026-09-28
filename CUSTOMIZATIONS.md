@@ -600,3 +600,221 @@ does what I wanted".
   - A tab the user detached (not relay-initiated) is banned and retracted until its URL
     changes; if upstream re-attaches it on its own, the bullet's warning is stale.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-relay-bridge.test.ts packages/coding-agent/test/tools/browser-relay-server.test.ts`
+
+### `tab.goal`: a judge-driven loop that finishes a browser task in one call
+
+- **What it does:** `tab.goal(goal, { max_steps, timeout })` in the browser eval
+  prelude (JavaScript and Python) drives an open puppeteer tab toward a plain-language
+  goal. Each step reads the tab's visible, on-screen controls, asks the judge role one
+  question for the next action (click, type, press Enter, select, hover, scroll, wait,
+  done, blocked) and one for the target when several fit, acts, and repeats until the
+  goal is met, the loop is blocked, or the budget runs out. Field values come from a
+  text model (`browser.goal.textModel`, else the `smol` role). A risk question screens
+  every click, select and Enter before input and stops `BLOCKED needs_approval` for a
+  payment, a sent message, a deletion, a publish, or accepting consent. The loop never
+  types passwords, never accepts a `confirm`/`prompt`, and follows an http(s) tab the
+  page opened by loading its URL in the same tab. It returns `{ status, reason?,
+  detail?, steps, url, elapsed_ms, log_artifact? }`; the step log with probabilities
+  goes to a session artifact only. `browser.goal.enabled` (`auto`, `off`) turns it on
+  only when the judge role's first candidate is a native System One model;
+  `browser.goal.maxSteps` (60) is the default step budget and a run defaults to 120 s.
+  The goal docs join the browser prelude docs only while it is enabled. Ported from
+  browser-use's jev-ultrafast under MIT (attribution in `goal/NOTICE`).
+- **Why:** Driving a multi-step form, search or navigation through `tab.run` and
+  direct helpers costs a main-agent turn per action; the loop spends one small judge
+  call per step and hands back only the outcome.
+- **Files:** `packages/coding-agent/src/tools/browser/goal/loop.ts` (`runGoal`,
+  `GoalRun` and its step, stale, no-progress, wait and done-check budgets),
+  `packages/coding-agent/src/tools/browser/goal/questions.ts` (the judgment request
+  builders, hand validation of answers, `RISK_CRITERIA`, `RISK_THRESHOLD`, the consent
+  and ad frame patterns), `packages/coding-agent/src/tools/browser/goal/page.ts`
+  (`createTabPageDriver`, `goalPageOp`, dialog and new-tab detection, following a
+  popup), `packages/coding-agent/src/tools/browser/goal/text.ts` (`createTextValueFn`),
+  `packages/coding-agent/src/tools/browser/goal/enabled.ts` (`isBrowserGoalEnabled`),
+  `packages/coding-agent/src/tools/browser/goal/snapshot.js` (in-page element reader,
+  imported as text), `packages/coding-agent/src/tools/browser/goal/NOTICE`,
+  `packages/coding-agent/src/prompts/tools/browser-goal.md` (agent-facing docs),
+  `packages/coding-agent/src/prompts/tools/browser-goal-next-action.md`,
+  `packages/coding-agent/src/prompts/tools/browser-goal-target.md`,
+  `packages/coding-agent/src/prompts/tools/browser-goal-risk-question.md`,
+  `packages/coding-agent/src/prompts/tools/browser-goal-done-check.md`,
+  `packages/coding-agent/src/prompts/tools/browser-goal-blocked-reason.md`,
+  `packages/coding-agent/src/prompts/tools/browser-goal-text-value.md`,
+  `packages/coding-agent/src/tools/browser.ts` (the `goal` action, the `goal` and
+  `max_steps` schema fields, `GOAL_DEFAULT_TIMEOUT_SEC`, `goalBrowser`,
+  `describeGoalCall`; its relay note in `describeBrowser` is named under the
+  relay-opener entry), `packages/coding-agent/src/tools/browser/settings.ts`
+  (`cfgBrowserGoalEnabled`, `cfgBrowserGoalMaxSteps`, `cfgBrowserGoalTextModel`),
+  `packages/coding-agent/src/tools/browser/prelude-definition.ts` (the `documentation`
+  getter), `packages/coding-agent/src/tools/browser/declarations.d.ts`
+  (`BrowserGoalOptions`, `BrowserGoalReport`, `BrowserTab.goal`),
+  `packages/coding-agent/src/tools/browser/prelude.js` and
+  `packages/coding-agent/src/tools/browser/prelude.py` (`tab.goal`).
+- **Depends on upstream:** The judgment module in
+  `packages/coding-agent/src/judgment/index.ts`: `hasNativeJudge` (the judge role
+  chain's first candidate is native) gates both the docs and the action, so a change in
+  chain order or in `kindOf` hides the feature or runs it on a prompted judge whose
+  probabilities do not fit the loop's fixed thresholds (risk 0.5, done check 0.5 and
+  0.8); `resolveJudge` rethrowing the abort reason, which the loop reports as `TIMEOUT`
+  or `ABORTED`; `journalJudgmentUsage`, which books the judge and the text model under
+  purpose `browser-goal`. The judgment types in `packages/ai/src/judgment/types.ts`
+  (`ChoiceQuestion`, `NoulQuestion` and their `criteria`, `ChoiceAnswer` with `choice`
+  and `probabilities`, `NoulAnswer.noul`), which `questions.ts` validates by hand: a
+  renamed field makes every answer invalid and the run ends `ERROR`. For the text
+  model: `completeSimple`, `retryTransientCompletion`, and `resolveModelRoleValue`,
+  `getModelMatchPreferences` and `resolveRoleSelection` for the `smol` fallback. The
+  page driver: `getTab` and `runInTab` in tab-supervisor (a call while another is
+  pending throws "busy", so `release` waits for the driver's in-flight call);
+  `renderFunctionRun` in `packages/coding-agent/src/tools/run-code.ts`, which ships
+  `goalPageOp` by `toString()` with `tab` and `page` in scope, so the op must stay
+  self-contained; upstream's dialog controller auto-accepting alerts and holding
+  `confirm`/`prompt` open (`packages/coding-agent/src/tools/browser/dialogs.ts`); the
+  puppeteer patch that runs unmarked `page.evaluate` in the isolated world
+  (`patches/puppeteer-core@25.3.0.patch`), which hides the snapshot cache from page
+  scripts and lets a React-controlled select change; puppeteer's `Target.opener()`, the
+  internal `targetdiscovered` event and the private `Target._targetId`, which new-tab
+  detection reads, so a puppeteer upgrade can break it silently. The eval side:
+  `packages/coding-agent/src/eval/preludes.ts` and `packages/coding-agent/src/tools/eval.ts`
+  reading `documentation` off the definition object each time they build the eval
+  description or the `xd://eval/browser` topic (a copy or spread would freeze the
+  getter); `withBridgeTimeoutPause` around prelude calls in `callSessionTool`
+  (`packages/coding-agent/src/eval/js/tool-bridge.ts`), without which a 120 s goal trips
+  the 30 s eval-cell watchdog; `clampTimeout` with the browser cap of 300 s and
+  `tools.maxTimeout`; `saveBrowserOutputArtifact`, `toolResult`, `validateOptions` and
+  `invoke` in `prelude.js`, `_invoke` in `prelude.py` (drops `None`, so omitted budgets
+  fall back to the host defaults); the settings registry.
+  Upstream's worker emulating focus for life on pages omp owns (`#ownsPage` in
+  `WorkerCore`, `packages/coding-agent/src/tools/browser/tab-worker.ts`; `ownsPage` on the
+  supervisor's tab session), so `createTabPageDriver` holds focus itself only on tabs it
+  does not own (borrowed relay, connected, spawned).
+  Fork code it relies on in files other entries own: `createRunPageScope` in `packages/coding-agent/src/tools/browser/tab-worker.ts`
+  (run-listener entry), which keeps `waitForNetworkIdle` working across the loop's
+  back-to-back runs; `openerId` on relay page targets (`#pageInfo` in
+  `packages/coding-agent/src/tools/browser/relay/bridge.ts`, relay-opener entry), which
+  new-tab detection needs on relay tabs; `seedOwnedProfilePreferences` in
+  `packages/coding-agent/src/tools/browser/launch.ts` (password-leak entry), without
+  which a click after a password submit is dropped.
+- **Tripwire paths:** `packages/coding-agent/src/judgment/index.ts`, `packages/ai/src/judgment/types.ts`, `packages/ai/src/judgment/typesafe.ts`, `packages/ai/src/index.ts`, `packages/ai/src/stream.ts`, `packages/ai/src/oneshot-retry.ts`, `packages/coding-agent/src/config/model-resolver.ts`, `packages/coding-agent/src/config/model-registry.ts`, `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/run-code.ts`, `packages/coding-agent/src/tools/browser/dialogs.ts`, `patches/puppeteer-core@25.3.0.patch`, `package.json`, `packages/coding-agent/src/eval/preludes.ts`, `packages/coding-agent/src/tools/eval.ts`, `packages/coding-agent/src/eval/js/tool-bridge.ts`, `packages/coding-agent/src/eval/bridge-timeout.ts`, `packages/coding-agent/src/tools/tool-timeouts.ts`, `packages/coding-agent/src/tools/tool-result.ts`, `packages/coding-agent/src/tools/browser.ts`, `packages/coding-agent/src/tools/browser/prelude.js`, `packages/coding-agent/src/tools/browser/prelude.py`, `packages/coding-agent/src/tools/browser/prelude-definition.ts`, `packages/coding-agent/src/tools/browser/declarations.d.ts`, `packages/coding-agent/src/tools/browser/settings.ts`, `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`
+- **Must still be true:**
+  - With `browser.goal.enabled: auto`, the action and its docs exist only when the judge
+    role's first candidate is native; otherwise the call fails with a "disabled" error
+    and the browser docs do not mention `tab.goal`.
+  - A click, select or Enter the risk question flags stops the run `BLOCKED
+    needs_approval` before any input reaches the page, and the report carries no
+    probabilities.
+  - The loop never types into a password field: a password field it needs, or a value
+    the text model cannot supply, ends the run `BLOCKED needs_value`. A covering consent
+    banner or frame ends it `BLOCKED needs_approval`.
+  - An open `confirm`/`prompt` stops the run `BLOCKED dialog` without accepting it.
+  - A tab the page opened with an http(s) URL is closed and its URL loaded in the named
+    tab; a tab another client opens is ignored.
+  - Disabled controls appear in the element table but are never acted on or offered as
+    targets.
+  - Budgets end the run: `STEP_LIMIT` at `max_steps` actions or twice that many step
+    judgments, `TIMEOUT` at the deadline, `ABORTED` on cancel, `BLOCKED no_progress`
+    after 4 actions that change nothing.
+  - A `DONE` answer is checked by a done question; a rejected one makes the loop judge
+    again, and a firm second rejection on the same page stops it `BLOCKED`.
+  - The JavaScript and Python facades forward `goal`, `max_steps` and `timeout` and
+    reject an empty goal.
+- **Check:** `bun test packages/coding-agent/test/tools/browser-goal.test.ts packages/coding-agent/test/tools/browser-goal-page.test.ts packages/coding-agent/test/tools/browser-goal-snapshot.test.ts packages/coding-agent/test/eval/browser-prelude-facade.test.ts`
+
+### Relay reports each tab's opener and the extension version (extension 0.2.0)
+
+- **What it does:** The relay extension records which tab opened each tab from
+  `chrome.webNavigation.onCreatedNavigationTarget` (not `tab.openerTabId`, which Chrome
+  sets to the window's active tab), holds a new tab's `tabCreated` up to 100 ms for that
+  event, and resends a tab whose opener arrives after it was announced. The relay turns
+  the opener into `openerId` on the page target, so puppeteer's `Target.opener()` works
+  on relay tabs. The extension also reports its manifest version in `hello`; the relay
+  serves it as `OMP-Extension-Version` on `/json/version`, the browser handle reads it,
+  and the relay line of the browser open summary tells the agent to run
+  `omp browser-relay install` when the extension predates 0.2.0. The manifest moves to
+  0.2.0 and gains the `webNavigation` permission (Chrome shows the same "Read your
+  browsing history" warning `tabs` already triggers).
+- **Why:** `tab.goal` spots a popup a click opened, and follows it, through the page
+  target's opener; without it a popup on a relay tab goes unnoticed.
+- **Files:** `packages/browser-relay/extension/background.ts` (`OPENER_WAIT_MS`,
+  `openerTabs`, `pendingCreated`, `flushCreated`, the snapshot's `openerTabId`,
+  `extensionVersion` in `buildHello`, the held `tabs.onCreated` and the `webNavigation`
+  listener), `packages/browser-relay/extension/chrome.d.ts` (`webNavigation`,
+  `runtime.getManifest`), `packages/browser-relay/extension/manifest.json`,
+  `packages/coding-agent/src/tools/browser/relay/extension-assets/background.js.txt`
+  and `packages/coding-agent/src/tools/browser/relay/extension-assets/manifest.json.txt`
+  (generated; after any edit under `packages/browser-relay/extension/` run
+  `bun run --cwd packages/browser-relay build` and commit them, nothing checks they
+  match), `packages/coding-agent/src/tools/browser/relay/protocol.ts`
+  (`TabSnapshot.openerTabId`, hello `extensionVersion`),
+  `packages/coding-agent/src/tools/browser/registry.ts` (`readRelayExtensionVersion`,
+  `PuppeteerBrowserHandle.relayExtensionVersion`).
+- **Depends on upstream:** The bridge copying every snapshot field in `TabState`'s
+  constructor and `update`, and `#onTabUpsert` re-emitting `Target.targetInfoChanged`
+  from `#pageInfo` for an announced tab: if upstream stops re-emitting when url and
+  title are unchanged, a late opener never reaches puppeteer. The target id scheme
+  (`tabKeyOf`, `pageTargetIdFromKey`) and per-instance tab keys, which resolve the
+  opener inside the same browser. `#onHello` and `versionInfo` reading the last-hello
+  instance, so with two browsers connected the version is the last one's. `GET
+  /json/version` in `packages/coding-agent/src/tools/browser/relay/server.ts` returning
+  `versionInfo` when ready and 503 otherwise (then no note). `probeCdpResponse` in
+  `packages/coding-agent/src/tools/browser/attach.ts` returning null instead of
+  throwing, and the relay branch of `openBrowserHandle`. The build script
+  `packages/browser-relay/scripts/build-extension.ts` bundling `background.ts` and
+  copying `manifest.json` verbatim, and `runInstall` in
+  `packages/coding-agent/src/cli/browser-relay-cli.ts` writing the assets as they are
+  (the user still reloads the unpacked extension). `background.ts` type-imports
+  `protocol.ts` across packages. The note's `>=0.2.0` threshold means "reports
+  openers" only while upstream keeps the manifest below 0.2.0; if upstream bumps it
+  for its own reasons, re-check this entry.
+  Fork code it relies on in files other entries own: in
+  `packages/coding-agent/src/tools/browser/relay/bridge.ts` (relay page-tab entry)
+  `TabState.openerTabId`, the `openerId` field `#pageInfo` adds,
+  `ExtInstance.info.extensionVersion` set in `#onHello`, and `OMP-Extension-Version` in
+  `versionInfo`; the relay case of `describeBrowser` in
+  `packages/coding-agent/src/tools/browser.ts` (goal entry), which treats an empty
+  version as stale and an absent one as unknown; the consumer, new-tab detection in
+  `packages/coding-agent/src/tools/browser/goal/page.ts` (goal entry).
+- **Tripwire paths:** `packages/coding-agent/src/tools/browser/relay/bridge.ts`, `packages/coding-agent/src/tools/browser/relay/protocol.ts`, `packages/coding-agent/src/tools/browser/relay/server.ts`, `packages/coding-agent/src/tools/browser/attach.ts`, `packages/coding-agent/src/tools/browser/registry.ts`, `packages/browser-relay/extension/background.ts`, `packages/browser-relay/extension/chrome.d.ts`, `packages/browser-relay/extension/manifest.json`, `packages/browser-relay/scripts/build-extension.ts`, `packages/coding-agent/src/cli/browser-relay-cli.ts`
+- **Must still be true:**
+  - A tab whose snapshot names an opener tab the relay knows is announced with
+    `openerId` set to that tab's page target id, in `Target.targetCreated` and
+    `Target.getTargetInfo`; an unknown or missing opener gives no `openerId`.
+  - An opener that arrives after the tab was announced reaches puppeteer through
+    `Target.targetInfoChanged`.
+  - `/json/version` carries `OMP-Extension-Version`: the extension's version, or empty
+    for an extension that did not report one.
+  - The embedded extension assets are exactly what the relay build script produces.
+  - An extension older than 0.2.0 still drives tabs; only popup following in `tab.goal`
+    is lost, and the relay open summary says how to update.
+- **Check:** `bun test packages/coding-agent/test/tools/browser-relay-bridge.test.ts packages/coding-agent/test/tools/browser-relay-server.test.ts`
+
+### Password leak detection off in OMP-owned Chromium profiles
+
+- **What it does:** Before Chromium starts on a profile OMP owns (the temp profile of an
+  OMP-launched Chromium, and the shared broker browser's persistent profile),
+  `seedOwnedProfilePreferences` sets `profile.password_manager_leak_detection: false` in
+  `Default/Preferences`, keeps every other preference, skips the write when the flag is
+  already off, and replaces the file atomically.
+- **Why:** After a password form submit, leak detection opens a tab-modal "Change your
+  password" dialog; while it is open Chromium drops `Input.dispatchMouseEvent`, so
+  coordinate clicks did nothing, and a hidden browser offers no way to close it.
+- **Files:** `packages/coding-agent/src/tools/browser/launch.ts`
+  (`seedOwnedProfilePreferences` and its call in `launchHeadlessBrowser`),
+  `packages/coding-agent/src/tools/browser/shared-daemon.ts` (the seed call in
+  `ensureSharedBrowser`, logged and ignored on failure).
+- **Depends on upstream:** `launchHeadlessBrowser` creating its own
+  `omp-chrome-profile-*` directory only when no `--user-data-dir` is passed, so a
+  caller's profile is never written; `ensureSharedBrowser` using a stable
+  `<name>.profile` under the daemon runtime dir and reaching the seed only when no live
+  broker Chrome runs on it (Chromium reads `Preferences` only at startup and rewrites
+  it from memory); Chromium's `profile.password_manager_leak_detection` pref and its
+  `Default` profile layout. Relay and connected browsers use the user's own profile and
+  are never seeded.
+- **Tripwire paths:** `packages/coding-agent/src/tools/browser/launch.ts`, `packages/coding-agent/src/tools/browser/shared-daemon.ts`, `packages/coding-agent/src/launch/paths.ts`
+- **Must still be true:**
+  - Every Chromium OMP launches on a profile it owns starts with password leak
+    detection off.
+  - Seeding keeps a reused profile's other preferences and creates the file on a fresh
+    profile.
+  - A profile the caller passes with `--user-data-dir` is never written.
+  - A seeding failure does not stop the shared browser from starting.
+- **Check:** `bun test packages/coding-agent/test/tools/browser-profile-cleanup.test.ts`
