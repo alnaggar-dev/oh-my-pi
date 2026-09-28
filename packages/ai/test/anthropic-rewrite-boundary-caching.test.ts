@@ -267,16 +267,17 @@ describe("anthropic rewrite-boundary caching", () => {
 		expect(countCacheBreakpoints(body)).toBeLessThanOrEqual(4);
 	});
 
-	it("yields the boundary to the trailing breakpoint when the head already spends three", async () => {
-		// OAuth identity block + `<memories>` suffix anchor + tool anchor leave
-		// one message breakpoint, and it stays on the trailing turn.
+	it("keeps the boundary and the trailing turn under the heaviest head", async () => {
+		// OAuth identity block + `<memories>` suffix: the identity breakpoint
+		// moves to the stable-system anchor, so the head spends two (system +
+		// tool) and the boundary still fits beside the trailing turn.
 		const body = await captureWireBody(history(10, new Map([[2, 1_000]])), {
 			apiKey: "sk-ant-oat-test",
 			systemPrompt: ["You are a precise assistant.", "<memories>recalled note</memories>"],
 		});
 
 		expect(countCacheBreakpoints(body)).toBe(4);
-		expect(cachedMessageIndices(body)).toEqual([21]);
+		expect(cachedMessageIndices(body)).toEqual([3, 21]);
 	});
 
 	it("takes the decimation anchor's slot in a long session with two message breakpoints", async () => {

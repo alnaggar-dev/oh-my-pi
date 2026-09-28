@@ -87,7 +87,7 @@ function parseTextValue(reply: string): string | null | undefined {
  * failed ones included, is journaled under the `browser-goal` purpose.
  */
 export function createTextValueFn(session: ToolSession): TextValueFn {
-	const journal = journalJudgmentUsage(session.sessionManager, "browser-goal");
+	const journal = journalJudgmentUsage(session.sessionManager);
 	let model: Promise<Model | undefined> | undefined;
 	return async (context, signal) => {
 		const registry = session.modelRegistry;
@@ -118,6 +118,7 @@ export function createTextValueFn(session: ToolSession): TextValueFn {
 						},
 					);
 					journal?.({
+						purpose: "browser-goal",
 						role: "smol",
 						api: message.api,
 						provider: message.provider,
