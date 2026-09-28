@@ -206,6 +206,85 @@ describe("RelayBridge target discovery", () => {
 		expect(second?.targetInfos.map(info => info.targetId)).toEqual([`PAGE${ANON}.1`]);
 		expect(ext.messages.filter(message => message.t === "rpc")).toEqual([]);
 	});
+
+	it("reports the opener tab's page target as a popup's openerId", async () => {
+		const bridge = new RelayBridge({ group: { title: "omp", color: "cyan" } });
+		const ext = new FakeExtSocket();
+		connect(bridge, ext, [tab({ tabId: 1 })]);
+		const cdp = new FakeCdpSocket();
+		const connId = bridge.cdpConnected(cdp);
+		bridge.cdpMessage(
+			connId,
+			JSON.stringify({ id: 1, method: "Target.setDiscoverTargets", params: { discover: true } }),
+		);
+		await flush();
+		bridge.extMessage(ext, JSON.stringify({ t: "tabCreated", tab: tab({ tabId: 2, openerTabId: 1 }) }));
+		// Opener unknown to the relay (closed, or another browser's tab): no openerId to resolve.
+		bridge.extMessage(ext, JSON.stringify({ t: "tabCreated", tab: tab({ tabId: 3, openerTabId: 99 }) }));
+		const created: Array<{ targetId: string; openerId?: string }> = [];
+		for (const message of cdp.messages) {
+			if (message.method !== "Target.targetCreated") continue;
+			// Bridge-emitted CDP event; shape fixed by the bridge's TargetInfo.
+			const params = message.params as { targetInfo: { targetId: string; openerId?: string } };
+			created.push(params.targetInfo);
+		}
+		expect(created.find(info => info.targetId === `PAGE${ANON}.2`)?.openerId).toBe(`PAGE${ANON}.1`);
+		expect(created.find(info => info.targetId === `PAGE${ANON}.1`)?.openerId).toBeUndefined();
+		expect(created.find(info => info.targetId === `PAGE${ANON}.3`)?.openerId).toBeUndefined();
+		bridge.cdpMessage(
+			connId,
+			JSON.stringify({ id: 2, method: "Target.getTargetInfo", params: { targetId: `PAGE${ANON}.2` } }),
+		);
+		await flush();
+		const info = cdp.messages.find(message => message.id === 2)?.result as
+			| { targetInfo: { openerId?: string } }
+			| undefined;
+		expect(info?.targetInfo.openerId).toBe(`PAGE${ANON}.1`);
+	});
+
+	it("reports an opener that arrives after the tab was announced in targetInfoChanged", async () => {
+		const bridge = new RelayBridge({});
+		const ext = new FakeExtSocket();
+		connect(bridge, ext, [tab({ tabId: 1 })]);
+		const cdp = new FakeCdpSocket();
+		const connId = bridge.cdpConnected(cdp);
+		bridge.cdpMessage(
+			connId,
+			JSON.stringify({ id: 1, method: "Target.setDiscoverTargets", params: { discover: true } }),
+		);
+		await flush();
+		bridge.extMessage(ext, JSON.stringify({ t: "tabCreated", tab: tab({ tabId: 2, url: "" }) }));
+		bridge.extMessage(ext, JSON.stringify({ t: "tabUpdated", tab: tab({ tabId: 2, url: "", openerTabId: 1 }) }));
+		const changed = cdp.messages.findLast(message => {
+			if (message.method !== "Target.targetInfoChanged") return false;
+			const params = message.params as { targetInfo: { targetId: string } };
+			return params.targetInfo.targetId === `PAGE${ANON}.2`;
+		});
+		const params = changed?.params as { targetInfo: { openerId?: string } } | undefined;
+		expect(params?.targetInfo.openerId).toBe(`PAGE${ANON}.1`);
+	});
+
+	it("reports the extension version in /json/version, empty for extensions that predate reporting it", () => {
+		const bridge = new RelayBridge({});
+		const legacy = new FakeExtSocket();
+		connect(bridge, legacy, []);
+		expect(bridge.versionInfo("ws://relay")["OMP-Extension-Version"]).toBe("");
+		const current = new FakeExtSocket();
+		bridge.extConnected(current);
+		bridge.extMessage(
+			current,
+			JSON.stringify({
+				t: "hello",
+				instanceId: "chrome",
+				extensionVersion: "0.2.0",
+				userAgent: "test",
+				browserVersion: "Chrome/151.0.0.0",
+				tabs: [],
+				attachedTabIds: [],
+			}),
+		);
+		expect(bridge.versionInfo("ws://relay")["OMP-Extension-Version"]).toBe("0.2.0");
+	});
 });
 
 describe("RelayBridge tab grouping", () => {

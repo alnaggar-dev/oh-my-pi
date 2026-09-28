@@ -15,11 +15,35 @@ const DEFAULT_PORT = 9224;
 const PING_INTERVAL_MS = 20_000;
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
+/**
+ * How long `tabCreated` waits for the tab's `webNavigation.onCreatedNavigationTarget`.
+ * Chrome fires that event within a millisecond after `tabs.onCreated`, so a popup is
+ * announced with its opener; other tabs are announced at their first update or after this bound.
+ */
+const OPENER_WAIT_MS = 100;
 
 let ws: WebSocket | null = null;
 let reconnectDelay = RECONNECT_MIN_MS;
 let pingTimer: NodeJS.Timeout | null = null;
 const relayInitiatedDetachTabs = new Set<number>();
+/**
+ * Tab that opened each tab, from `webNavigation.onCreatedNavigationTarget`. Not
+ * `tab.openerTabId`: Chrome sets that to the window's active tab, so a popup
+ * from a background tab would name whatever tab the user is looking at.
+ */
+const openerTabs = new Map<number, number>();
+/** New tabs whose `tabCreated` waits for their opener, keyed by tab id. */
+const pendingCreated = new Map<number, { tab: ChromeTab; timer: NodeJS.Timeout }>();
+
+/** Announce a held tab now; no-op once announced. */
+function flushCreated(tabId: number): void {
+	const pending = pendingCreated.get(tabId);
+	if (!pending) return;
+	pendingCreated.delete(tabId);
+	clearTimeout(pending.timer);
+	const snap = snapshot(pending.tab);
+	if (snap) post({ t: "tabCreated", tab: snap });
+}
 
 /**
  * Stable per-install browser identity, persisted in `chrome.storage.local` and
@@ -63,6 +87,7 @@ function snapshot(tab: ChromeTab): TabSnapshot | null {
 		windowId: tab.windowId,
 		pinned: tab.pinned,
 		groupId: tab.groupId,
+		openerTabId: openerTabs.get(tab.id),
 	};
 }
 
@@ -164,6 +189,7 @@ async function buildHello(): Promise<ExtToRelayMessage> {
 	return {
 		t: "hello",
 		instanceId: await ensureInstanceId(),
+		extensionVersion: chrome.runtime.getManifest().version,
 		userAgent: navigator.userAgent,
 		browserVersion: versionMatch?.[0] ?? "Chrome/unknown",
 		discardedTabsProtocol: 1, // Keep in sync with the relay protocol version.
@@ -281,12 +307,17 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 	post({ t: "detached", tabId: source.tabId, reason, relayInitiated });
 });
 
+// Chrome fires `webNavigation.onCreatedNavigationTarget` just after `tabs.onCreated`. The
+// relay reports a popup's opener on the page target it announces, and the goal loop spots a
+// popup from that announcement before the opening click returns, so `tabCreated` waits for it.
 chrome.tabs.onCreated.addListener(tab => {
-	const snap = snapshot(tab);
-	if (snap) post({ t: "tabCreated", tab: snap });
+	const tabId = tab.id;
+	if (tabId === undefined) return;
+	pendingCreated.set(tabId, { tab, timer: setTimeout(() => flushCreated(tabId), OPENER_WAIT_MS) });
 });
 
-chrome.tabs.onUpdated.addListener((_tabId, _changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
+	flushCreated(tabId);
 	const snap = snapshot(tab);
 	if (snap) post({ t: "tabUpdated", tab: snap });
 });
@@ -301,7 +332,26 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
 });
 
 chrome.tabs.onRemoved.addListener(tabId => {
+	clearTimeout(pendingCreated.get(tabId)?.timer);
+	pendingCreated.delete(tabId);
+	openerTabs.delete(tabId);
 	post({ t: "tabRemoved", tabId });
+});
+
+chrome.webNavigation.onCreatedNavigationTarget.addListener(details => {
+	openerTabs.set(details.tabId, details.sourceTabId);
+	if (pendingCreated.has(details.tabId)) {
+		flushCreated(details.tabId);
+		return;
+	}
+	// The tab was already announced without its opener: resend it.
+	chrome.tabs.get(details.tabId).then(
+		tab => {
+			const snap = snapshot(tab);
+			if (snap) post({ t: "tabUpdated", tab: snap });
+		},
+		() => {},
+	);
 });
 
 // ---- lifecycle ----------------------------------------------------------------
