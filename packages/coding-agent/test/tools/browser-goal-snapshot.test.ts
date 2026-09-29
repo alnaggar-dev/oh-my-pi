@@ -36,12 +36,16 @@ async function invoke(parameters: unknown) {
 	return await prelude.invoke(parameters, context);
 }
 
-async function load(body: string): Promise<GoalPage> {
-	const url = `data:text/html,${encodeURIComponent(`<!doctype html><html><head><title>Fixture</title></head><body>${body}</body></html>`)}`;
-	await invoke({ action: "run", name, code: `await page.goto(${JSON.stringify(url)});` });
+async function readPage(): Promise<GoalPage> {
 	const result = await driver.read(undefined, opts);
 	if (result.kind !== "page") throw new Error(`expected a page, got ${JSON.stringify(result)}`);
 	return result.page;
+}
+
+async function load(body: string): Promise<GoalPage> {
+	const url = `data:text/html,${encodeURIComponent(`<!doctype html><html><head><title>Fixture</title></head><body>${body}</body></html>`)}`;
+	await invoke({ action: "run", name, code: `await page.goto(${JSON.stringify(url)});` });
+	return await readPage();
 }
 
 function find(page: GoalPage, label: string, kind: GoalAction["kind"] = "click"): GoalAction[] {
@@ -354,5 +358,103 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser goal snapshot", () => {
 			})) as { details?: Record<string, unknown> };
 			expect(result.details?.value).toBe(href);
 		}
+	});
+
+	it("lists and drives Stencil-style shadow controls (Salla's s-button, s-input, s-select)", async () => {
+		const evaluate = async (code: string): Promise<unknown> => {
+			const result = (await invoke({
+				action: "run",
+				name,
+				code: `return await tab.evaluate(() => ${code});`,
+			})) as { details?: Record<string, unknown> };
+			return result.details?.value;
+		};
+		let page = await load(`
+			<form onsubmit="return false">
+				<label>Snippet name</label>
+				<s-input name="name" placeholder="Enter snippet name"></s-input>
+				<label>Tag</label>
+				<s-select name="tag"></s-select>
+				<s-button>Save</s-button>
+			</form>
+			<div style="height:300vh"></div>
+			<button onclick="document.body.dataset.viewed = '1'">View Snippets</button>
+			<script>
+				const define = (tag, html, setup) => customElements.define(tag, class extends HTMLElement {
+					connectedCallback() {
+						if (this.shadowRoot) return;
+						this.attachShadow({ mode: "open" }).innerHTML = html(this);
+						setup?.(this.shadowRoot);
+					}
+				});
+				define("s-button", () => '<button part="button"><slot></slot></button>', root =>
+					root.querySelector("button").addEventListener("click", () => (document.body.dataset.saved = "1")));
+				define("s-input", () =>
+					'<div class="s-input-wrapper"><input type="text"></div>', root => {
+						const input = root.querySelector("input");
+						input.placeholder = root.host.getAttribute("placeholder");
+						input.name = root.host.getAttribute("name");
+					});
+				define("s-select", () =>
+					'<div class="s-select-wrapper"><select><option value="body">body</option><option value="head">head</option></select></div>',
+					root => root.querySelector("select").addEventListener("change", event =>
+						(document.body.dataset.tag = event.target.value)));
+			</script>`);
+		// Each control once, of the right kind; fields are named by the light-DOM label before their host. The
+		// button's text is slotted straight into the host, where the hit test lands on the host itself.
+		expect(find(page, "Save")).toEqual([expect.objectContaining({ role: "button" })]);
+		expect(labels(page).filter(label => label.includes("Save"))).toEqual(["Save"]);
+		const [field] = find(page, "Snippet name (Enter snippet name)", "fill");
+		expect(field).toBeDefined();
+		expect(page.actions.filter(candidate => candidate.kind === "fill")).toEqual([field]);
+		expect(page.actions.filter(candidate => candidate.kind === "select").map(candidate => candidate.label)).toEqual([
+			"Tag → head",
+		]);
+		expect(labels(page)).not.toContain("View Snippets");
+
+		// Two reads of an unchanged page carry the same freshness state.
+		const again = await driver.read(undefined, opts);
+		expect(again.kind === "page" && [again.page.marker, again.page.page_key, again.page.guards]).toEqual([
+			page.marker,
+			page.page_key,
+			page.guards,
+		]);
+		expect(await driver.isFresh(page, opts)).toBe(true);
+
+		// Fill types into the inner input (focus reaches it through the shadow root).
+		expect(await driver.act({ action: field, page, text: "Header tracking" }, opts)).toMatchObject({
+			status: "done",
+		});
+		expect(await evaluate(`document.querySelector("s-input").shadowRoot.querySelector("input").value`)).toBe(
+			"Header tracking",
+		);
+
+		// Select sets the inner select and fires its change.
+		page = await readPage();
+		const [picked] = find(page, "Tag → head", "select");
+		expect(await driver.act({ action: picked, page }, opts)).toMatchObject({ status: "done" });
+		expect(
+			await evaluate(
+				`[document.querySelector("s-select").shadowRoot.querySelector("select").value, document.body.dataset.tag]`,
+			),
+		).toEqual(["head", "head"]);
+
+		// A click on the slotted text reaches the shadow button.
+		page = await readPage();
+		const [button] = find(page, "Save");
+		expect(await driver.act({ action: button, page }, opts)).toMatchObject({ status: "done" });
+		expect(await evaluate(`document.body.dataset.saved`)).toBe("1");
+
+		// Below the fold: scrolling brings the button into the listing, and clicking it works.
+		for (let i = 0; i < 5 && !find(page, "View Snippets").length; i++) {
+			const scroll = page.actions.find(candidate => candidate.id === "scroll_down");
+			expect(scroll).toBeDefined();
+			expect(await driver.act({ action: scroll as GoalAction, page }, opts)).toMatchObject({ status: "done" });
+			page = await readPage();
+		}
+		const [view] = find(page, "View Snippets");
+		expect(view).toBeDefined();
+		expect(await driver.act({ action: view, page }, opts)).toMatchObject({ status: "done" });
+		expect(await evaluate(`document.body.dataset.viewed`)).toBe("1");
 	});
 });
