@@ -618,7 +618,11 @@ does what I wanted".
   goes to a session artifact only. `browser.goal.enabled` (`auto`, `off`) turns it on
   only when the judge role's first candidate is a native System One model;
   `browser.goal.maxSteps` (60) is the default step budget and a run defaults to 120 s.
-  The goal docs join the browser prelude docs only while it is enabled. Ported from
+  The goal docs join the browser prelude docs only while it is enabled. The element
+  reader walks out of shadow roots through their hosts when naming a control from the
+  label or heading before it, and a point on text slotted straight into a custom
+  element (`<s-button>Save</s-button>`) hits that element's slot, so Stencil-style
+  controls such as Salla Portal's are listed and clicked. Ported from
   browser-use's jev-ultrafast under MIT (attribution in `goal/NOTICE`).
 - **Why:** Driving a multi-step form, search or navigation through `tab.run` and
   direct helpers costs a main-agent turn per action; the loop spends one small judge
@@ -716,6 +720,10 @@ does what I wanted".
     tab; a tab another client opens is ignored.
   - Disabled controls appear in the element table but are never acted on or offered as
     targets.
+  - Controls inside open shadow roots are listed, named from a label before their
+    host, and driven: a click on text slotted straight into a custom element lands on
+    the inner button, a fill reaches the inner input, and a select changes the inner
+    select.
   - Budgets end the run: `STEP_LIMIT` at `max_steps` actions or twice that many step
     judgments, `TIMEOUT` at the deadline, `ABORTED` on cancel, `BLOCKED no_progress`
     after 4 actions that change nothing.
@@ -808,12 +816,10 @@ does what I wanted".
   keeps its debugger attached to the user's tab after the worker disconnects.
 - **Why:** Chrome drops typed text and stalls `requestAnimationFrame` in a background
   tab, so typing into a relay tab that was not the active Chrome tab silently lost input.
-- **Files:** `packages/coding-agent/src/tools/browser/tab-supervisor.ts`
-  (`emulateFocus` in `buildInitPayload`'s attach payload and the relay case in
-  `recycleTimedOutWorkerTab`), `packages/coding-agent/src/tools/browser/tab-protocol.ts`
-  (the `emulateFocus` doc comment only),
-  `packages/coding-agent/src/tools/browser/tab-worker.ts` (`#releaseFocusOnClose`,
-  `FOCUS_EMULATION_RELEASE_TIMEOUT_MS` and the release at the start of `#close`).
+- **Files:** `packages/coding-agent/src/tools/browser/tab-worker.ts`
+  (`#releaseFocusOnClose`, `FOCUS_EMULATION_RELEASE_TIMEOUT_MS` and the release at the
+  start of `#close`), `packages/coding-agent/src/tools/browser/tab-protocol.ts` (the
+  `emulateFocus` doc comment only).
 - **Depends on upstream:** The worker enabling focus emulation at init when the payload
   is headless or sets `emulateFocus` (`WorkerCore` in
   `packages/coding-agent/src/tools/browser/tab-worker.ts`); the supervisor's 750 ms close
@@ -821,6 +827,10 @@ does what I wanted".
   tabs being tagged `"relay"` (`browser.kind.kind`, `kindTag`); connected, non-relay
   user tabs never being focus-emulated. The goal loop's page driver skips its own focus
   hold on relay tabs because of this entry.
+  Fork code it relies on in a file another entry owns: `emulateFocus` in
+  `buildInitPayload`'s attach payload and the relay case in `recycleTimedOutWorkerTab`,
+  in `packages/coding-agent/src/tools/browser/tab-supervisor.ts` (crashed-tab-worker
+  entry).
 - **Tripwire paths:** `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/browser/tab-protocol.ts`
 - **Must still be true:**
   - A relay tab emulates focus from attach until its worker closes, including after a
@@ -832,6 +842,36 @@ does what I wanted".
   (worker init and background-tab input on headless Chromium; the relay path needs a
   live extension and has no automated test).
 
+### Crashed tab workers
+
+- **What it does:** After init, the supervisor watches each tab's worker: when it
+  exits on its own (uncaught error, unhandled rejection), or a send throws
+  `InvalidStateError`, the tab is force-killed, so pending runs fail at once, the tab
+  leaves `browser.tabs()`, and the next call says `Tab "x" was killed: … Reopen it.`
+  The worker's last error is logged at warn level. Upstream now carries the off-screen
+  `text/` click fix this entry used to hold (`4282a60275`, which took over #14864).
+- **Why:** A tab whose worker had died stayed listed as open and failed every call with
+  "Worker has been terminated" until it was closed and reopened by hand.
+- **Files:** `packages/coding-agent/src/tools/browser/tab-supervisor.ts`
+  (`WorkerHandle.onExit`, the `terminated` flag and `close` listener in `wrapBunWorker`,
+  the no-op `onExit` of the inline worker, `attachTabWorker` at the acquire and both
+  recycle sites, the `InvalidStateError` branch around the `run` send, and the
+  already-dead early return in `forceKillTab`; the file's focus hunks are named under
+  the relay-focus entry's **Depends on upstream**).
+- **Depends on upstream:** Bun Workers firing `error` then `close` on an uncaught error
+  or unhandled rejection and `postMessage` throwing `InvalidStateError` afterwards
+  (checked on Bun 1.3.14); `installBrowserWorkerRejectionGuard` in
+  `packages/coding-agent/src/tools/run-scope.ts` rethrowing unowned rejections, which is
+  what kills a worker; `forceKillTab`, `killedTabs` and the "was killed" message in
+  `runInTabWithSnapshot`; `safeSend` staying log-only, because an aborted run's own
+  error must win over a kill.
+- **Tripwire paths:** `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/browser/tab-worker-entry.ts`, `packages/coding-agent/src/tools/run-scope.ts`, `package.json`
+- **Must still be true:**
+  - A worker that dies after init kills its tab: the next run rejects with the
+    "was killed … Reopen it." error, not "Worker has been terminated", and the tab is
+    gone from the tab list.
+  - Release, recycle and force-kill terminations are never reported as crashes.
+- **Check:** `bun test packages/coding-agent/test/tools/browser-worker-exit.test.ts packages/coding-agent/test/tools/browser-tab-worker-startup.test.ts packages/coding-agent/test/tools/browser-freeze-settle.test.ts`
 ### Password leak detection off in OMP-owned Chromium profiles
 
 - **What it does:** Before Chromium starts on a profile OMP owns (the temp profile of an

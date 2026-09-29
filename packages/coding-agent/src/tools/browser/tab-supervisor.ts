@@ -61,6 +61,8 @@ interface WorkerHandle {
 	send(msg: WorkerInbound, transferList?: Transferable[]): void;
 	onMessage(handler: (msg: WorkerOutbound) => void): () => void;
 	onError(handler: (error: Error) => void): () => void;
+	/** Fires when the worker exits on its own (crash, `process.exit`); never for `terminate()`. */
+	onExit(handler: (exitCode: number) => void): () => void;
 	terminate(): Promise<void>;
 	readonly mode: "worker" | "inline";
 }
@@ -568,7 +570,7 @@ async function acquireTabImpl(
 		frozen: false,
 		uploadDir: initPayload.uploadDir,
 	};
-	worker.onMessage(msg => handleTabMessage(tab, msg));
+	attachTabWorker(tab, worker);
 	tabs.set(name, tab);
 	sweepClosedTabUploads();
 	// Durably record ownership so another live omp process can reap this page if
@@ -940,14 +942,24 @@ async function runInTabWithSnapshot(
 	if (opts.signal?.aborted) abort();
 	else opts.signal?.addEventListener("abort", abort, { once: true });
 	try {
-		tab.worker.send({
-			type: "run",
-			id,
-			name,
-			code: opts.code,
-			timeoutMs: opts.timeoutMs,
-			session: snapshot,
-		});
+		try {
+			tab.worker.send({
+				type: "run",
+				id,
+				name,
+				code: opts.code,
+				timeoutMs: opts.timeoutMs,
+				session: snapshot,
+			});
+		} catch (error) {
+			// A worker that died before its exit event reached us (Bun throws an
+			// `InvalidStateError` DOMException): fail with the kill path's reopen
+			// hint instead of the raw `postMessage` error.
+			if (!(error instanceof DOMException && error.name === "InvalidStateError")) throw error;
+			const reason = "Browser tab worker exited unexpectedly; tab killed";
+			await forceKillTab(name, reason);
+			throw new ToolError(`Tab ${JSON.stringify(name)} was killed: ${reason}. Reopen it.`);
+		}
 		try {
 			const result = await raceWithTimeout(
 				promise,
@@ -1744,6 +1756,40 @@ function safeSend(tab: WorkerTabSession, msg: WorkerInbound): void {
 	}
 }
 
+/**
+ * Route a live tab's worker traffic to the supervisor and turn an unexpected
+ * worker exit (uncaught error, unhandled rejection, `process.exit`) into the
+ * force-kill path: pending runs reject now, the tab leaves the live list, and
+ * the next call reports the kill instead of `Worker has been terminated`.
+ * Supervisor-initiated `terminate()` never fires `onExit`, and the identity
+ * checks ignore a worker a recycle already replaced.
+ */
+function attachTabWorker(tab: WorkerTabSession, worker: WorkerHandle): void {
+	worker.onMessage(msg => handleTabMessage(tab, msg));
+	let lastError: Error | undefined;
+	worker.onError(error => {
+		lastError = error;
+		logger.warn("Browser tab worker error", { name: tab.name, error: error.message, stack: error.stack });
+	});
+	worker.onExit(exitCode => {
+		if (tabs.get(tab.name) !== tab || tab.worker !== worker || tab.state !== "alive") return;
+		// Bun's ErrorEvent message embeds a source excerpt; keep only its `error: …` line.
+		const cause = lastError && (/^error: (.+)$/m.exec(lastError.message)?.[1] ?? lastError.message.split("\n", 1)[0]);
+		const reason = `Browser tab worker exited unexpectedly (exit code ${exitCode}${cause ? `, ${cause}` : ""}); tab killed`;
+		logger.warn("Browser tab worker exited unexpectedly; killing tab", {
+			name: tab.name,
+			exitCode,
+			error: lastError?.message,
+		});
+		forceKillTab(tab.name, reason).catch(error => {
+			logger.warn("Failed to clean up browser tab after its worker exited", {
+				name: tab.name,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+	});
+}
+
 /** Resolves `false` when the tab was closed while its new worker started; the new worker is then discarded. */
 async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number): Promise<boolean> {
 	// Same deadline carry-over as acquireTabImpl: the inline-fallback retry
@@ -1779,7 +1825,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 		tab.info = info;
 		tab.state = "alive";
 		tab.reattached = true;
-		replacement.onMessage(msg => handleTabMessage(tab, msg));
+		attachTabWorker(tab, replacement);
 		return true;
 	};
 	let worker = await spawnTabWorker();
@@ -1811,7 +1857,8 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 
 async function forceKillTab(name: string, reason: string): Promise<void> {
 	const tab = tabs.get(name);
-	if (!tab) return;
+	// Already torn down by a racing kill: a second pass would release the browser hold twice.
+	if (!tab || tab.state === "dead") return;
 	// A release already owns this tab's teardown. Joining it keeps one worker
 	// termination, one browser-hold release, and one ownership decision — the
 	// racing pair otherwise released the shared browser's hold twice and let the
@@ -2048,6 +2095,7 @@ async function spawnTabWorker(): Promise<WorkerHandle> {
 }
 
 function wrapBunWorker(worker: Worker): WorkerHandle {
+	let terminated = false;
 	return {
 		mode: "worker",
 		send(msg, transferList) {
@@ -2069,7 +2117,15 @@ function wrapBunWorker(worker: Worker): WorkerHandle {
 				worker.removeEventListener("messageerror", onMessageError);
 			};
 		},
+		onExit(handler) {
+			const onClose = (event: Event): void => {
+				if (!terminated) handler((event as CloseEvent).code);
+			};
+			worker.addEventListener("close", onClose);
+			return () => worker.removeEventListener("close", onClose);
+		},
 		async terminate() {
+			terminated = true;
 			worker.terminate();
 		},
 	};
@@ -2108,6 +2164,7 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 			return () => hostListeners.delete(handler);
 		},
 		onError: () => () => {},
+		onExit: () => () => {},
 		async terminate() {},
 	};
 }
