@@ -6,8 +6,9 @@
 // omp additions: the read also returns `frames`, `password_fields` (empty ones; a filled password field
 // is listed as "<name> (filled)" without its value), `scroll.viewport`, and `headings` (visible document
 // headings, on- and off-screen, capped at 150, kept out of `marker` and `page_key`); scroll
-// pseudo-actions move 90% of the viewport instead of a fixed 560 px. Reads cover every open shadow root.
-// `__ompGoal.hit(e)` hit-tests an element (a styled facade over a native select or range input counts
+// pseudo-actions move 90% of the viewport instead of a fixed 560 px. Reads cover every open shadow root;
+// labels and headings name a shadow control across its hosts, and text slotted straight into a host hits
+// its slot. `__ompGoal.hit(e)` hit-tests an element (a styled facade over a native select or range input counts
 // as the element); covered controls are dropped unless they sit inside a visible dialog that is itself
 // on top, and transparent controls stay when they are on top. Controls count as on screen when enough of
 // their box shows; an element with an empty box uses its first visible descendant's. A visually hidden
@@ -124,12 +125,18 @@
 		return "";
 	};
 	// The last visible match before the control inside its nearest containers (the body only for headings).
+	// omp: the walk leaves shadow roots through their hosts, where the control stands in the outer tree.
 	const preceding = (e, sel, depth, body, read = textOf) => {
-		for (let p = e.parentElement; p && (body || p !== document.body) && depth-- > 0; p = p.parentElement) {
+		for (
+			let c = e, p = e.parentElement || e.getRootNode().host;
+			p && (body || p !== document.body) && depth-- > 0;
+			p = p.parentElement || p.getRootNode().host
+		) {
+			while (c.getRootNode() !== p.getRootNode()) c = c.getRootNode().host;
 			let best = null;
 			for (const l of p.querySelectorAll(sel)) {
-				if (!(l.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
-				if (!l.contains(e) && !(l.control && l.control !== e) && l.checkVisibility()) best = l;
+				if (!(l.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
+				if (!l.contains(c) && !(l.control && l.control !== e) && l.checkVisibility()) best = l;
 			}
 			const text = best ? clip(read(best)) : "";
 			if (text) return text;
@@ -320,11 +327,20 @@
 			scope?.innerText?.slice(0, 6000) || "",
 		];
 	};
-	// omp: the deepest element at a viewport point, found through open shadow roots.
+	// omp: the deepest element at a viewport point, found through open shadow roots. A point on text slotted
+	// straight into a host (`<s-button>Save</s-button>`) hits the host; the text's slot is what shows there.
 	const at = (x, y) => {
 		let target = document.elementFromPoint(x, y);
 		for (let inner; target?.shadowRoot && (inner = target.shadowRoot.elementFromPoint(x, y)) && inner !== target;)
 			target = inner;
+		if (target?.shadowRoot)
+			for (const n of target.childNodes) {
+				if (n.nodeType !== 3 || !n.assignedSlot) continue;
+				const text = document.createRange();
+				text.selectNodeContents(n);
+				for (const r of text.getClientRects())
+					if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return n.assignedSlot;
+			}
 		return target;
 	};
 	// omp: whether `n` is `root` or inside it along the flat tree.
