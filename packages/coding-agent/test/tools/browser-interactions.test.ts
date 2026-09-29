@@ -12,6 +12,7 @@ import { chromiumAvailable } from "./chromium-probe";
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
 const TAB_NAME = `interactions-${crypto.randomUUID()}`;
 const STARVED_TAB_NAME = `starved-${crypto.randomUUID()}`;
+const TEXT_TAB_NAME = `text-click-${crypto.randomUUID()}`;
 let tempDir = "";
 let uploadPath = "";
 
@@ -155,6 +156,7 @@ return { during, after };`,
 		const session = makeSession();
 		const prelude = createBrowserPrelude(session);
 		const starvedHtml = `<!doctype html><input id="q" value="stale"><div id="editable" contenteditable>stale</div>
+<button id="top" onclick="this.dataset.clicked=1">Top level</button>
 <iframe id="inner" srcdoc='<!doctype html><input id="deep" value="stale"><button id="go" onclick="this.dataset.clicked=1">Go</button>'></iframe>`;
 		const context = { session, toolCallId: "browser-starved" };
 		await prelude.invoke(
@@ -174,24 +176,78 @@ const inner = await tab.frame("#inner");
 await inner.fill("#deep", "nested");
 await tab.fill("#editable", "replaced");
 await inner.click("#go");
+await tab.click("text/Top level");
 return {
 	page: await tab.value("#q"),
 	frame: await inner.value("#deep"),
 	editable: await tab.text("#editable"),
 	clicked: await inner.attr("#go", "data-clicked"),
+	textClicked: await tab.attr("#top", "data-clicked"),
 };`,
 					timeout: 25,
 				},
 				context,
 			);
-			expect(valueFrom<{ page: string; frame: string; editable: string; clicked: string }>(result)).toEqual({
+			expect(
+				valueFrom<{ page: string; frame: string; editable: string; clicked: string; textClicked: string }>(result),
+			).toEqual({
 				page: "typed",
 				frame: "nested",
 				editable: "replaced",
 				clicked: "1",
+				textClicked: "1",
 			});
 		} finally {
 			await prelude.invoke({ action: "close", name: STARVED_TAB_NAME, kill: true }, context).catch(() => undefined);
+		}
+	}, 40_000);
+
+	test("scrolls below-the-fold text matches into view and clicks shadow-DOM buttons", async () => {
+		const session = makeSession();
+		const prelude = createBrowserPrelude(session);
+		const context = { session, toolCallId: "browser-text-click" };
+		const textHtml = `<!doctype html>
+<div style="height: 4000px">Tall content</div>
+<button id="snippets" onclick="window.clicks.snippets++">View Snippets</button>
+<div style="height: 2000px"></div>
+<s-button id="save"></s-button>
+<script>
+window.clicks = { snippets: 0, save: 0 };
+customElements.define("s-button", class extends HTMLElement {
+  constructor() {
+    super();
+    const root = this.attachShadow({ mode: "open" });
+    root.innerHTML = '<button id="inner-save">Save</button>';
+    root.querySelector("button").addEventListener("click", () => window.clicks.save++);
+  }
+});
+</script>`;
+		await prelude.invoke(
+			{ action: "open", name: TEXT_TAB_NAME, url: `data:text/html,${encodeURIComponent(textHtml)}` },
+			context,
+		);
+		try {
+			const result = await prelude.invoke(
+				{
+					action: "run",
+					name: TEXT_TAB_NAME,
+					code: `await tab.click("text/View Snippets");
+const afterSnippets = await tab.evaluate(() => ({ ...window.clicks }));
+await tab.evaluate(() => window.scrollTo(0, 0));
+await tab.click("text/Save");
+await tab.evaluate(() => window.scrollTo(0, 0));
+await tab.click("pierce/#inner-save");
+return { afterSnippets, final: await tab.evaluate(() => window.clicks) };`,
+					timeout: 30,
+				},
+				context,
+			);
+			expect(valueFrom<unknown>(result)).toEqual({
+				afterSnippets: { snippets: 1, save: 0 },
+				final: { snippets: 1, save: 2 },
+			});
+		} finally {
+			await prelude.invoke({ action: "close", name: TEXT_TAB_NAME, kill: true }, context).catch(() => undefined);
 		}
 	}, 40_000);
 });
