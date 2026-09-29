@@ -650,9 +650,9 @@ async function goalBrowser(
 	if (!tab || tab.state === "dead") {
 		throw new ToolError(`Tab ${JSON.stringify(name)} is not alive. Open it first with action:"open".`);
 	}
-	if (tab.backend === "cmux") {
+	if (tab.backend !== "worker") {
 		throw new ToolError(
-			`Tab ${JSON.stringify(name)} is a cmux browser surface; tab.goal() supports puppeteer tabs only.`,
+			`Tab ${JSON.stringify(name)} is a ${tab.backend} browser surface; tab.goal() supports puppeteer tabs only.`,
 		);
 	}
 	details.browser = tab.browser.kind.kind;
