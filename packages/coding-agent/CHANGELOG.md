@@ -672,6 +672,9 @@
 - Fixed the alt+p / `/switch` model picker taking seconds to appear: it rebuilt the whole model catalog on every open before painting, and now re-reads it only when startup discovery is still landing or models.yml changed
 - Fixed `tool_call` `additionalContext` being delivered more than once when several extension or hook handlers on the same call returned identical text ([#13633](https://github.com/can1357/oh-my-pi/pull/13633) by [@andrebrait](https://github.com/andrebrait))
 - Fixed hosted OpenAI web search on hosts that accept only string tool_choice values, such as Command Code ([#13666](https://github.com/can1357/oh-my-pi/pull/13666) by [@riicodespretty](https://github.com/riicodespretty))
+- Fixed browser `tab.click("text/…")` timing out on matches below the fold or on background tabs; it now scrolls the match into view and clicks it
+- Fixed a browser tab whose worker crashed staying listed as open and failing every call with "Worker has been terminated"; the tab is now closed and the next call says to reopen it
+- Fixed `tab.goal` skipping buttons whose text sits directly in a shadow-DOM custom element (such as Salla's `s-button`), and naming shadow-DOM fields from the label before them
 
 ### Removed
 
