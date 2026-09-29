@@ -458,8 +458,9 @@ does what I wanted".
 - **Why:** With several advisors there was no way to see at a glance how many were
   running, which one was close to compaction, or whether the advisors were hitting
   cache; the model segment's eye badge only shows status.
-- **Files:** `packages/tui/src/status-line/segments.ts` (`advisorSegment`,
-  `advisorBadgeColor`, which the model segment's badge now also calls, and the
+- **Files:** `packages/tui/src/status-line/segments.ts` (`advisorSegment` with its ANSI
+  `render` and native `describe`, `advisorBadgeColor`, which upstream's
+  `modelAdvisorBadge` now also calls, and the
   `advisor` row in `SEGMENTS`), `packages/tui/src/status-line/schema.ts` (the `advisor`
   id), `packages/tui/src/status-line/presets.ts` (`advisor` in the `full` preset),
   `packages/tui/src/status-line/types.ts` (`StatusLineSegmentOptions.advisor`),
@@ -503,8 +504,8 @@ does what I wanted".
     transcripts; a turn recorded while the restore scan runs is counted exactly once.
   - The status line never walks advisor transcripts on a render frame whose inputs did
     not change.
-  - The model segment's eye badge colors are unchanged: error, then warning, then
-    success, else dim.
+  - The model segment's eye badge colors are unchanged in both the ANSI render and the
+    native describe: error, then warning, then success, else dim.
 - **Check:** `bun test packages/tui/test/status-line-advisor.test.ts packages/coding-agent/test/advisor-toggle.test.ts`
 
 ## Accounts
@@ -758,6 +759,8 @@ does what I wanted".
     run budget is left, or when the done check's answer is invalid.
   - The JavaScript and Python facades forward `goal`, `max_steps` and `timeout` and
     reject an empty goal.
+  - A goal on a tab that is not a puppeteer worker tab (cmux, Tern) fails at once with
+    a "supports puppeteer tabs only" error instead of running the loop.
   - Right after the judge role changes, the judge a gated feature resolves routes to
     the same first candidate `hasNativeJudge` just reported, never a cached older chain.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-goal.test.ts packages/coding-agent/test/tools/browser-goal-page.test.ts packages/coding-agent/test/tools/browser-goal-snapshot.test.ts packages/coding-agent/test/eval/browser-prelude-facade.test.ts packages/coding-agent/test/judgment-chain.test.ts`
