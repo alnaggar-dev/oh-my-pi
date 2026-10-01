@@ -532,7 +532,7 @@ does what I wanted".
   upstream's default.
 - **Files:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`.
 - **Depends on upstream:** `compareUsageRankedCandidatePriority` in `auth/rank.ts` and its
-  order of checks (blocked, plan priority, reserve, priority boost, hot 5h guard,
+  order of checks (blocked, plan priority, allowance spent, reserve, priority boost, hot 5h guard,
   measured-first, per-account policy priority) — the new rule is inserted after the
   account-policy priority and before required drain; the `UsageRankedCandidate` shape
   built in both `#rankOAuthSelections` and `#rankApiKeySelections` of
