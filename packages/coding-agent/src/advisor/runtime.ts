@@ -16,6 +16,7 @@ import {
 } from "../session/session-history-format";
 import { ADVISOR_RENDER_OPTIONS, renderAdvisorDeltaChunks } from "./delta-split";
 import { fingerprintMessage } from "./message-fingerprint";
+
 /**
  * Minimal slice of `Agent` the runtime drives — satisfied by pi-agent-core
  * `Agent`. `state.error` mirrors `Agent.state.error`: provider/stream failures

@@ -718,7 +718,6 @@
 - Unified terminal OAuth flow logic across `omp login` and `omp auth-broker login`
 - Included identity account/organization info in terminal login success messages
 - Changed judgment fallback to consider only native candidates, preventing prompted models from replacing failed natives
-- An unrecognized `advisor.reviewOn` value (for example a typo in a hand-edited config) now explicitly reviews every step, like the `step` default.
 
 ### Fixed
 
@@ -970,7 +969,6 @@
 
 - Type `^` to tag a model for delegation, with atomic display-name chips and session-persisted `m1`, `m2`, … agents available to task and eval.
 - Provider login and setup support masked secret prompts; RPC rejects secret prompts rather than requesting ordinary input.
-- Added the `advisor.reviewOn`, `advisor.includeThinking`, and `advisor.projectContext` settings to control advisor token spend. `advisor.reviewOn` defaults to `step` (today's behavior: one review per primary agent-loop step); `mutation` skips a mid-turn step only when every tool call since the last review is review-exempt — the read-tier tools minus `retain`, `memory_edit`, `checkpoint`, and `rewind`, so any unrecognized or mutating tool still triggers a review; `turn` reviews only the terminal boundary. The terminal boundary is always reviewed and skipped content is never dropped. `advisor.includeThinking: false` omits primary reasoning from the advisor delta, and `advisor.projectContext: false` omits the discovered `<project-context>` block from the advisor system prompt.
 
 ### Changed
 
