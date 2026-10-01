@@ -7,7 +7,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import {
 	cfgAdvisorIncludeThinking,
 	cfgAdvisorProjectContext,
-	cfgAdvisorReviewOn,
+	cfgAdvisorReviewMode,
 } from "@oh-my-pi/pi-coding-agent/advisor/settings";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -61,7 +61,7 @@ describe("advisor live request settings", () => {
 		// higher-priority overrides supplied to Settings.isolated.
 		cfgAdvisorIncludeThinking.set(settings, true);
 		cfgAdvisorProjectContext.set(settings, true);
-		cfgAdvisorReviewOn.set(settings, "turn");
+		cfgAdvisorReviewMode.set(settings, "agent-end");
 		const live = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",
@@ -184,20 +184,5 @@ describe("advisor live request settings", () => {
 		const system = JSON.stringify((await runTurn("project_on")).systemPrompt);
 		expect(system).toContain("UPDATED_CONTEXT_SENTINEL");
 		expect(system).not.toContain(PROJECT_CONTEXT);
-	});
-
-	it("applies reviewOn dynamically without discarding the advisor conversation", async () => {
-		const { live, settings, requests, runTurn } = createSession();
-		await runTurn("turn_cadence");
-
-		cfgAdvisorReviewOn.set(settings, "step");
-		await runTurn("step_cadence", 1);
-		expect(JSON.stringify(requests[1].messages)).toContain(ADVISOR_HISTORY);
-
-		// An explicit refresh must not reinterpret a cadence-only edit as a
-		// build-time setting and erase the already useful advisor conversation.
-		expect(live.setAdvisorEnabled(true)).toBe(true);
-		await runTurn("step_after_refresh", 1);
-		expect(JSON.stringify(requests[3].messages)).toContain(ADVISOR_HISTORY);
 	});
 });
