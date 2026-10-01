@@ -22,110 +22,52 @@ does what I wanted".
 
 ## Advisor
 
-### Advisor review cadence and spend controls
+### Advisor spend controls
 
-- **What it does:** Three settings decide what the advisor costs. `advisor.reviewOn`
-  (`step` = review after every agent step, `mutation` = skip mid-turn steps that only
-  read, `turn` = one review at the end), `advisor.includeThinking` (send the main
-  agent's reasoning or not), `advisor.projectContext` (repeat the AGENTS.md/rules block
-  in the advisor's system prompt or not).
-- **Why:** One review per step on a long turn was the biggest advisor bill; a review
-  averages ~$0.11.
-- **Files:** `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorReviewOn`,
-  `AdvisorReviewCadence`, `cfgAdvisorIncludeThinking`, `cfgAdvisorProjectContext`),
+- **What it does:** Two settings trim what each advisor review sends.
+  `advisor.includeThinking` (send the main agent's reasoning or not) and
+  `advisor.projectContext` (repeat the AGENTS.md/rules block in the advisor's system
+  prompt or not). Review cadence itself is upstream's (`advisor.reviewMode`,
+  `advisor.reviewInterval`); the fork's own `advisor.reviewOn` was dropped in favor of it.
+- **Why:** Reasoning and the project-context block are a large, repeated share of every
+  advisor request; a review averages ~$0.11.
+- **Files:** `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorIncludeThinking`,
+  `cfgAdvisorProjectContext`),
   `packages/coding-agent/src/advisor/runtime.ts` (the `includeThinking` host flag that
-  seeds `#includeThinking`, and the `shouldReview` option with its gate in `onTurnEnd`),
-  `docs/advisor-watchdog.md` (its "Controlling token spend" section; the other fork
-  paragraphs are named under the read-only, dedupe, loop-bound and
-  preview-redaction entries' **Depends on upstream**),
-  `docs/settings.md` (the three `advisor.*` rows, the reworded advisor intro, and the
-  `advisor` segment paragraph, named under the advisor-segment entry).
-- **Depends on upstream:** `AdvisorRuntime.onTurnEnd(messages, { willContinue })` and
-  its `willContinue` flag — the gate must run after `#latestMessages` is set and
-  before `#renderDelta`, which advances the review cursor; the settings registry
-  (`register`, `SettingValueOf`, handle `.get`/`.set` in
+  seeds `#includeThinking`),
+  `packages/coding-agent/src/advisor/config.ts` (only the `filterAdvisorTools` comment,
+  kept accurate about which legacy tool aliases exist),
+  `docs/advisor-watchdog.md` (its "Controlling token spend" section and the
+  `advisors[].tools` legacy-alias sentence; the other fork paragraphs are named under
+  the dedupe, loop-bound and preview-redaction entries' **Depends on upstream**),
+  `docs/settings.md` (the two `advisor.*` rows, and the `advisor` segment paragraph,
+  named under the advisor-segment entry).
+- **Depends on upstream:** the settings registry (`register`, handle `.get`/`.set` in
   `packages/coding-agent/src/config/registry.ts`, domains listed in
-  `packages/coding-agent/src/config/all-settings.ts`), its `ui.condition:
-  "advisorEnabled"` gate, and its rule that an invalid configured enum value reads as
-  the default; the `cfgAdvisorRuntimeInputs` listener in `agent-session.ts` that
-  rebuilds a running advisor when an input changes (the fork adds `includeThinking`
-  and `projectContext` to it) and the runtime signature in `session-advisors.ts`,
-  which includes both build-time content settings; `formatSessionHistoryMarkdown`'s
-  `includeThinking` option; the advisor system-prompt assembly,
-  `#advisorContextPrompt` and `setContextPrompt`.
-  Fork code it relies on in files other entries own: `reviewGate` in
-  `packages/coding-agent/src/advisor/review-cadence.ts` (read-only entry), including its
-  `default:` fallback to `step`; the per-step gate in `onPrimaryTurnEnd`, the two
-  build-time settings (passed to the runtime as `includeThinking`, and gating the
-  `<project-context>` block), their two runtime-signature fields and the
-  `setContextPrompt` skip (only while the live runtimes match the current config) in
-  `packages/coding-agent/src/session/session-advisors.ts` (dedupe entry); the
-  two `cfgAdvisorRuntimeInputs` fields in `packages/coding-agent/src/session/agent-session.ts`
+  `packages/coding-agent/src/config/all-settings.ts`) and its `ui.condition:
+  "advisorEnabled"` gate; the `cfgAdvisorRuntimeInputs` listener in `agent-session.ts`
+  that rebuilds a running advisor when an input changes (the fork adds
+  `includeThinking` and `projectContext` to it) and the runtime signature in
+  `session-advisors.ts`, which includes both build-time content settings;
+  `formatSessionHistoryMarkdown`'s `includeThinking` option; the advisor system-prompt
+  assembly, `#advisorContextPrompt` and `setContextPrompt`.
+  Fork code it relies on in files other entries own: the two build-time settings
+  (passed to the runtime as `includeThinking`, and gating the `<project-context>`
+  block), their two runtime-signature fields and the `setContextPrompt` skip (only
+  while the live runtimes match the current config) in
+  `packages/coding-agent/src/session/session-advisors.ts` (dedupe entry); the two
+  `cfgAdvisorRuntimeInputs` fields in `packages/coding-agent/src/session/agent-session.ts`
   (auto-thinking entry).
-- **Tripwire paths:** `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`, `packages/agent/src/agent-loop.ts`
+- **Tripwire paths:** `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/coding-agent/src/advisor/config.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
 - **Must still be true:**
-  - With `reviewOn: turn`, no advisor request is made for any mid-turn step, and that
-    work still appears in the single end-of-turn review — nothing is dropped.
-  - The final boundary of a turn is always reviewed, whatever `reviewOn` says.
   - `includeThinking: false` keeps reasoning text out of the advisor's delta;
     `projectContext: false` keeps the `<project-context>` block out of its prompt.
-  - Changing `includeThinking` or `projectContext` mid-session rebuilds the advisors;
-    changing `reviewOn` does not need a rebuild.
-  - An unrecognized `reviewOn` value behaves like the default `step`: the registry
-    reads an invalid configured value as the default, and `reviewGate` still falls back
-    to `step` for anything it does not recognize.
+  - Changing `includeThinking` or `projectContext` mid-session rebuilds the advisors.
   - With `projectContext: false`, a context-file change does not rebuild advisors that
     were built with the setting off, and turning the setting on later uses the latest
     context prompt — even when the setting was flipped off without the settings
     listener's rebuild.
-- **Check:** `bun test packages/coding-agent/test/advisor-live-settings.test.ts packages/coding-agent/test/advisor-review-cadence.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
-
-### Read-only tools skipped by the `mutation` cadence
-
-- **What it does:** Under `reviewOn: mutation`, a mid-turn step is skipped when every
-  tool call since the last review was a pure read. The skip list is computed at module
-  load from upstream's read-tier list, minus four tools that are read-tier but still
-  change stored state (`retain`, `memory_edit`, `checkpoint`, `rewind`). `wait` is on
-  that list, so waiting on background work is skipped; `write` is not, so a peer
-  message (`agent://`) or job control (`proc://`) forces a review.
-- **Why:** Reviewing a step that only read files spends a full advisor request on work
-  that cannot break anything.
-- **Files:** `packages/coding-agent/src/advisor/review-cadence.ts`
-  (`ADVISOR_STATEFUL_READ_TIER_TOOLS`, `ADVISOR_REVIEW_EXEMPT_TOOLS`,
-  `hasReviewWorthyToolCall`; `reviewGate` is named under the cadence entry's **Depends
-  on upstream**), `packages/coding-agent/src/advisor/config.ts` (only the
-  `filterAdvisorTools` comment, kept accurate about which legacy tool aliases exist).
-- **Depends on upstream:** `READ_ONLY_TOOL_NAMES` in
-  `packages/coding-agent/src/task/read-only-policy.ts`. **The exempt table is DERIVED
-  from it at module load, never hardcoded — that is the safety property.** A new
-  upstream read tool becomes exempt automatically; a new writing tool is absent and so
-  still forces a review. `find` is upstream's semantic search tool and is read-tier on
-  purpose: it reads through the internal-URL filesystem and writes nothing, so it is
-  correctly exempt.
-  Also `normalizeToolName` in `packages/coding-agent/src/tools/builtin-names.ts`, and
-  the `toolCall` block shape on assistant messages. Ordering constraint:
-  `ADVISOR_STATEFUL_READ_TIER_TOOLS` must stay declared *before* the derived table or
-  module load throws. Upstream replaced the `hub` tool with `wait` (read-tier) plus
-  `write` to `agent://` (peer message) and `proc://` (job cancel, service
-  stop/stdin/mode), and `bash` launches services. So the split the fork's old `hub`
-  carve-out made by hand now falls out of tool names: `wait` and reads of `proc://` /
-  `agent://` are exempt, `write` and `bash` are not. If upstream moves peer messaging
-  or job control onto a read-tier tool, that tool lands in `READ_ONLY_TOOL_NAMES` and
-  becomes exempt — re-check this entry then.
-  Fork text it relies on in a file another entry owns: the `mutation` paragraph and the
-  `advisors[].tools` legacy-alias sentence in `docs/advisor-watchdog.md` (cadence entry).
-- **Tripwire paths:** `packages/coding-agent/src/task/read-only-policy.ts`, `packages/coding-agent/src/tools/builtin-names.ts`, `packages/coding-agent/src/tools/jfind/index.ts`, `packages/coding-agent/src/tools/wait.ts`, `packages/coding-agent/src/advisor/config.ts`
-- **Must still be true:**
-  - A mid-turn step whose only tool calls are read-only ones does not trigger a review
-    under `mutation`.
-  - A step containing `retain`, `memory_edit`, `checkpoint` or `rewind` does trigger
-    one, even though upstream classes those as read-tier.
-  - A step containing any tool absent from upstream's read-tier list — `write`, `edit`,
-    `bash`, `lsp`, `task`, any MCP or plugin tool — triggers one.
-  - `wait` alone does not trigger a review under `mutation`; a `write`, including a
-    peer message to `agent://`, does.
-  - A skipped step is not lost: its content lands in the next review that happens.
-- **Check:** `bun test packages/coding-agent/test/advisor-review-cadence.test.ts`
+- **Check:** `bun test packages/coding-agent/test/advisor-live-settings.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
 
 ### Advisor repeat-call de-duplication
 
@@ -142,7 +84,7 @@ does what I wanted".
 - **Files:** `packages/coding-agent/src/advisor/tool-result-dedupe.ts`,
   `packages/coding-agent/src/session/session-advisors.ts` (the `AdvisorToolResultDedupe`
   import, the per-runtime `toolResultDedupe` instance, and the dedupe branch in the
-  advisor `afterToolCall` hook; the file's other fork hunks are named under the cadence
+  advisor `afterToolCall` hook; the file's other fork hunks are named under the spend-controls
   and advisor-segment entries' **Depends on upstream**).
 - **Depends on upstream:** `prunedAt` on `ToolResultMessage` — a result upstream's
   `evictStaleToolResults` (`packages/coding-agent/src/advisor/tool-result-eviction.ts`)
@@ -165,7 +107,7 @@ does what I wanted".
   `packages/coding-agent/src/advisor/cumulative-loop-guard.ts` (loop-bound entry),
   which must keep ignoring the agent-authored intent fields and key order and keep
   argument values verbatim; the repeat-call paragraph in `docs/advisor-watchdog.md`
-  (cadence entry).
+  (spend-controls entry).
   **Open upstream risk — PR #12516** (open): it moves the advisor onto the shared
   compaction code, whose per-turn prune follows `compaction.supersedeReads` and
   `compaction.dropUseless` (both on by default). On the advisor's history, a newer
@@ -282,7 +224,7 @@ does what I wanted".
   `@oh-my-pi/pi-wire`; the shared settings `model.toolCallLoopGuard.enabled` /
   `.threshold` / `.exemptTools`.
   Fork text it relies on in a file another entry owns: the runaway-tool-loop bullet in
-  `docs/advisor-watchdog.md` (cadence entry).
+  `docs/advisor-watchdog.md` (spend-controls entry).
 - **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md`, `packages/coding-agent/src/session/stream-guards.ts`, `packages/coding-agent/src/session/settings.ts`, `packages/utils/src/json.ts`
 - **Must still be true:**
   - An advisor alternating two identical calls gets one corrective once either call
@@ -492,7 +434,7 @@ does what I wanted".
   `packages/coding-agent/src/session/agent-session.ts` (auto-thinking entry)
   `getAdvisorUsageSummary`, the `AdvisorUsageSummary` re-export and the
   `promptUsageBySlug` plumbing on both restore paths; the `advisor` segment paragraph
-  in `docs/settings.md` (cadence entry).
+  in `docs/settings.md` (spend-controls entry).
 - **Tripwire paths:** `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/chrome/context-thresholds.ts`, `packages/tui/src/theme/symbols.ts`, `packages/coding-agent/src/advisor/transcript-recorder.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`
 - **Must still be true:**
   - With every advisor running the count is the bare total; otherwise it is
