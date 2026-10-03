@@ -613,8 +613,7 @@ does what I wanted".
   `packages/coding-agent/src/prompts/tools/browser-goal-text-value.md`,
   `packages/coding-agent/src/tools/browser.ts` (the `goal` action, the `goal` and
   `max_steps` schema fields, `GOAL_DEFAULT_TIMEOUT_SEC`, `goalBrowser`,
-  `describeGoalCall`; its relay note in `describeBrowser` is named under the
-  relay-opener entry), `packages/coding-agent/src/tools/browser/settings.ts`
+  `describeGoalCall`), `packages/coding-agent/src/tools/browser/settings.ts`
   (`cfgBrowserGoalEnabled`, `cfgBrowserGoalMaxSteps`, `cfgBrowserGoalTextModel`),
   `packages/coding-agent/src/tools/browser/prelude-definition.ts` (the `documentation`
   getter), `packages/coding-agent/src/tools/browser/declarations.d.ts`
@@ -715,11 +714,10 @@ does what I wanted".
   event, and resends a tab whose opener arrives after it was announced. The relay turns
   the opener into `openerId` on the page target, so puppeteer's `Target.opener()` works
   on relay tabs. The extension also reports its manifest version in `hello`; the relay
-  serves it as `OMP-Extension-Version` on `/json/version`, the browser handle reads it,
-  and the relay line of the browser open summary tells the agent to run
-  `omp browser-relay install` when the extension predates 0.2.0. The manifest moves to
-  0.2.0 and gains the `webNavigation` permission (Chrome shows the same "Read your
-  browsing history" warning `tabs` already triggers).
+  serves it as `OMP-Extension-Version` on `/json/version`. The manifest moves to 0.2.0
+  and gains the `webNavigation` permission (Chrome shows the same "Read your browsing
+  history" warning `tabs` already triggers). An outdated extension is refused by
+  upstream's discarded-tabs protocol gate, which tells the user to reinstall.
 - **Why:** `tab.goal` spots a popup a click opened, and follows it, through the page
   target's opener; without it a popup on a relay tab goes unnoticed.
 - **Files:** `packages/browser-relay/extension/background.ts` (`OPENER_WAIT_MS`,
@@ -731,10 +729,8 @@ does what I wanted".
   and `packages/coding-agent/src/tools/browser/relay/extension-assets/manifest.json.txt`
   (generated; after any edit under `packages/browser-relay/extension/` run
   `bun run --cwd packages/browser-relay build` and commit them, nothing checks they
-  match), `packages/coding-agent/src/tools/browser/relay/protocol.ts`
-  (`TabSnapshot.openerTabId`, hello `extensionVersion`),
-  `packages/coding-agent/src/tools/browser/registry.ts` (`readRelayExtensionVersion`,
-  `PuppeteerBrowserHandle.relayExtensionVersion`).
+  match), and `packages/coding-agent/src/tools/browser/relay/protocol.ts`
+  (`TabSnapshot.openerTabId`, hello `extensionVersion`).
 - **Depends on upstream:** The bridge copying every snapshot field in `TabState`'s
   constructor and `update`, and `#onTabUpsert` re-emitting `Target.targetInfoChanged`
   from `#pageInfo` for an announced tab: if upstream stops re-emitting when url and
@@ -743,25 +739,21 @@ does what I wanted".
   opener inside the same browser. `#onHello` and `versionInfo` reading the last-hello
   instance, so with two browsers connected the version is the last one's. `GET
   /json/version` in `packages/coding-agent/src/tools/browser/relay/server.ts` returning
-  `versionInfo` when ready and 503 otherwise (then no note). `probeCdpResponse` in
-  `packages/coding-agent/src/tools/browser/attach.ts` returning null instead of
-  throwing, and the relay branch of `openBrowserHandle`. The build script
-  `packages/browser-relay/scripts/build-extension.ts` bundling `background.ts` and
-  copying `manifest.json` verbatim, and `runInstall` in
+  `versionInfo` when ready and 503 otherwise. Upstream's discarded-tabs gate
+  (`#eligible` in the bridge, `readyOutcome` in `relay/probe.ts`) refusing any extension
+  without `discardedTabsProtocol`: our 0.2.0 extension must keep sending it. The build
+  script `packages/browser-relay/scripts/build-extension.ts` bundling `background.ts`
+  and copying `manifest.json` verbatim, and `runInstall` in
   `packages/coding-agent/src/cli/browser-relay-cli.ts` writing the assets as they are
   (the user still reloads the unpacked extension). `background.ts` type-imports
-  `protocol.ts` across packages. The note's `>=0.2.0` threshold means "reports
-  openers" only while upstream keeps the manifest below 0.2.0; if upstream bumps it
-  for its own reasons, re-check this entry.
+  `protocol.ts` across packages.
   Fork code it relies on in files other entries own: in
   `packages/coding-agent/src/tools/browser/relay/bridge.ts` (relay page-tab entry)
   `TabState.openerTabId`, the `openerId` field `#pageInfo` adds,
   `ExtInstance.info.extensionVersion` set in `#onHello`, and `OMP-Extension-Version` in
-  `versionInfo`; the relay case of `describeBrowser` in
-  `packages/coding-agent/src/tools/browser.ts` (goal entry), which treats an empty
-  version as stale and an absent one as unknown; the consumer, new-tab detection in
+  `versionInfo`; the consumer, new-tab detection in
   `packages/coding-agent/src/tools/browser/goal/page.ts` (goal entry).
-- **Tripwire paths:** `packages/coding-agent/src/tools/browser/relay/bridge.ts`, `packages/coding-agent/src/tools/browser/relay/protocol.ts`, `packages/coding-agent/src/tools/browser/relay/server.ts`, `packages/coding-agent/src/tools/browser/attach.ts`, `packages/coding-agent/src/tools/browser/registry.ts`, `packages/browser-relay/extension/background.ts`, `packages/browser-relay/extension/chrome.d.ts`, `packages/browser-relay/extension/manifest.json`, `packages/browser-relay/scripts/build-extension.ts`, `packages/coding-agent/src/cli/browser-relay-cli.ts`
+- **Tripwire paths:** `packages/coding-agent/src/tools/browser/relay/bridge.ts`, `packages/coding-agent/src/tools/browser/relay/protocol.ts`, `packages/coding-agent/src/tools/browser/relay/server.ts`, `packages/coding-agent/src/tools/browser/relay/probe.ts`, `packages/browser-relay/extension/background.ts`, `packages/browser-relay/extension/chrome.d.ts`, `packages/browser-relay/extension/manifest.json`, `packages/browser-relay/scripts/build-extension.ts`, `packages/coding-agent/src/cli/browser-relay-cli.ts`
 - **Must still be true:**
   - A tab whose snapshot names an opener tab the relay knows is announced with
     `openerId` set to that tab's page target id, in `Target.targetCreated` and
@@ -771,8 +763,8 @@ does what I wanted".
   - `/json/version` carries `OMP-Extension-Version`: the extension's version, or empty
     for an extension that did not report one.
   - The embedded extension assets are exactly what the relay build script produces.
-  - An extension older than 0.2.0 still drives tabs; only popup following in `tab.goal`
-    is lost, and the relay open summary says how to update.
+  - The extension's `hello` carries both `extensionVersion` and upstream's
+    `discardedTabsProtocol`, so the relay accepts it and drives its tabs.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-relay-bridge.test.ts packages/coding-agent/test/tools/browser-relay-server.test.ts`
 
 ### Relay tabs emulate focus while OMP drives them
