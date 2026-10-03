@@ -34,13 +34,14 @@ import {
 	resetOrphanRegistryForTest,
 	type SharedTargetScope,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/orphan-registry";
-import type { BrowserHandle } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
+import type { BrowserHandle, PuppeteerBrowserHandle } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
 import * as sharedDaemon from "@oh-my-pi/pi-coding-agent/tools/browser/shared-daemon";
 import { stopSharedBrowserIfUnreachable } from "@oh-my-pi/pi-coding-agent/tools/browser/shared-daemon";
 import { getTabsMapForTest, releaseTab, runInTab } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import type { TabSession } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 const DAEMON_NAME = "omp.browser.headless";
 /** The target id the incident log names for the tab whose close never landed. */
@@ -331,6 +332,76 @@ describe("browser cleanup — timed-out target close in a shared browser", () =>
 		expect(tab.browser.refCount).toBe(1);
 		expect(await ownedTargets(scope)).toEqual([TARGET_ID]);
 		expect(healthCheck).toHaveBeenCalledTimes(1);
+	});
+
+	it("makes a force-kill join a release already in flight instead of returning early", async () => {
+		const scope = trackedScope();
+		spyOn(sharedDaemon, "stopSharedBrowserIfUnreachable").mockResolvedValue(false);
+		await recordSharedTarget(scope, TARGET_ID);
+		const closeGate = Promise.withResolvers<void>();
+		const closeEntered = Promise.withResolvers<void>();
+		const tab = makeWedgeTab(scope, {
+			close: "gate",
+			gate: closeGate.promise,
+			entered: () => closeEntered.resolve(),
+		});
+		// The run times out, so the supervisor recycles the worker; the recycle
+		// parks in the old worker's terminate, then fails at the stub browser's
+		// websocket endpoint, which force-kills the tab.
+		const terminateGate = Promise.withResolvers<void>();
+		const terminateEntered = Promise.withResolvers<void>();
+		const recycleFailed = Promise.withResolvers<void>();
+		let terminateCalls = 0;
+		Object.assign((tab.browser as PuppeteerBrowserHandle).browser, {
+			wsEndpoint: () => {
+				recycleFailed.resolve();
+				throw new Error("websocket endpoint unavailable");
+			},
+		});
+		Object.assign(tab, {
+			worker: {
+				send: (msg: { type: string; id?: string }) => {
+					if (msg.type !== "run" || msg.id === undefined) return;
+					const id = msg.id;
+					queueMicrotask(() =>
+						tab.pending.get(id)?.reject(new ToolError("Browser code execution timed out after 20ms")),
+					);
+				},
+				onMessage: () => () => undefined,
+				onError: () => () => undefined,
+				onExit: () => () => undefined,
+				terminate: async () => {
+					if (terminateCalls++ > 0) return;
+					terminateEntered.resolve();
+					await terminateGate.promise;
+				},
+			},
+		});
+		getTabsMapForTest().set("logos-b2b", tab);
+
+		let killSettled = false;
+		const killed = runInTab("logos-b2b", { code: "1", timeoutMs: 20, session: makeSession() })
+			.catch((error: Error) => error.message)
+			.finally(() => {
+				killSettled = true;
+			});
+		await terminateEntered.promise;
+		// A release lands while the recycle is parked, and parks in its CDP close.
+		const released = releaseTab("logos-b2b", { timeoutMs: 40 });
+		await closeEntered.promise;
+		// The recycle fails now and force-kills the tab mid-release. Every step from
+		// that failure to the run's settlement is a promise continuation, so one
+		// event-loop turn settles the run unless the kill waits on the release.
+		terminateGate.resolve();
+		await recycleFailed.promise;
+		await new Promise<void>(resolve => setImmediate(resolve));
+		expect(killSettled).toBe(false);
+
+		closeGate.resolve();
+		expect(await released).toBe(true);
+		await killed;
+		expect(tab.browser.refCount).toBe(1);
+		expect(await ownedTargets(scope)).toEqual([TARGET_ID]);
 	});
 
 	it("bounds the close a joining release waits on when force-kill is stuck on a wedged browser", async () => {
