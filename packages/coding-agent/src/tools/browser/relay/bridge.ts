@@ -131,14 +131,12 @@ interface ExtInstance {
 	/** Short code derived from the instance id and browser run; names target ids (`TAB<code>.<tabId>`). */
 	code: string;
 	socket: RelaySocket | null;
-	/** `extensionVersion` is null for extensions that predate reporting it (before 0.2.0). */
 	info: {
 		userAgent: string;
 		browserVersion: string;
 		discardedTabsProtocol?: number;
 		ompVersion?: string;
 		reloadProtocol?: number;
-		extensionVersion: string | null;
 	} | null;
 	/** Chrome extension id from the socket's `Origin`; null when the upgrade carried none. */
 	extensionId: string | null;
@@ -430,10 +428,7 @@ export class RelayBridge {
 		return this.#conns.size;
 	}
 
-	/**
-	 * Payload for `GET /json/version`. `OMP-Extension-Version` is the connected extension's
-	 * version, empty for extensions before 0.2.0 (they cannot report tab openers).
-	 */
+	/** Payload for `GET /json/version`. */
 	versionInfo(wsUrl: string): Record<string, string | number> {
 		const info = this.#lastHello()?.info;
 		let hasCompatibleExtension = false;
@@ -461,7 +456,6 @@ export class RelayBridge {
 			"User-Agent": ua,
 			"V8-Version": "",
 			"WebKit-Version": "",
-			"OMP-Extension-Version": info?.extensionVersion ?? "",
 			webSocketDebuggerUrl: wsUrl,
 			ompRelayVersion: VERSION,
 			ompRelayDiscardedTabsProtocol: String(DISCARDED_TABS_PROTOCOL_VERSION),
@@ -647,7 +641,6 @@ export class RelayBridge {
 			discardedTabsProtocol: msg.discardedTabsProtocol,
 			ompVersion: typeof msg.ompVersion === "string" ? msg.ompVersion : undefined,
 			reloadProtocol: msg.reloadProtocol,
-			extensionVersion: typeof msg.extensionVersion === "string" ? msg.extensionVersion : null,
 		};
 		this.#lastHelloInstance = instanceId;
 		this.#extensionSeen = true;

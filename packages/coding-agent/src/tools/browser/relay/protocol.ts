@@ -116,8 +116,6 @@ export type ExtToRelayMessage =
 			ompVersion?: string;
 			/** {@link EXTENSION_RELOAD_PROTOCOL_VERSION} when the extension reloads itself on `reload`. Absent in older extensions. */
 			reloadProtocol?: number;
-			/** Relay extension version (manifest `version`). Absent on extensions before 0.2.0. */
-			extensionVersion?: string;
 	  }
 	| { t: "cdpEvent"; tabId: number; sessionId?: string; method: string; params?: Record<string, unknown> }
 	| { t: "detached"; tabId: number; reason: string; relayInitiated?: boolean }
