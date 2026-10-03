@@ -736,14 +736,8 @@ function describeBrowser(handle: BrowserHandle): string {
 			return `spawned ${handle.kind.path} (pid ${handle.pid ?? "?"})`;
 		case "connected":
 			return `connected ${handle.cdpUrl ?? handle.kind.cdpUrl}`;
-		case "relay": {
-			const version = handle.relayExtensionVersion;
-			const stale = version !== undefined && !Bun.semver.satisfies(version, ">=0.2.0");
-			const note = stale
-				? " (relay extension predates 0.2.0: tab.goal cannot follow new tabs a page opens; update it with `omp browser-relay install`)"
-				: "";
-			return `relay ${handle.cdpUrl ?? handle.kind.cdpUrl}${note}`;
-		}
+		case "relay":
+			return `relay ${handle.cdpUrl ?? handle.kind.cdpUrl}`;
 	}
 }
 

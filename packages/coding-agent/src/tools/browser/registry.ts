@@ -4,14 +4,7 @@ import type { Subprocess } from "bun";
 import type { Browser, CDPSession } from "puppeteer-core";
 import { ToolAbortError } from "../tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import {
-	findFreeCdpPort,
-	findReusableCdp,
-	gracefulKillTreeOnce,
-	probeCdpResponse,
-	resolveSpawnArgs,
-	waitForCdp,
-} from "./attach";
+import { findFreeCdpPort, findReusableCdp, gracefulKillTreeOnce, resolveSpawnArgs, waitForCdp } from "./attach";
 import type { CmuxKind } from "./cmux/rpc";
 import { CmuxSocketClient } from "./cmux/socket-client";
 import {
@@ -70,11 +63,6 @@ export interface PuppeteerBrowserHandle extends BrowserHandleCommon {
 	/** Broker daemon backing this handle; dispose disconnects instead of closing, kill routes to the broker. */
 	sharedDaemon?: { name: string; projectDir: string };
 	subprocess?: Subprocess;
-	/**
-	 * Relay handles: extension version from the relay's `/json/version`; empty when the extension
-	 * predates reporting it (before 0.2.0), undefined when the relay itself predates reporting it.
-	 */
-	relayExtensionVersion?: string;
 	stealth: { browserSession: CDPSession | null; override: UserAgentOverride | null };
 }
 
@@ -187,20 +175,6 @@ export function normalizeConnectedCdpUrl(rawCdpUrl: string): string {
 	return cdpUrl;
 }
 
-/** The relay's `OMP-Extension-Version` from `/json/version`; undefined when absent or unreadable. */
-async function readRelayExtensionVersion(cdpUrl: string, signal?: AbortSignal): Promise<string | undefined> {
-	const response = await probeCdpResponse(`${cdpUrl}/json/version`, { timeoutMs: 2_000, signal });
-	if (!response || response.status < 200 || response.status >= 300) return undefined;
-	try {
-		const parsed: unknown = JSON.parse(response.body);
-		if (typeof parsed !== "object" || parsed === null || !("OMP-Extension-Version" in parsed)) return undefined;
-		const version = parsed["OMP-Extension-Version"];
-		return typeof version === "string" ? version : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
 async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions): Promise<BrowserHandle> {
 	if (kind.kind === "cmux") {
 		const client = new CmuxSocketClient({ socketPath: kind.socketPath, password: kind.password });
@@ -306,7 +280,6 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 			cdpUrl,
 			refCount: 0,
 			stealth: { browserSession: null, override: null },
-			relayExtensionVersion: await readRelayExtensionVersion(cdpUrl, opts.signal),
 		};
 	}
 
