@@ -1629,17 +1629,19 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 
 async function forceKillTab(name: string, reason: string): Promise<void> {
 	const tab = tabs.get(name);
-	// Already torn down by a racing kill: a second pass would release the browser hold twice.
-	if (!tab || tab.state === "dead") return;
+	if (!tab) return;
 	// A release already owns this tab's teardown. Joining it keeps one worker
 	// termination, one browser-hold release, and one ownership decision — the
 	// racing pair otherwise released the shared browser's hold twice and let the
-	// second path forget a target this one is retaining.
+	// second path forget a target this one is retaining. Checked before `dead`,
+	// because a release marks the tab dead before its teardown finishes.
 	const ongoing = releaseInflight.get(tab);
 	if (ongoing) {
 		await ongoing.promise.catch(() => undefined);
 		return;
 	}
+	// Already torn down by an earlier kill: a second pass would release the browser hold twice.
+	if (tab.state === "dead") return;
 	killedTabs.set(name, reason);
 	tab.state = "dead";
 	const error = postmortem.markExpectedCleanupError(new ToolError(reason));
