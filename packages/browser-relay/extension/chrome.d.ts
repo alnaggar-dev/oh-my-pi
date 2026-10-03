@@ -111,7 +111,6 @@ declare const chrome: {
 	};
 	runtime: {
 		openOptionsPage(): Promise<void>;
-		getManifest(): { version: string };
 		onInstalled: ChromeEvent<() => void>;
 		onStartup: ChromeEvent<() => void>;
 	};
