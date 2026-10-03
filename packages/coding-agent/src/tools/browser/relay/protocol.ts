@@ -73,8 +73,6 @@ export type ExtToRelayMessage =
 			 * reuses tab ids: target ids embed it, so an old target id never names a new tab. Absent on older extensions.
 			 */
 			browserSession?: string;
-			/** Relay extension version (manifest `version`). Absent on extensions before 0.2.0. */
-			extensionVersion?: string;
 	  }
 	| { t: "cdpEvent"; tabId: number; sessionId?: string; method: string; params?: Record<string, unknown> }
 	| { t: "detached"; tabId: number; reason: string; relayInitiated?: boolean }
