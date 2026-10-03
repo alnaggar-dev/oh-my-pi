@@ -706,42 +706,39 @@ does what I wanted".
     the same first candidate `hasNativeJudge` just reported, never a cached older chain.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-goal.test.ts packages/coding-agent/test/tools/browser-goal-page.test.ts packages/coding-agent/test/tools/browser-goal-snapshot.test.ts packages/coding-agent/test/eval/browser-prelude-facade.test.ts packages/coding-agent/test/judgment-chain.test.ts`
 
-### Relay reports each tab's opener and the extension version (extension 0.2.0)
+### Relay reports each tab's opener (extension 0.2.0)
 
 - **What it does:** The relay extension records which tab opened each tab from
   `chrome.webNavigation.onCreatedNavigationTarget` (not `tab.openerTabId`, which Chrome
   sets to the window's active tab), holds a new tab's `tabCreated` up to 100 ms for that
   event, and resends a tab whose opener arrives after it was announced. The relay turns
   the opener into `openerId` on the page target, so puppeteer's `Target.opener()` works
-  on relay tabs. The extension also reports its manifest version in `hello`; the relay
-  serves it as `OMP-Extension-Version` on `/json/version`. The manifest moves to 0.2.0
-  and gains the `webNavigation` permission (Chrome shows the same "Read your browsing
-  history" warning `tabs` already triggers). An outdated extension is refused by
-  upstream's discarded-tabs protocol gate, which tells the user to reinstall.
+  on relay tabs. The manifest moves to 0.2.0 and gains the `webNavigation` permission
+  (Chrome shows the same "Read your browsing history" warning `tabs` already triggers).
+  An outdated extension is refused by upstream's discarded-tabs protocol gate, which
+  tells the user to reinstall.
 - **Why:** `tab.goal` spots a popup a click opened, and follows it, through the page
   target's opener; without it a popup on a relay tab goes unnoticed.
 - **Files:** `packages/browser-relay/extension/background.ts` (`OPENER_WAIT_MS`,
-  `openerTabs`, `pendingCreated`, `flushCreated`, the snapshot's `openerTabId`,
-  `extensionVersion` in `buildHello`, the held `tabs.onCreated` and the `webNavigation`
-  listener), `packages/browser-relay/extension/chrome.d.ts` (`webNavigation`,
-  `runtime.getManifest`), `packages/browser-relay/extension/manifest.json`,
+  `openerTabs`, `pendingCreated`, `flushCreated`, the snapshot's `openerTabId`, the held
+  `tabs.onCreated` and the `webNavigation` listener),
+  `packages/browser-relay/extension/chrome.d.ts` (`webNavigation`),
+  `packages/browser-relay/extension/manifest.json`,
   `packages/coding-agent/src/tools/browser/relay/extension-assets/background.js.txt`
   and `packages/coding-agent/src/tools/browser/relay/extension-assets/manifest.json.txt`
   (generated; after any edit under `packages/browser-relay/extension/` run
   `bun run --cwd packages/browser-relay build` and commit them, nothing checks they
   match), and `packages/coding-agent/src/tools/browser/relay/protocol.ts`
-  (`TabSnapshot.openerTabId`, hello `extensionVersion`).
+  (`TabSnapshot.openerTabId`).
 - **Depends on upstream:** The bridge copying every snapshot field in `TabState`'s
   constructor and `update`, and `#onTabUpsert` re-emitting `Target.targetInfoChanged`
   from `#pageInfo` for an announced tab: if upstream stops re-emitting when url and
   title are unchanged, a late opener never reaches puppeteer. The target id scheme
   (`tabKeyOf`, `pageTargetIdFromKey`) and per-instance tab keys, which resolve the
-  opener inside the same browser. `#onHello` and `versionInfo` reading the last-hello
-  instance, so with two browsers connected the version is the last one's. `GET
-  /json/version` in `packages/coding-agent/src/tools/browser/relay/server.ts` returning
-  `versionInfo` when ready and 503 otherwise. Upstream's discarded-tabs gate
-  (`#eligible` in the bridge, `readyOutcome` in `relay/probe.ts`) refusing any extension
-  without `discardedTabsProtocol`: our 0.2.0 extension must keep sending it. The build
+  opener inside the same browser. Upstream's discarded-tabs gate (`#eligible` in the
+  bridge, `readyOutcome` in `packages/coding-agent/src/tools/browser/relay/probe.ts`)
+  refusing any extension without `discardedTabsProtocol`: our 0.2.0 extension must keep
+  sending it. The build
   script `packages/browser-relay/scripts/build-extension.ts` bundling `background.ts`
   and copying `manifest.json` verbatim, and `runInstall` in
   `packages/coding-agent/src/cli/browser-relay-cli.ts` writing the assets as they are
@@ -749,9 +746,8 @@ does what I wanted".
   `protocol.ts` across packages.
   Fork code it relies on in files other entries own: in
   `packages/coding-agent/src/tools/browser/relay/bridge.ts` (relay page-tab entry)
-  `TabState.openerTabId`, the `openerId` field `#pageInfo` adds,
-  `ExtInstance.info.extensionVersion` set in `#onHello`, and `OMP-Extension-Version` in
-  `versionInfo`; the consumer, new-tab detection in
+  `TabState.openerTabId` and the `openerId` field `#pageInfo` adds; the consumer,
+  new-tab detection in
   `packages/coding-agent/src/tools/browser/goal/page.ts` (goal entry).
 - **Tripwire paths:** `packages/coding-agent/src/tools/browser/relay/bridge.ts`, `packages/coding-agent/src/tools/browser/relay/protocol.ts`, `packages/coding-agent/src/tools/browser/relay/server.ts`, `packages/coding-agent/src/tools/browser/relay/probe.ts`, `packages/browser-relay/extension/background.ts`, `packages/browser-relay/extension/chrome.d.ts`, `packages/browser-relay/extension/manifest.json`, `packages/browser-relay/scripts/build-extension.ts`, `packages/coding-agent/src/cli/browser-relay-cli.ts`
 - **Must still be true:**
@@ -760,11 +756,9 @@ does what I wanted".
     `Target.getTargetInfo`; an unknown or missing opener gives no `openerId`.
   - An opener that arrives after the tab was announced reaches puppeteer through
     `Target.targetInfoChanged`.
-  - `/json/version` carries `OMP-Extension-Version`: the extension's version, or empty
-    for an extension that did not report one.
   - The embedded extension assets are exactly what the relay build script produces.
-  - The extension's `hello` carries both `extensionVersion` and upstream's
-    `discardedTabsProtocol`, so the relay accepts it and drives its tabs.
+  - The extension's `hello` carries upstream's `discardedTabsProtocol`, so the relay
+    accepts it and drives its tabs.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-relay-bridge.test.ts packages/coding-agent/test/tools/browser-relay-server.test.ts`
 
 ### Relay tabs emulate focus while OMP drives them
@@ -871,7 +865,8 @@ does what I wanted".
   Workers firing `error` then `close` on an uncaught error or unhandled rejection and
   `postMessage` throwing `InvalidStateError` afterwards (checked on Bun 1.3.14);
   `installBrowserWorkerRejectionGuard` in `packages/coding-agent/src/tools/run-scope.ts`
-  rethrowing unowned rejections, which is what kills a worker; `forceKillTab`,
+  rethrowing unowned rejections, which is what kills a worker; `forceKillTab` joining
+  an in-flight release (`releaseInflight`) before its already-dead early return,
   `killedTabs` and the "was killed" message in `runInTabWithSnapshot`; `safeSend` staying
   log-only, because an aborted run's own error must win over a kill.
   Fork code it relies on in a file another entry owns: in
@@ -879,7 +874,8 @@ does what I wanted".
   `WorkerHandle.onExit`, the `terminated` flag and `close` listener in `wrapBunWorker`,
   the no-op `onExit` of the inline worker, `attachTabWorker` at the acquire and both
   recycle sites, the `InvalidStateError` branch around the `run` send, and the
-  already-dead early return in `forceKillTab`.
+  already-dead early return in `forceKillTab`, which must stay below the release join
+  because `releaseTabInner` marks the tab dead before its teardown finishes.
 - **Tripwire paths:** `packages/coding-agent/src/tools/browser/interactions.ts`, `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/browser/tab-worker-entry.ts`, `packages/coding-agent/src/tools/run-scope.ts`, `package.json`
 - **Must still be true:**
   - A `text/` match below the fold is scrolled into view and clicked, and a `text/`
@@ -889,7 +885,9 @@ does what I wanted".
     "was killed … Reopen it." error, not "Worker has been terminated", and the tab is
     gone from the tab list.
   - Release, recycle and force-kill terminations are never reported as crashes.
-- **Check:** `bun test packages/coding-agent/test/tools/browser-interactions.test.ts packages/coding-agent/test/tools/browser-worker-exit.test.ts packages/coding-agent/test/tools/browser-tab-worker-startup.test.ts packages/coding-agent/test/tools/browser-freeze-settle.test.ts`
+  - A force-kill that lands while a release is in flight waits for that release
+    instead of returning while the browser hold is still held.
+- **Check:** `bun test packages/coding-agent/test/tools/browser-interactions.test.ts packages/coding-agent/test/tools/browser-worker-exit.test.ts packages/coding-agent/test/tools/browser-tab-worker-startup.test.ts packages/coding-agent/test/tools/browser-freeze-settle.test.ts packages/coding-agent/test/tools/browser-shared-wedge.test.ts`
 
 ### Password leak detection off in OMP-owned Chromium profiles
 
