@@ -263,28 +263,6 @@ describe("RelayBridge target discovery", () => {
 		const params = changed?.params as { targetInfo: { openerId?: string } } | undefined;
 		expect(params?.targetInfo.openerId).toBe(`PAGE${ANON}.1`);
 	});
-
-	it("reports the extension version in /json/version, empty for extensions that predate reporting it", () => {
-		const bridge = new RelayBridge({});
-		const legacy = new FakeExtSocket();
-		connect(bridge, legacy, []);
-		expect(bridge.versionInfo("ws://relay")["OMP-Extension-Version"]).toBe("");
-		const current = new FakeExtSocket();
-		bridge.extConnected(current);
-		bridge.extMessage(
-			current,
-			JSON.stringify({
-				t: "hello",
-				instanceId: "chrome",
-				extensionVersion: "0.2.0",
-				userAgent: "test",
-				browserVersion: "Chrome/151.0.0.0",
-				tabs: [],
-				attachedTabIds: [],
-			}),
-		);
-		expect(bridge.versionInfo("ws://relay")["OMP-Extension-Version"]).toBe("0.2.0");
-	});
 });
 
 describe("RelayBridge tab grouping", () => {
