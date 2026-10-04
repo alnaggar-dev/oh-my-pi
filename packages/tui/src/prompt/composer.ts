@@ -5,6 +5,7 @@ import type { StatusLineSession } from "../status-line/host";
 import { createStartupStatusLine, type StatusLineStartupData } from "../status-line/startup";
 import { isInsideTerminalMultiplexer } from "../terminal-multiplexer";
 import { ProcessTerminal, type Terminal } from "../terminal";
+import { takeHeldTspSocket } from "../tsp-socket-env";
 import {
 	type Component,
 	Container,
@@ -289,8 +290,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#preferences = { ...COMPOSER_DEFAULTS, ...options.preferences };
 		this.#applyWelcomeUpdate(options.welcome ?? {});
 
+		// The session's own terminal is the one that takes the TSP socket.
 		this.ui = new TUI(
-			options.terminal ?? new ProcessTerminal(),
+			options.terminal ?? new ProcessTerminal({ tspSocket: takeHeldTspSocket() }),
 			this.#preferences.showHardwareCursor,
 			options.tuiOptions,
 		);

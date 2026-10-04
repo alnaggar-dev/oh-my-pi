@@ -19,6 +19,7 @@ import type { MessagePort } from "node:worker_threads";
 import type { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
 import type { CliConfig, CommandMetadata } from "@oh-my-pi/pi-utils/cli";
 import type * as Postmortem from "@oh-my-pi/pi-utils/postmortem";
+import { holdTspSocketEnv } from "@oh-my-pi/pi-tui/tsp-socket-env";
 import {
 	APP_NAME,
 	getActiveProfile,
@@ -552,6 +553,9 @@ export async function runCli(argv: string[]): Promise<void> {
 		}
 		return;
 	}
+
+	// Before anything spawns (plugins, daemon, extensions, MCP, LSP): best effort, see tsp-socket-env.ts.
+	holdTspSocketEnv();
 
 	if (resolvedArgv[0] === "--license") {
 		// Command boundary: bundled notices are read only when requested.

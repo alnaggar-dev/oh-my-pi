@@ -1573,6 +1573,14 @@ export class InputController {
 		// signal so the parent shell sees a sane terminal state.
 		this.ctx.ui.stop();
 
+		// Over the TSP socket transport the stop's surface close (`x keep:true`)
+		// can wait behind a large frame in the socket's queue; a process stopped
+		// before it leaves keeps the terminal's surface over the shell until
+		// `fg`. The TUI bounds the wait, so a stuck peer cannot block suspension.
+		this.ctx.ui.whenTspDrained(() => this.#stopProcessGroup(suspendKeepalive, onResume));
+	}
+
+	#stopProcessGroup(suspendKeepalive: NodeJS.Timeout, onResume: () => void): void {
 		try {
 			// SIGSTOP — not SIGTSTP — to the foreground process group (pid=0).
 			//

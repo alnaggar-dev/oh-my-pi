@@ -903,9 +903,12 @@ export interface TspPalette {
 	name?: { dark?: string; light?: string };
 }
 
-/** Verb `q`. */
+/**
+ * Verb `q`. The hello `token` is sent only over a socket transport, where it
+ * proves the connecting program is the one the terminal handed the socket to.
+ */
 export type TspQuery =
-	| { q: "hello"; v: readonly number[]; app: string; ver?: string; features?: readonly string[] }
+	| { q: "hello"; v: readonly number[]; app: string; ver?: string; features?: readonly string[]; token?: string }
 	| { q: "blobs"; ids: readonly string[] };
 
 /** Verb `r`. */

@@ -42,7 +42,7 @@ import type { Component, OverlayOptions, RenderScheduler, RenderTimer } from "..
 import { TspDocument } from "./apply";
 import { getNativeBlob } from "./blobs";
 import { node } from "./describe";
-import { encodeTspJson, encodeTspMessage, type TspHello, TspReader, splitTspMessage } from "./encode";
+import { encodeTspPayloads, type TspHello, TspReader, splitTspMessage, wrapTspPayloads } from "./encode";
 import type { DescribeContext, NativeChild, NativeNode, NativeSurface, NativeUiEvent } from "./node";
 import { nativeComponentId, Reconciler } from "./reconcile";
 import { setNativeRendering } from "./state";
@@ -590,13 +590,20 @@ export class NativeBackend {
 			const body = Buffer.from(blob.bytes.buffer, blob.bytes.byteOffset, blob.bytes.byteLength).toString("base64");
 			// The full body, so a replay (Tern's `surface-play`) shows the image.
 			this.#record("out", "b", { id, mime: blob.mime }, body);
-			this.#host.terminal.write(encodeTspMessage("b", body, { id, mime: blob.mime }, this.#limit));
+			this.#send(encodeTspPayloads("b", body, { id, mime: blob.mime }, this.#limit));
 		}
 	}
 
 	#write(verb: "o" | "f" | "t" | "x", body: unknown): void {
 		this.#record("out", verb, undefined, body);
-		this.#host.terminal.write(encodeTspJson(verb, body, undefined, this.#limit));
+		this.#send(encodeTspPayloads(verb, JSON.stringify(body), undefined, this.#limit));
+	}
+
+	/** The terminal's TSP sink (a socket transport) when it has one, else APC through its output. */
+	#send(payloads: string[]): void {
+		const terminal = this.#host.terminal;
+		if (terminal.writeTsp) terminal.writeTsp(payloads);
+		else terminal.write(wrapTspPayloads(payloads));
 	}
 
 	#record(dir: "in" | "out", verb: string, params: Readonly<Record<string, string>> | undefined, body: unknown): void {

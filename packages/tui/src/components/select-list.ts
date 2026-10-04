@@ -176,6 +176,8 @@ export class SelectList implements Component, MouseRoutable {
 	#nativeRoot?: { list: NativeNode; status: string; node: NativeNode };
 	/** Typed text marked at the start of native item labels (an autocomplete popup's query). */
 	#nativeMark: string | undefined;
+	/** Item of the last native `select`, until the next native event: a double-click sends `select` then `activate`. */
+	#nativeClicked: string | undefined;
 	/** The type-to-filter field; its value is pushed into the selection's query. */
 	readonly #search = new Input();
 
@@ -338,11 +340,20 @@ export class SelectList implements Component, MouseRoutable {
 		this.#nativeMark = typed;
 	}
 
-	/** Pointer select/activate on an item does what a click does today: select it and request activation. */
+	/**
+	 * Pointer select/activate on an item does what a click does today: select it and request activation.
+	 * A double-click arrives as `select` then `activate` for the same item; the `activate` belongs to the
+	 * same click, so it requests no second activation (which would confirm a pending confirmation).
+	 */
 	handleNativeEvent(event: NativeUiEvent): void {
+		const clicked = this.#nativeClicked;
+		this.#nativeClicked = undefined;
 		if (event.type !== "select" && event.type !== "activate") return;
+		if (event.type === "activate" && event.item === clicked) return;
 		const index = this.#selection.visibleItems.findIndex(item => item.value === event.item);
-		if (index >= 0) this.clickItem(index);
+		if (index < 0) return;
+		if (event.type === "select") this.#nativeClicked = event.item;
+		this.clickItem(index);
 	}
 
 	#describeItem(item: NativeDescribedItem): NativeNode {

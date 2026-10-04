@@ -1,12 +1,14 @@
 /**
  * Tern Surface Protocol framing: `ESC _ tsp ; <verb> [; k=v]* ; <body> ESC \`.
+ * A socket transport carries the same payloads without the APC wrapper, one
+ * per line (`tsp;<verb>[;k=v]*;<body>\n`).
  *
  * Bodies are UTF-8 JSON (JSON escapes every control character, so a body can
- * never contain ESC or BEL) or base64 for blob chunks. A body larger than the
- * negotiated `apc` limit is split across messages with the same verb, tagged
- * `c=<chunk-id>`, with `m=1` on every chunk but the last; the receiver joins
- * the bodies byte-wise. Chunks split on code-point boundaries, so every chunk
- * is valid UTF-8 on its own and the joined bytes equal the original body.
+ * never contain ESC, BEL or a newline) or base64 for blob chunks. A body larger
+ * than the negotiated `apc` limit is split across messages with the same verb,
+ * tagged `c=<chunk-id>`, with `m=1` on every chunk but the last; the receiver
+ * joins the bodies byte-wise. Chunks split on code-point boundaries, so every
+ * chunk is valid UTF-8 on its own and the joined bytes equal the original body.
  */
 import { isRecord } from "@oh-my-pi/pi-utils/type-guards";
 import {
@@ -14,6 +16,7 @@ import {
 	TSP_DEFAULT_APC_LIMIT,
 	TSP_VERSION,
 	type TspEvent,
+	type TspQuery,
 	type TspReply,
 	type TspVerb,
 } from "@oh-my-pi/pi-wire";
@@ -67,10 +70,6 @@ export function splitUtf8(body: string, limit: number): string[] {
 	return pieces;
 }
 
-function frame(verb: TspVerb, params: string, body: string): string {
-	return `${TSP_PREFIX}${verb}${params};${body}${ST}`;
-}
-
 function encodeParams(params: TspParams | undefined): string {
 	if (!params) return "";
 	let out = "";
@@ -79,48 +78,67 @@ function encodeParams(params: TspParams | undefined): string {
 }
 
 /**
- * Encode one logical message, chunked when `body` exceeds `limit` UTF-8 bytes.
- * Returns the complete byte string to write (all chunks, in order).
+ * Encode one logical message as unwrapped payloads (`tsp;<verb>[;k=v]*;<body>`),
+ * chunked when `body` exceeds `limit` UTF-8 bytes; one payload per chunk, in order.
  */
-export function encodeTspMessage(
+export function encodeTspPayloads(
 	verb: TspVerb,
 	body: string,
 	params?: TspParams,
 	limit: number = TSP_DEFAULT_APC_LIMIT,
-): string {
+): string[] {
 	const base = encodeParams(params);
 	// Fast path: ASCII-length bound first, exact byte count only near the limit.
-	if (body.length * 3 <= limit || Buffer.byteLength(body, "utf8") <= limit) return frame(verb, base, body);
+	if (body.length * 3 <= limit || Buffer.byteLength(body, "utf8") <= limit) {
+		return [`${TSP_APC_ID};${verb}${base};${body}`];
+	}
 	const chunkId = (nextChunkId++).toString(36);
 	const pieces = splitUtf8(body, limit);
-	let out = "";
+	const out: string[] = [];
 	for (let i = 0; i < pieces.length; i++) {
 		const more = i < pieces.length - 1 ? ";m=1" : "";
-		out += frame(verb, `${base};c=${chunkId}${more}`, pieces[i]!);
+		out.push(`${TSP_APC_ID};${verb}${base};c=${chunkId}${more};${pieces[i]!}`);
 	}
 	return out;
 }
 
-/** Encode a JSON message body. */
-export function encodeTspJson(verb: TspVerb, value: unknown, params?: TspParams, limit?: number): string {
-	return encodeTspMessage(verb, JSON.stringify(value), params, limit);
+/** Wrap payloads from {@link encodeTspPayloads} as APC strings, concatenated in order. */
+export function wrapTspPayloads(payloads: readonly string[]): string {
+	let out = "";
+	for (const p of payloads) out += `${APC}${p}${ST}`;
+	return out;
 }
 
 /**
- * The `hello` query; callers follow it with a DA1 sentinel. `features: ["edit"]`
- * tells the terminal that omp applies its `edit` events (TSP §8.5), so it may keep a
- * native selection in omp's editors; without it, every key stays omp's. `"undo"`
- * says omp applies `undo` events, so the terminal may turn ⌃Z in a field into one.
- * `"send"` accepts an explicit prompt for a live composer without simulating keys.
+ * Encode one logical message, chunked when `body` exceeds `limit` UTF-8 bytes.
+ * Returns the complete byte string to write (all chunks, in order).
  */
-export function encodeTspHelloQuery(version?: string): string {
-	return encodeTspJson("q", {
+export function encodeTspMessage(verb: TspVerb, body: string, params?: TspParams, limit?: number): string {
+	return wrapTspPayloads(encodeTspPayloads(verb, body, params, limit));
+}
+
+/**
+ * The `hello` query body. `features: ["edit"]` tells the terminal that omp
+ * applies its `edit` events (TSP §8.5), so it may keep a native selection in
+ * omp's editors; without it, every key stays omp's. `"undo"` says omp applies
+ * `undo` events, so the terminal may turn ⌃Z in a field into one. `"send"`
+ * accepts an explicit prompt for a live composer without simulating keys.
+ * `token` is set only on a socket transport.
+ */
+export function tspHelloQuery(version?: string, token?: string): TspQuery {
+	return {
 		q: "hello",
 		v: [TSP_VERSION],
 		app: "omp",
 		features: ["edit", "undo", "send"],
 		ver: version,
-	});
+		token,
+	};
+}
+
+/** The APC `hello` query (see {@link tspHelloQuery}); callers follow it with a DA1 sentinel. */
+export function encodeTspHelloQuery(version?: string): string {
+	return encodeTspMessage("q", JSON.stringify(tspHelloQuery(version)));
 }
 
 /** One decoded APC message: verb, parameters and raw body. */

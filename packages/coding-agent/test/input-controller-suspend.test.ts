@@ -9,6 +9,7 @@ interface SuspendCtx {
 		start: Mock<() => void>;
 		stop: Mock<() => void>;
 		requestRender: Mock<(force?: boolean) => void>;
+		whenTspDrained: Mock<(callback: () => void) => void>;
 	};
 	showStatus: Mock<(message: string) => void>;
 	showError: Mock<(message: string) => void>;
@@ -19,6 +20,7 @@ function createCtx(): SuspendCtx {
 		start: vi.fn(),
 		stop: vi.fn(),
 		requestRender: vi.fn(),
+		whenTspDrained: vi.fn((callback: () => void) => callback()),
 	};
 	const showStatus = vi.fn();
 	const showError = vi.fn();
@@ -108,6 +110,34 @@ describe("InputController.handleCtrlZ", () => {
 		expect(clearIntervalSpy).toHaveBeenCalledWith(suspendKeepalive);
 		expect(ui.start).toHaveBeenCalledTimes(1);
 		expect(ui.requestRender).toHaveBeenCalledWith(true);
+	});
+
+	it("sends SIGSTOP only once the stopped TUI's TSP output has drained", () => {
+		setPlatform("linux");
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+		const onceSpy = spyOnProcessOnce();
+		const { ctx, ui, showError } = createCtx();
+		let drained: (() => void) | undefined;
+		ui.whenTspDrained.mockImplementation(callback => {
+			drained = callback;
+		});
+
+		const controller = new InputController(ctx);
+		controller.handleCtrlZ();
+		sigcontListener = onceSpy.mock.calls.find(([sig]) => sig === "SIGCONT")?.[1];
+
+		expect(ui.stop).toHaveBeenCalledTimes(1);
+		expect(ui.stop.mock.invocationCallOrder[0]).toBeLessThan(ui.whenTspDrained.mock.invocationCallOrder[0]!);
+		expect(killSpy).not.toHaveBeenCalled();
+
+		drained?.();
+		expect(killSpy).toHaveBeenCalledTimes(1);
+		expect(killSpy).toHaveBeenCalledWith(0, "SIGSTOP");
+		expect(ui.start).not.toHaveBeenCalled();
+		expect(showError).not.toHaveBeenCalled();
+
+		sigcontListener?.();
+		expect(ui.start).toHaveBeenCalledTimes(1);
 	});
 
 	it("restores the TUI and drops the SIGCONT listener when process.kill rejects the signal", () => {

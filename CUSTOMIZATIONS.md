@@ -2,7 +2,7 @@
 
 What this fork changes, why, and what must still be true after an upstream sync.
 
-**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `Accounts`, `Browser`), one
+**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `Native rendering (TSP)`, `Accounts`, `Browser`), one
 `###` per feature under it, seven fields per feature: **What it does**, **Why**, **Files**
 (the files the feature *owns* — every changed file is in exactly one entry's **Files**;
 an entry whose code sits in a file another entry owns names that file and its symbols
@@ -449,6 +449,137 @@ does what I wanted".
   - The model segment's eye badge colors are unchanged in both the ANSI render and the
     native describe: error, then warning, then success, else dim.
 - **Check:** `bun test packages/tui/test/status-line-advisor.test.ts packages/coding-agent/test/advisor-toggle.test.ts`
+
+## Native rendering (TSP)
+
+### TSP over a Unix socket (Foxy native rendering)
+
+- **What it does:** When `PI_TUI_TSP_SOCKET` names a Unix socket (and omp is not inside
+  a terminal multiplexer, and `PI_TUI_NATIVE` does not turn native off), the Tern
+  Surface Protocol travels over that socket instead of as APC strings through the pty:
+  one message per line (`tsp;<verb>[;k=v]*;<body>`, the APC payload without its
+  wrapper), the hello query carrying `PI_TUI_TSP_TOKEN` as `token`. The CLI entry
+  moves both variables out of `process.env` into a process slot before anything
+  spawns, so spawns that build their env from `process.env` do not pass them on (Bun's
+  default spawn env still carries the startup environment; Foxy's binding check of
+  token, the pane's foreground process group and one live session per pane, not this
+  removal, keeps other processes off the pane's session), and only the session's
+  terminal (the one its `Composer` builds) takes the target; the `--resume` picker,
+  git-tui, ps-top and other standalone TUIs stay text. Every
+  `ui.start()` re-sends the hello on the open connection; no reply within
+  `TSP_SOCKET_HELLO_TIMEOUT_MS`, a connect error or a closed socket falls back to the
+  classic text UI. With a socket target, `tspExpected` is false even under
+  `TERM_PROGRAM=tern`: the surface opens only after the socket's hello, never
+  optimistically. A socket the peer closes under a live surface fires
+  `onTspClosed`; the TUI closes its surface (`#onTspClosed`) and paints rows at once.
+  Inbound lines are re-wrapped as APC input. On `stop()` (exit,
+  Ctrl-Z, external editor) after a socket surface, `x keep:true` goes to the socket and
+  the stop-time history flush writes the transcript as text to the pty; retired rows
+  are not written again by a later stop. Ctrl-Z sends SIGSTOP from
+  `ui.whenTspDrained`, once the socket's queue has drained (or closed), or after
+  `TSP_SOCKET_DRAIN_TIMEOUT_MS` when the peer stops reading.
+- **Why:** Foxy draws omp's UI natively from the socket without Ghostty ever parsing
+  APC, while the pty keeps carrying keystrokes and, at stop, omp's own classic
+  transcript, so scrollback, search and capture work after omp exits as they do today.
+- **Files:** `packages/tui/src/tsp-socket-env.ts` (`TspSocketTarget`, `takeTspSocketEnv`,
+  the held slot, `holdTspSocketEnv`, `takeHeldTspSocket`; no runtime imports, so the
+  CLI entry loads it without the TUI graph),
+  `packages/tui/src/terminal.ts` (`TSP_SOCKET_HELLO_TIMEOUT_MS`,
+  `TSP_SOCKET_DRAIN_TIMEOUT_MS`, `ProcessTerminalOptions.tspSocket`, the
+  constructor's `holdTspSocketEnv()` call, the socket probe and inbound line handling,
+  `writeTsp`, `tspTransport`, the socket check in `tspExpected`, `whenTspDrained` and
+  `TspSocketConnection.whenDrained`, `onTspClosed` fired from `#onTspSocketClosed`),
+  `packages/tui/src/index.ts` (the `export * from "./tsp-socket-env"` line),
+  `packages/tui/src/prompt/composer.ts` (the default terminal built as
+  `new ProcessTerminal({ tspSocket: takeHeldTspSocket() })`),
+  `packages/coding-agent/src/cli.ts` (the static `tsp-socket-env` import from pi-tui
+  and the unconditional `holdTspSocketEnv()` call in `runCli` right after
+  worker-selector dispatch),
+  `packages/tui/src/native/encode.ts` (`encodeTspPayloads`, `wrapTspPayloads`,
+  `encodeTspMessage` as their APC wrap in place of upstream's `encodeTspJson`, the
+  hello `token` in `tspHelloQuery`), `packages/tui/src/native/backend.ts` (`#send`,
+  the sink `#write` and `#uploadBlobs` use, choosing `writeTsp` over the APC write),
+  `packages/wire/src/tsp.ts` (the hello query's optional `token`),
+  `packages/tui/src/tui.ts` (the socket-surface stop-time flush in `stop()`, the
+  `paintViewport` argument of `#flushHistoryBeforeStop`, the absolute erase in
+  `#eraseRowPaintForNative`, the hidden-park cursor row in `#emitPlanFrame`,
+  `whenTspDrained`, the `onTspClosed` subscription and `#onTspClosed`),
+  `packages/coding-agent/src/modes/controllers/input-controller.ts` (`handleCtrlZ`
+  sending SIGSTOP from `ui.whenTspDrained` via `#stopProcessGroup`).
+- **Depends on upstream:** the APC TSP handshake in `ProcessTerminal`
+  (`#shouldQueryTspSupport`, `#queryTspSupport`, `#resolveTspSupport`,
+  `#handleTspMessage`, `tspProbePending`, `onTspHello`) and `isInsideTerminalMultiplexer`
+  in `packages/tui/src/terminal-multiplexer.ts`; `tui.ts` routing input by `TSP_PREFIX`;
+  the hello query body and chunking by `hello.apc` in `encode.ts`; `NativeBackend.stop`
+  writing `x keep:true` and `resume` re-adopting the kept surface; `TUI.stop()` running
+  `#flushHistoryBeforeStop` before the shell handoff, `#emitPlanFrame` painting
+  absolutely from `#providerViewportTop`, and the probe hold timer keeping rows
+  unpainted until the hello resolves; `Composer.beginHistoryFlush`/`renderFrame` and
+  `TranscriptContainer.peekFlushBatch`/`acknowledgeFinalizedBatch` retiring a
+  transcript prefix only on acknowledge, and `TranscriptContainer.nativeBlocks` never
+  retiring; `runCli` in `cli.ts` dispatching worker selectors before its first `await`
+  and spawning nothing before that point, its static imports never reaching the TUI
+  graph (whose import-time `tmux display-message` `Bun.spawnSync` in
+  `terminal-capabilities.ts`/`tmux.ts` therefore runs after the hold); the prepaint `Composer` from `beginStartupComposer` in
+  `packages/coding-agent/src/modes/startup-composer.ts` being the one `InteractiveMode`
+  adopts (`takeStartupComposerLease` in `packages/coding-agent/src/main.ts`), and
+  `InteractiveMode` building its own `Composer` without a terminal only when there is
+  no lease; `packages/tui/src/apps/standalone-picker.ts` and the other standalone TUIs
+  constructing `new ProcessTerminal()` with no options.
+- **Tripwire paths:** `packages/tui/src/tsp-socket-env.ts`, `packages/tui/src/terminal.ts`, `packages/tui/src/terminal-multiplexer.ts`, `packages/tui/src/native/encode.ts`, `packages/tui/src/native/backend.ts`, `packages/wire/src/tsp.ts`, `packages/tui/src/tui.ts`, `packages/tui/src/prompt/composer.ts`, `packages/tui/src/chrome/transcript-container.ts`, `packages/coding-agent/src/cli.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/modes/startup-composer.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/modes/controllers/input-controller.ts`, `packages/tui/src/apps/standalone-picker.ts`
+- **Must still be true:**
+  - `PI_TUI_TSP_SOCKET` and `PI_TUI_TSP_TOKEN` are gone from `process.env` once
+    `runCli` passes worker dispatch, before any plugin, daemon, extension, MCP or LSP
+    spawn, and once any `ProcessTerminal` is constructed. This is best effort: spawns
+    using Bun's default env still inherit them; the security guard is Foxy's binding
+    check.
+  - Exactly one terminal per process takes the target: the session's `Composer`
+    terminal on both the prepaint path (`omp`) and the slow path (`omp --resume <id>`,
+    `omp --model …`). A `ProcessTerminal` built without `tspSocket` never uses the
+    socket, so the `--resume` picker stays text and does not consume the target.
+  - `tspTransport` stays `"socket"` after the peer closes a live socket surface, and
+    output after the close is dropped, never written as APC; the TUI leaves native
+    rendering and paints rows at once, so `stop()` still leaves the transcript in the
+    shell's scrollback.
+  - With a socket target, `tspExpected` is false, so no TSP message reaches stdout
+    before the socket's hello.
+  - Ctrl-Z sends SIGSTOP only after `x keep:true` has left the socket's queue, or
+    after `TSP_SOCKET_DRAIN_TIMEOUT_MS`.
+  - With the socket in use, no APC hello and no TSP DA1 sentinel reach stdout; inside a
+    multiplexer the socket is never used, even with `PI_TUI_NATIVE=1`.
+  - No hello reply within `TSP_SOCKET_HELLO_TIMEOUT_MS`, a connect error or an early
+    close gives the classic text UI.
+  - `encodeTspMessage` output is byte-identical to the APC wrap of
+    `encodeTspPayloads`, and every socket line honours the negotiated `hello.apc`.
+  - After a socket surface, `stop()` writes the whole transcript once as text to the
+    pty; Ctrl-Z, `fg`, exit writes no row twice. With the APC transport `stop()` writes
+    no transcript text after a live surface.
+- **Check:** `bun test packages/tui/test/native/socket-transport.test.ts packages/tui/test/native/socket-stop-flush.test.ts packages/coding-agent/test/input-controller-suspend.test.ts`
+
+### Native double-click on a list row counts as one click
+
+- **What it does:** A native double-click on a `SelectList` row arrives as `select`
+  then `activate` for the same item. `handleNativeEvent` remembers the item of the last
+  `select` until the next native event and ignores an `activate` for that same item, so
+  the double-click activates once. A lone `activate`, or one after a different item was
+  selected, still activates.
+- **Why:** Each native event did what a mouse click does, so a double-click activated
+  twice: on an item with a `confirmation`, the second activation confirmed the prompt
+  the first one had just raised.
+- **Files:** `packages/tui/src/components/select-list.ts` (`#nativeClicked` and the
+  `select`-then-`activate` check in `handleNativeEvent`).
+- **Depends on upstream:** `NativeUiEvent` in `packages/tui/src/native/node.ts` carrying
+  `select`/`activate` with the item value, and the TUI routing them to the describing
+  component's `handleNativeEvent`; `SelectList.clickItem` selecting the item and
+  calling `#activateSelected`, where the first activation of an item with a
+  `confirmation` only marks it pending and a second one confirms it.
+- **Tripwire paths:** `packages/tui/src/components/select-list.ts`, `packages/tui/src/native/node.ts`, `packages/tui/src/tui.ts`
+- **Must still be true:**
+  - A native `select` then `activate` for the same item leaves a confirmation pending
+    and calls no `onSelect`; a further `select` on it confirms.
+  - A lone native `activate` activates its item, and an `activate` after a `select` of
+    a different item activates too.
+- **Check:** `bun test packages/tui/test/select-list.test.ts`
 
 ## Accounts
 

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a Unix-socket transport for the Tern Surface Protocol: when `PI_TUI_TSP_SOCKET` (with `PI_TUI_TSP_TOKEN`, sent as the hello's `token`) is set outside a terminal multiplexer, TSP messages travel one per line over the socket instead of as APC strings through the terminal. `holdTspSocketEnv()` moves both variables out of `process.env` (every `ProcessTerminal` also does this on construction), so spawns that build their environment from `process.env` do not pass them on; spawns using Bun's default environment still inherit them, so the terminal's session binding check, not the removal, guards the socket. Only a terminal given the target, such as the one `Composer` builds with `takeHeldTspSocket()`, uses the socket; other terminals stay text. On stop after a socket surface, the transcript is written to the terminal as text, and a later stop writes only rows not written before. A socket-bound session opens its surface only after the socket's hello, even under `TERM_PROGRAM=tern`, so no TSP reaches the terminal as APC; if the terminal closes the socket under a live surface, the TUI switches back to painting rows. `Terminal.whenTspDrained` and `TUI.whenTspDrained` run a callback once queued socket output has left the process (bounded by `TSP_SOCKET_DRAIN_TIMEOUT_MS`), and `Terminal.onTspClosed` reports the socket closing under its surface.
+
+### Fixed
+
+- Fixed a native double-click on a `SelectList` row confirming an item that needs confirmation: `handleNativeEvent` now treats an `activate` that directly follows a `select` for the same item as the same click.
+
 ## [18.6.0] - 2026-10-03
 
 ### Fixed

@@ -504,3 +504,61 @@ describe("SelectList.routeMouse", () => {
 		expect(selected).toBe("c");
 	});
 });
+
+describe("SelectList.handleNativeEvent", () => {
+	function makeList() {
+		const list = new SelectList(
+			[
+				{ value: "a", label: "a" },
+				{ value: "danger", label: "danger", confirmation: "Really?" },
+			],
+			5,
+			testTheme,
+		);
+		const confirmed: string[] = [];
+		list.onSelect = item => {
+			confirmed.push(item.value);
+		};
+		return { list, confirmed };
+	}
+
+	it("counts a double-click's select and activate as one click, so a confirmation stays pending", () => {
+		const { list, confirmed } = makeList();
+
+		list.handleNativeEvent({ type: "select", key: "", item: "danger" });
+		list.handleNativeEvent({ type: "activate", key: "", item: "danger" });
+
+		expect(list.pickerView().pending).toBe("danger");
+		expect(confirmed).toEqual([]);
+
+		list.handleNativeEvent({ type: "select", key: "", item: "danger" });
+
+		expect(list.pickerView().pending).toBeNull();
+		expect(confirmed).toEqual(["danger"]);
+	});
+
+	it("activates on a lone activate", () => {
+		const { list, confirmed } = makeList();
+
+		list.handleNativeEvent({ type: "activate", key: "", item: "a" });
+		list.handleNativeEvent({ type: "activate", key: "", item: "danger" });
+
+		expect(confirmed).toEqual(["a"]);
+		expect(list.pickerView().pending).toBe("danger");
+
+		list.handleNativeEvent({ type: "activate", key: "", item: "danger" });
+
+		expect(confirmed).toEqual(["a", "danger"]);
+	});
+
+	it("activates when another item was selected in between", () => {
+		const { list, confirmed } = makeList();
+
+		list.handleNativeEvent({ type: "select", key: "", item: "danger" });
+		list.handleNativeEvent({ type: "select", key: "", item: "a" });
+		list.handleNativeEvent({ type: "activate", key: "", item: "danger" });
+
+		expect(confirmed).toEqual(["a"]);
+		expect(list.pickerView().pending).toBe("danger");
+	});
+});

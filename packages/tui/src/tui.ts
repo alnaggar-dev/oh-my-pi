@@ -1432,6 +1432,7 @@ export class TUI extends Container {
 			this.requestRender(true);
 		});
 		this.terminal.onTspHello?.(hello => this.#onTspHello(hello));
+		this.terminal.onTspClosed?.(() => this.#onTspClosed());
 		this.terminal.start(
 			data => this.#handleInput(data),
 			() => {
@@ -1544,6 +1545,21 @@ export class TUI extends Container {
 		this.#native!.stop();
 	}
 
+	/**
+	 * Run `callback` once the TSP output written so far (the `x keep:true`
+	 * close from {@link stop}) has left the process, bounded by a time limit
+	 * for a peer that stopped reading (see {@link Terminal.whenTspDrained}).
+	 * Ctrl-Z stops the process from here, so the terminal drops its surface
+	 * before the process freezes. At once for a terminal without the hook.
+	 */
+	whenTspDrained(callback: () => void): void {
+		if (this.terminal.whenTspDrained) {
+			this.terminal.whenTspDrained(callback);
+			return;
+		}
+		callback();
+	}
+
 	/** Reference document the TSP terminal should hold (debug mirror only). */
 	getNativeDocument(): TspNode | undefined {
 		return this.#nativeLive ? this.#native?.document() : undefined;
@@ -1579,6 +1595,21 @@ export class TUI extends Container {
 			return;
 		}
 		this.#startNative(hello);
+	}
+
+	/**
+	 * The socket transport closed under the live surface (the peer hung up):
+	 * the terminal shows nothing of it any more, so close it without keeping
+	 * anything and paint every row now. The rows retire as in any row session,
+	 * so `stop()` still leaves the transcript in the shell's scrollback. The
+	 * next start's `hello` opens a fresh surface.
+	 */
+	#onTspClosed(): void {
+		if (this.#stopped || !this.#nativeLive) return;
+		this.#nativeLive = false;
+		this.#native!.stop(false);
+		this.#native = undefined;
+		this.renderNow();
 	}
 
 	/** Switch to the surface (adopting the one a stop/start cycle closed). */
@@ -1635,9 +1666,10 @@ export class TUI extends Container {
 	}
 
 	/**
-	 * The handshake landed after the row renderer painted (deferred input):
-	 * leave the alternate screen if borrowed and erase the painted viewport so
-	 * the surface opens where the rows began.
+	 * The handshake landed after the row renderer painted (deferred input, or a
+	 * `start()` after a socket-transport `stop()` flushed the transcript as
+	 * text): leave the alternate screen if borrowed and erase the painted
+	 * viewport so the surface opens where the rows began.
 	 */
 	#eraseRowPaintForNative(): void {
 		this.#cancelResizeProbe();
@@ -1651,10 +1683,12 @@ export class TUI extends Container {
 		}
 		this.#setMouseTracking("off");
 		if (this.#previousFrameLength > 0) {
-			const lineDiff = this.#providerViewportTop - this.#hardwareCursorRow;
-			if (lineDiff > 0) this.terminal.write(`\x1b[${lineDiff}B`);
-			else if (lineDiff < 0) this.terminal.write(`\x1b[${-lineDiff}A`);
-			this.terminal.write("\r\x1b[J");
+			// Absolute, like every provider paint: after a stop/start cycle the
+			// shell handoff and job-control output moved the cursor without
+			// updating the tracked row, so a relative move would miss the viewport.
+			const top = Math.min(this.#providerViewportTop, Math.max(0, this.terminal.rows - 1));
+			this.terminal.write(`\x1b[${top + 1};1H\x1b[J`);
+			this.#hardwareCursorRow = top;
 			this.#previousFrameLength = 0;
 			this.#providerWindow = [];
 			this.#providerPreparedRows = [];
@@ -2375,8 +2409,12 @@ export class TUI extends Container {
 	 * alternate buffer without unstacking the overlay, so leaving it in would also
 	 * charge a no-longer-painted modal's images against the cap and delete the
 	 * transcript's visible graphics on the way out.
+	 *
+	 * `paintViewport`: no row frame is on screen (a socket-transport surface
+	 * drew it), so the final viewport is written even when no history batch
+	 * carries it, leaving the same text a row session leaves above the prompt.
 	 */
-	#flushHistoryBeforeStop(): void {
+	#flushHistoryBeforeStop(paintViewport: boolean): void {
 		const provider = this.#frameProvider;
 		if (provider?.beginHistoryFlush === undefined) return;
 		const width = this.terminal.columns;
@@ -2392,7 +2430,12 @@ export class TUI extends Container {
 				viewport = Array.from(plan.viewport);
 				if (viewport.length > height) viewport = viewport.slice(0, height);
 			} while (this.#imageBudget.endPass());
-			if (plan.history === undefined) return;
+			if (plan.history === undefined) {
+				if (paintViewport) this.#emitPlanFrame(width, height, viewport, undefined, provider);
+				return;
+			}
+			// Every emitted batch repaints the viewport below it.
+			paintViewport = false;
 			const acceptedBefore = this.#acceptedHistoryBatchId;
 			this.#emitPlanFrame(width, height, viewport, plan.history, provider);
 			if (plan.history.id > acceptedBefore && this.#acceptedHistoryBatchId === acceptedBefore) {
@@ -2462,8 +2505,13 @@ export class TUI extends Container {
 		// erase native history and re-stream the whole transcript at quit; drop
 		// the latch so the flush below writes only un-retired rows.
 		this.#clearScrollbackOnNextRender = false;
-		// The surface already holds the transcript; there's no row history to retire.
-		if (!nativeWasLive) this.#flushHistoryBeforeStop();
+		// APC: the surface already holds the transcript and the terminal keeps
+		// it, so there's no row history to retire. Socket: the surface lives
+		// outside the terminal grid, so the transcript reaches scrollback only as
+		// the text this flush writes after `x keep:true`. Rows retire here, so a
+		// later stop writes only rows finalized since.
+		const socketSurface = nativeWasLive && this.terminal.tspTransport === "socket";
+		if (!nativeWasLive || socketSurface) this.#flushHistoryBeforeStop(socketSurface);
 		// Deliberately leave transmitted images in the terminal's graphics store:
 		// placeholder cells committed to native scrollback render only while their
 		// image data lives, so a delete-by-id here blanks every transcript image
@@ -3493,8 +3541,13 @@ export class TUI extends Container {
 			this.#resizeAltExitFused = false;
 			setAltScreenActive(false);
 		}
-		if (target) this.#recordHardwareCursorState(target);
-		else this.#recordHardwareCursorHidden();
+		if (target) {
+			this.#recordHardwareCursorState(target);
+		} else {
+			// The cursor sits where the hidden park above put it.
+			this.#recordHardwareCursorHidden();
+			this.#hardwareCursorRow = mutableTop;
+		}
 		this.#providerWindow = mutablePreparedLines;
 		this.#providerPreparedRows = mutablePreparedRows;
 		this.#providerViewportTop = mutableTop;

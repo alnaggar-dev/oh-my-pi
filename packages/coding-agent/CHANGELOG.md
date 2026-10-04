@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added native rendering over the Tern Surface Protocol socket transport (`PI_TUI_TSP_SOCKET` / `PI_TUI_TSP_TOKEN`) for every interactive launch, including `omp --resume` and `omp --model …`. omp removes both variables from `process.env` at startup, before it starts plugins, extensions, MCP or LSP servers, so spawns that build their environment from `process.env` do not pass them on; spawns using Bun's default environment still inherit them, so the terminal's session binding check, not the removal, guards the socket. Only the session's own terminal uses the socket; the session picker and other standalone screens stay text. Ctrl-Z suspends only once the native surface's close has left the socket (at most 500 ms behind a peer that stopped reading), so the terminal removes the surface before omp stops.
+
 ### Fixed
 
 - Fixed follow-up hashline edits being rejected as anchored on lines "never displayed" after an earlier edit shifted those lines, when the replacement carries the anchored content; genuinely stale line numbers are still rejected ([#14254](https://github.com/can1357/oh-my-pi/pull/14254) by [@abilliontokens](https://github.com/abilliontokens)).

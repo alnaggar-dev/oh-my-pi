@@ -69,6 +69,8 @@ export * from "./stdin-buffer";
 export type * from "./symbols";
 // Terminal interface and implementations
 export * from "./terminal";
+// TSP socket handoff from the environment to the session's terminal
+export * from "./tsp-socket-env";
 // Terminal image support
 export * from "./terminal-capabilities";
 // Theme runtime (active theme singleton, loaders, shimmer, session accents, path → language)

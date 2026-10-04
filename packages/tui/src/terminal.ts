@@ -16,7 +16,15 @@ import {
 	parseGlyphProtocolReply,
 } from "./glyph-protocol";
 import { setKittyProtocolActive } from "./keys";
-import { encodeTspHelloQuery, parseTspMessage, TSP_PREFIX, type TspHello } from "./native/encode";
+import {
+	encodeTspHelloQuery,
+	encodeTspPayloads,
+	parseTspMessage,
+	TSP_PREFIX,
+	type TspHello,
+	tspHelloQuery,
+	wrapTspPayloads,
+} from "./native/encode";
 import { StdinBuffer } from "./stdin-buffer";
 import {
 	isInsideTerminalMultiplexer,
@@ -28,6 +36,7 @@ import {
 	TERMINAL,
 } from "./terminal-capabilities";
 import { isInsideTmux, wrapTmuxPassthrough } from "./tmux";
+import { holdTspSocketEnv, type TspSocketTarget } from "./tsp-socket-env";
 import { setHangulCompatibilityJamoWidth } from "./utils";
 import { translateWindowsAltGrSequence } from "./windows-altgr";
 import { Win32InputModeDecoder, Win32PasteMarkerNormalizer } from "./windows-input-mode";
@@ -58,6 +67,151 @@ function completeTspInput(buffered: string): string | undefined {
 	const terminator = buffered.endsWith("\x1b\\") ? 2 : buffered.endsWith("\x07") ? 1 : 0;
 	if (terminator === 0) return undefined;
 	return `${TSP_PREFIX}${buffered.slice(TSP_OSC_PREFIX.length, -terminator)}\x1b\\`;
+}
+
+/** How long the `hello` reply may take over the socket before the TUI keeps painting rows. */
+export const TSP_SOCKET_HELLO_TIMEOUT_MS = 300;
+/** A hello deadline that fired this late ran after an event-loop stall; input gets this long to run first. */
+const TSP_SOCKET_HELLO_GRACE_MS = 50;
+/** How long {@link ProcessTerminal.whenTspDrained} waits for a socket peer that stopped reading. */
+export const TSP_SOCKET_DRAIN_TIMEOUT_MS = 500;
+
+/**
+ * Client end of the TSP socket transport: one `tsp;…` payload per line each
+ * way. Writes keep their order; bytes the kernel does not take are held and
+ * flushed on drain, and writes made while connecting wait for the connection.
+ * Once closed (by the peer, an error or {@link close}), writes are dropped and
+ * `onClose` has fired exactly once. The socket never keeps the process alive,
+ * and Bun opens it close-on-exec, so children never inherit it.
+ */
+class TspSocketConnection {
+	#socket: Bun.Socket<undefined> | undefined;
+	#closed = false;
+	/** Bytes not yet taken by the kernel, oldest first; the first is sent from `#backlogOffset`. */
+	#backlog: Buffer[] = [];
+	#backlogOffset = 0;
+	/** Callbacks waiting for {@link drained}. */
+	#drainWaiters: (() => void)[] = [];
+	#decoder = new TextDecoder();
+	#partialLine = "";
+	readonly #onLine: (line: string) => void;
+	readonly #onClose: (error?: unknown) => void;
+
+	constructor(onLine: (line: string) => void, onClose: (error?: unknown) => void) {
+		this.#onLine = onLine;
+		this.#onClose = onClose;
+	}
+
+	/** Nothing waits to be sent: every write reached the kernel, or the connection closed. */
+	get drained(): boolean {
+		return this.#closed || this.#backlog.length === 0;
+	}
+
+	/** Run `callback` once {@link drained} holds; at once when it already does. */
+	whenDrained(callback: () => void): void {
+		if (this.drained) {
+			callback();
+			return;
+		}
+		this.#drainWaiters.push(callback);
+	}
+
+	/** Start connecting; `onClose` may fire before this returns when the connect fails at once. */
+	connect(path: string): void {
+		Bun.connect({
+			unix: path,
+			socket: {
+				open: socket => {
+					if (this.#closed) {
+						socket.terminate();
+						return;
+					}
+					socket.unref();
+					this.#socket = socket;
+					this.#flush();
+				},
+				data: (_socket, data) => this.#receive(data),
+				drain: () => this.#flush(),
+				close: (_socket, error) => this.#finish(error),
+				error: (_socket, error) => this.#finish(error),
+				connectError: (_socket, error) => this.#finish(error),
+			},
+		}).catch(error => this.#finish(error));
+	}
+
+	write(text: string): void {
+		if (this.#closed) return;
+		const bytes = Buffer.from(text, "utf8");
+		const socket = this.#socket;
+		if (socket === undefined || this.#backlog.length > 0) {
+			this.#backlog.push(bytes);
+			return;
+		}
+		const written = socket.write(bytes);
+		if (written < 0) {
+			this.#finish();
+			return;
+		}
+		if (written < bytes.length) this.#backlog.push(bytes.subarray(written));
+	}
+
+	close(): void {
+		this.#finish();
+	}
+
+	#flush(): void {
+		const socket = this.#socket;
+		if (socket === undefined) return;
+		while (this.#backlog.length > 0) {
+			const chunk = this.#backlog[0]!;
+			// Bun's `write(data, byteOffset)` defaults byteLength to the whole buffer, so pass the remainder itself.
+			const written = socket.write(chunk.subarray(this.#backlogOffset));
+			if (written < 0) {
+				this.#finish();
+				return;
+			}
+			this.#backlogOffset += written;
+			if (this.#backlogOffset < chunk.length) return;
+			this.#backlog.shift();
+			this.#backlogOffset = 0;
+		}
+		this.#notifyDrained();
+	}
+
+	#notifyDrained(): void {
+		if (this.#drainWaiters.length === 0) return;
+		const waiters = this.#drainWaiters;
+		this.#drainWaiters = [];
+		for (const waiter of waiters) waiter();
+	}
+
+	#receive(data: Buffer): void {
+		const text = this.#partialLine + this.#decoder.decode(data, { stream: true });
+		let start = 0;
+		for (let end = text.indexOf("\n"); end !== -1 && !this.#closed; end = text.indexOf("\n", start)) {
+			const line = text.slice(start, end);
+			start = end + 1;
+			if (line.length === 0) continue;
+			try {
+				this.#onLine(line);
+			} catch (error) {
+				logger.warn("TSP: socket message handler failed", { error: String(error) });
+			}
+		}
+		this.#partialLine = text.slice(start);
+	}
+
+	#finish(error?: unknown): void {
+		if (this.#closed) return;
+		this.#closed = true;
+		this.#backlog = [];
+		this.#partialLine = "";
+		const socket = this.#socket;
+		this.#socket = undefined;
+		socket?.terminate();
+		this.#onClose(error);
+		this.#notifyDrained();
+	}
 }
 
 function shouldPollWindowsTerminalAppearance(env: NodeJS.ProcessEnv = Bun.env): boolean {
@@ -482,8 +636,9 @@ export type PrivateModeReportHandler = (mode: number, supported: boolean, confir
 export type GlyphProtocolReportHandler = (supported: boolean) => void;
 /**
  * Outcome of the Tern Surface Protocol `hello` probe: the terminal's reply,
- * or null when it answered the DA1 sentinel first (no TSP) or the probe was
- * skipped (`PI_TUI_NATIVE=0`, multiplexers).
+ * or null when it answered the DA1 sentinel first (no TSP), the socket
+ * transport failed, closed or missed its deadline, or the probe was skipped
+ * (`PI_TUI_NATIVE=0`, multiplexers).
  */
 export type TspHelloHandler = (hello: TspHello | null) => void;
 
@@ -662,15 +817,46 @@ export interface Terminal {
 	 * Terminals built against older pi-tui versions keep working.
 	 */
 	onTspHello?(callback: TspHelloHandler): void;
-	/** True while the `hello` probe awaits its reply or DA1 sentinel. */
+	/** True while the `hello` probe awaits its reply, its DA1 sentinel or its socket deadline. */
 	readonly tspProbePending?: boolean;
 	/**
 	 * The environment names a Tern Surface Protocol terminal
-	 * (`TERM_PROGRAM=tern`) and the `hello` probe will run: the TUI takes input
-	 * at start and opens its surface before the reply, which then confirms or
-	 * revokes it.
+	 * (`TERM_PROGRAM=tern`) and the in-band `hello` probe will run: the TUI
+	 * takes input at start and opens its surface before the reply, which then
+	 * confirms or revokes it. Never set with a socket transport, whose output
+	 * has nowhere to go before the socket's reply.
 	 */
 	readonly tspExpected?: boolean;
+	/**
+	 * Send TSP payloads from `encodeTspPayloads` (`tsp;…`, no APC wrapper), in
+	 * order: one line each over the socket transport, else APC-wrapped through
+	 * the terminal output. Writes to a socket that has closed are dropped.
+	 * Optional so custom Terminals keep working; callers fall back to `write`.
+	 */
+	writeTsp?(payloads: readonly string[]): void;
+	/**
+	 * Run `callback` once the TSP output written so far has left the process:
+	 * at once when nothing waits in the socket transport's queue (APC output is
+	 * written synchronously), else when that queue drains or the socket closes,
+	 * or after {@link TSP_SOCKET_DRAIN_TIMEOUT_MS} when the peer stops reading.
+	 * Optional so custom Terminals keep working; callers then proceed at once.
+	 */
+	whenTspDrained?(callback: () => void): void;
+	/**
+	 * Register a callback fired when the socket transport a resolved `hello`
+	 * confirmed closes (the peer hung up or failed): its surface is gone and
+	 * TSP output is dropped until the next start's probe. `stop()` clears the
+	 * subscribers, as it does the `hello` ones. Optional so custom Terminals
+	 * keep working.
+	 */
+	onTspClosed?(callback: () => void): void;
+	/**
+	 * `"socket"` when the latest resolved `hello` probe got its reply over the
+	 * TSP socket, even if the peer has closed it since (the surface, not the
+	 * grid, held the transcript); `"apc"` otherwise. `stop()` keeps it; the next
+	 * probe's outcome changes it.
+	 */
+	readonly tspTransport?: "apc" | "socket";
 }
 
 /**
@@ -740,6 +926,13 @@ export interface ProcessTerminalOptions {
 	 * is also true.
 	 */
 	nativeWindowsConsole?: boolean;
+	/**
+	 * The TSP socket transport. Defaults to none: only the terminal handed a
+	 * target (the session's, via `takeHeldTspSocket` in `tsp-socket-env.ts`) uses the socket.
+	 * The constructor always runs {@link holdTspSocketEnv}, so the variables
+	 * leave `process.env` whatever this holds. Tests inject a socket here.
+	 */
+	tspSocket?: TspSocketTarget | null;
 }
 
 /**
@@ -848,7 +1041,15 @@ export class ProcessTerminal implements Terminal {
 	#tspPending = false;
 	#tspResult: TspHello | null | undefined;
 	#tspCallbacks: TspHelloHandler[] = [];
+	#tspClosedCallbacks: (() => void)[] = [];
 	#tspReplyBuffer = "";
+	readonly #tspSocketTarget: TspSocketTarget | null;
+	/** Open or connecting socket transport; undefined once closed. */
+	#tspSocket: TspSocketConnection | undefined;
+	/** Deadline for the `hello` reply over the socket. */
+	#tspSocketTimer?: Timer;
+	/** The latest resolved probe got its hello over the socket: TSP output belongs there. */
+	#tspOverSocket = false;
 	#privateCsiResponseBuffer = "";
 	#da1SentinelOwners: Da1SentinelOwner[] = [];
 	/** Resolved DECRQM support per private mode (mode → supported). */
@@ -871,6 +1072,8 @@ export class ProcessTerminal implements Terminal {
 	constructor(options?: ProcessTerminalOptions) {
 		this.#conpty = options?.conpty ?? isConPTYHosted();
 		this.#nativeWindowsConsole = options?.nativeWindowsConsole ?? process.platform === "win32";
+		holdTspSocketEnv();
+		this.#tspSocketTarget = options?.tspSocket ?? null;
 	}
 
 	get kittyProtocolActive(): boolean {
@@ -972,12 +1175,55 @@ export class ProcessTerminal implements Terminal {
 	get tspExpected(): boolean {
 		// A multiplexer started from Tern can leave `TERM_PROGRAM=tern` behind
 		// while swallowing APC, even when `PI_TUI_NATIVE=1` forces the probe.
+		// A socket-bound session must not open its surface before the socket's
+		// hello: until then its TSP output would go APC-wrapped onto the pty.
 		return (
+			this.#tspSocketTarget === null &&
 			$env.TERM_PROGRAM?.toLowerCase() === "tern" &&
 			!isInsideTerminalMultiplexer($env) &&
 			!isTerminalHeadless() &&
 			this.#shouldQueryTspSupport()
 		);
+	}
+
+	get tspTransport(): "apc" | "socket" {
+		return this.#tspOverSocket ? "socket" : "apc";
+	}
+
+	writeTsp(payloads: readonly string[]): void {
+		// A socket-bound session whose socket closed drops its output: APC in
+		// the pty would reach a terminal that never agreed to TSP.
+		if (this.#tspOverSocket) {
+			this.#tspSocket?.write(`${payloads.join("\n")}\n`);
+			return;
+		}
+		this.write(wrapTspPayloads(payloads));
+	}
+
+	whenTspDrained(callback: () => void): void {
+		const connection = this.#tspSocket;
+		if (connection === undefined || connection.drained) {
+			callback();
+			return;
+		}
+		let pending = true;
+		const finish = (): void => {
+			if (!pending) return;
+			pending = false;
+			clearTimeout(timer);
+			callback();
+		};
+		const timer = setTimeout(() => {
+			logger.warn("TSP: socket peer took no queued output; continuing without it", {
+				timeoutMs: TSP_SOCKET_DRAIN_TIMEOUT_MS,
+			});
+			finish();
+		}, TSP_SOCKET_DRAIN_TIMEOUT_MS);
+		connection.whenDrained(finish);
+	}
+
+	onTspClosed(callback: () => void): void {
+		this.#tspClosedCallbacks.push(callback);
 	}
 
 	start(
@@ -1786,31 +2032,118 @@ export class ProcessTerminal implements Terminal {
 		this.#tspPending = false;
 		this.#tspResult = undefined;
 		this.#tspReplyBuffer = "";
+		this.#clearTspSocketDeadline();
 		if (this.#dead) return;
-		if (!this.#shouldQueryTspSupport()) {
+		const target = this.#tspSocketTarget;
+		// Inside a multiplexer the socket's terminal need not be the one showing
+		// this process, so the socket stays unused there even when forced.
+		if (!this.#shouldQueryTspSupport() || (target !== null && isInsideTerminalMultiplexer($env))) {
+			this.#tspOverSocket = false;
 			this.#tspResult = null;
 			for (const cb of this.#tspCallbacks) cb(null);
 			return;
 		}
 		this.#tspPending = true;
+		if (target !== null) {
+			this.#queryTspSupportOverSocket(target);
+			return;
+		}
 		this.#da1SentinelOwners.push({ kind: "tsp" });
 		this.#safeWrite(`${encodeTspHelloQuery()}\x1b[c`);
 	}
 
-	#handleTspMessage(sequence: string): void {
+	/**
+	 * The `hello` as one line over the socket transport (connecting first when
+	 * it is closed), with the token, under a deadline instead of a DA1
+	 * sentinel. Nothing goes to the pty.
+	 */
+	#queryTspSupportOverSocket(target: TspSocketTarget): void {
+		let connection = this.#tspSocket;
+		if (connection === undefined) {
+			const opened = new TspSocketConnection(
+				line => this.#handleTspMessage(`\x1b_${line}\x1b\\`, "socket"),
+				error => this.#onTspSocketClosed(opened, target, error),
+			);
+			connection = opened;
+			this.#tspSocket = opened;
+			opened.connect(target.path);
+		}
+		const query = JSON.stringify(tspHelloQuery(undefined, target.token));
+		connection.write(`${encodeTspPayloads("q", query).join("\n")}\n`);
+		// A connect that failed synchronously already resolved the probe.
+		if (this.#tspPending) this.#armTspSocketDeadline(TSP_SOCKET_HELLO_TIMEOUT_MS);
+	}
+
+	#onTspSocketClosed(connection: TspSocketConnection, target: TspSocketTarget, error: unknown): void {
+		if (this.#tspSocket !== connection) return;
+		this.#tspSocket = undefined;
+		const reason = error === undefined ? "closed" : String(error);
+		if (this.#tspPending && !this.#dead) {
+			logger.warn("TSP: socket transport unavailable; keeping the text UI", { path: target.path, reason });
+			this.#resolveTspSupport(null);
+			return;
+		}
+		if (!this.#tspOverSocket || this.#dead) {
+			logger.debug("TSP: socket transport closed", { path: target.path, reason });
+			return;
+		}
+		// `#tspOverSocket` stays set: APC in the pty would reach a terminal
+		// that never agreed to TSP, so later output is dropped.
+		logger.warn("TSP: socket transport closed under its surface; falling back to the text UI", {
+			path: target.path,
+			reason,
+		});
+		for (const cb of this.#tspClosedCallbacks) {
+			try {
+				cb();
+			} catch (error) {
+				logger.warn("TSP: socket close subscriber failed", { error: String(error) });
+			}
+		}
+	}
+
+	#armTspSocketDeadline(delayMs: number): void {
+		const due = Date.now() + delayMs;
+		this.#tspSocketTimer = setTimeout(() => {
+			this.#tspSocketTimer = undefined;
+			if (!this.#tspPending) return;
+			// Fired late after an event-loop stall: the reply may already sit
+			// unread in the socket, so let input run first.
+			if (Date.now() - due > TSP_SOCKET_HELLO_GRACE_MS) {
+				this.#armTspSocketDeadline(TSP_SOCKET_HELLO_GRACE_MS);
+				return;
+			}
+			logger.warn("TSP: no hello reply over the socket; keeping the text UI", {
+				timeoutMs: TSP_SOCKET_HELLO_TIMEOUT_MS,
+			});
+			const connection = this.#tspSocket;
+			this.#resolveTspSupport(null);
+			connection?.close();
+		}, delayMs);
+	}
+
+	#clearTspSocketDeadline(): void {
+		if (this.#tspSocketTimer === undefined) return;
+		clearTimeout(this.#tspSocketTimer);
+		this.#tspSocketTimer = undefined;
+	}
+
+	#handleTspMessage(sequence: string, via: "apc" | "socket" = "apc"): void {
 		const message = parseTspMessage(sequence);
 		if (message?.verb === "r") {
-			if (message.reply.r === "hello") this.#resolveTspSupport(message.reply);
+			if (message.reply.r === "hello") this.#resolveTspSupport(message.reply, via);
 			return;
 		}
 		this.#inputHandler?.(sequence);
 	}
 
-	#resolveTspSupport(hello: TspHello | null): void {
+	#resolveTspSupport(hello: TspHello | null, via: "apc" | "socket" = "apc"): void {
 		if (!this.#tspPending) return;
 		this.#tspPending = false;
+		this.#clearTspSocketDeadline();
 		const result = hello !== null && hello.v === TSP_VERSION ? hello : null;
 		if (hello !== null && result === null) logger.warn("TSP: unsupported protocol version", { v: hello.v });
+		this.#tspOverSocket = result !== null && via === "socket";
 		this.#tspResult = result;
 		for (const cb of this.#tspCallbacks) {
 			try {
@@ -2196,10 +2529,13 @@ export class ProcessTerminal implements Terminal {
 		this.#glyphProtocolReplyBuffer = "";
 		this.#glyphProtocolCallbacks = [];
 		setTerminalGlyphProtocol(false);
+		// The socket transport stays open for the next start's `hello`.
 		this.#tspPending = false;
+		this.#clearTspSocketDeadline();
 		this.#tspResult = undefined;
 		this.#tspReplyBuffer = "";
 		this.#tspCallbacks = [];
+		this.#tspClosedCallbacks = [];
 		this.#privateCsiResponseBuffer = "";
 		this.#inBandResizeBuffer = "";
 		this.#da1SentinelOwners.length = 0;
@@ -2287,6 +2623,8 @@ export class ProcessTerminal implements Terminal {
 		if (this.#dead) return;
 		this.#dead = true;
 		this.#disarmStdoutStallWatchdog();
+		this.#clearTspSocketDeadline();
+		this.#tspSocket?.close();
 		logger.warn("terminal disconnected; stopping interactive rendering", { reason, err });
 
 		const disconnectHandler = this.#disconnectHandler;
