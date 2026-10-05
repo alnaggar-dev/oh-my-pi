@@ -170,9 +170,12 @@ export class TspTestTerminal implements Terminal {
 		if (this.#helloResult === undefined) this.#pending = true;
 	}
 
+	/** Like `ProcessTerminal.stop()`, forgets the hello: the next start's probe answers anew. */
 	stop(): void {
 		this.#onInput = undefined;
 		this.#helloCallbacks = [];
+		this.#helloResult = undefined;
+		this.#pending = false;
 	}
 
 	async drainInput(): Promise<void> {}

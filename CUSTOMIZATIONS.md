@@ -554,7 +554,14 @@ does what I wanted".
   - After a socket surface, `stop()` writes the whole transcript once as text to the
     pty; Ctrl-Z, `fg`, exit writes no row twice. With the APC transport `stop()` writes
     no transcript text after a live surface.
-- **Check:** `bun test packages/tui/test/native/socket-transport.test.ts packages/tui/test/native/socket-stop-flush.test.ts packages/coding-agent/test/input-controller-suspend.test.ts`
+  - Exit (`InteractiveMode.#teardown`: `closeNative()`, input drain, `stop()`) sends
+    `x keep:true` once and writes no transcript row before `stop()`.
+  - Every external-editor path (composer Ctrl-G, the plan and plan-annotation editors,
+    `/todo edit`, `/annotate`, hook and prompt dialogs, advisor instructions) calls
+    `ui.stop()` before spawning the editor and `ui.start()` after it, so the editor
+    gets the pane after `x keep:true` and the transcript flush, and the next hello
+    adopts the kept surface.
+- **Check:** `bun test packages/tui/test/native/socket-transport.test.ts packages/tui/test/native/socket-stop-flush.test.ts packages/coding-agent/test/input-controller-suspend.test.ts packages/coding-agent/test/input-controller-external-editor-native.test.ts`
 
 ### Native double-click on a list row counts as one click
 
