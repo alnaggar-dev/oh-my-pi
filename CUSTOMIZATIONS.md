@@ -715,8 +715,9 @@ does what I wanted".
   the opener into `openerId` on the page target, so puppeteer's `Target.opener()` works
   on relay tabs. The manifest moves to 0.2.0 and gains the `webNavigation` permission
   (Chrome shows the same "Read your browsing history" warning `tabs` already triggers).
-  An outdated extension is refused by upstream's discarded-tabs protocol gate, which
-  tells the user to reinstall.
+  An outdated extension is refused by upstream's discarded-tabs protocol gate; the probe
+  tells the user to reinstall it when the running relay is this omp version, and to
+  restart the relay otherwise.
 - **Why:** `tab.goal` spots a popup a click opened, and follows it, through the page
   target's opener; without it a popup on a relay tab goes unnoticed.
 - **Files:** `packages/browser-relay/extension/background.ts` (`OPENER_WAIT_MS`,
