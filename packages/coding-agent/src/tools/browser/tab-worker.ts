@@ -1848,7 +1848,6 @@ export class WorkerCore {
 			// load in flight. A run that merely ended keeps an unawaited goto going.
 			if (ac.signal.aborted && this.#network?.hasPendingMainFrameNavigation()) await this.#stopLoading();
 			try {
-
 				await runPage?.restoreInterception();
 			} catch (error) {
 				// A finished run keeps its result; the supervisor still recycles the tab.

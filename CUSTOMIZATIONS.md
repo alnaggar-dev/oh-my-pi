@@ -762,17 +762,11 @@ does what I wanted".
   parameter of `bindRunFacade`, which runs each facade method call inside it and is
   passed down to nested facades, and returning the facade, not the raw target, from a
   method that returns its own target, so `page.on(...).once(...)` stays on it; this
-  applies to every facade). **Port ahead of sync:** the branch base predates
-  upstream #14410 (15359daa30), so `createRunPageScope` also carries that PR's
-  `setRequestInterception` override, `interceptionChanged` gate and
-  `detach`/`restoreInterception` split, copied verbatim. On the next sync take
-  upstream's `createRunPageScope` and run call site (its `recoverTab` path, and `detach`
-  before `#stopLoading` from 4b17decb11), then re-apply only: `RunPageScope.enter`,
-  `OwnedListener`, `runPageContext`, `owner`, `remember`/`drop`/`forget` keyed on
-  `OwnedListener`, the context check in `on`/`once`, the pass-through in `off`, the
-  `pageScope.enter` wrapper, and `bindRunFacade`'s `enter` argument for `page`. Delete
-  the fork's "never touch interception" test then, because upstream's
-  `browser-network.test.ts` covers it.
+  applies to every facade). The base now includes upstream #14410, so the fork's diff in
+  `createRunPageScope` is only the async-context ownership layer on top of upstream's
+  `setRequestInterception` override and `detach`/`restoreInterception` split. The fork's
+  "never touch interception" test stays: upstream's `browser-network.test.ts` has no
+  cross-site-frame case.
 - **Depends on upstream:** upstream's real-page override design in `createRunPageScope`
   (own properties restored from their saved descriptors in `detach`); puppeteer's event
   emitter: `once` implemented through `on`, `off` called with the handler `on`
@@ -800,8 +794,7 @@ does what I wanted".
     leaves no request held.
   - An async `request` handler resolves cooperative interception after it awaits.
   - Runs that never touch interception succeed beside an unresponsive cross-site frame.
-  - After a sync onto upstream #14410 or later, the fork's diff in `createRunPageScope`
-    is only the async-context ownership layer.
+  - The fork's diff in `createRunPageScope` is only the async-context ownership layer.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-run-listeners.test.ts packages/coding-agent/test/tools/browser-network.test.ts`
 
 ### Off-screen `text/` clicks and crashed tab workers
