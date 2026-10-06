@@ -369,7 +369,7 @@ async function createPersistedSession(cwd: string): Promise<string> {
 	const sessionFile = manager.getSessionFile();
 	if (!sessionFile) throw new Error("Expected a persisted session file");
 	manager.appendSessionInit({
-		systemPrompt: "persisted prompt",
+		systemPrompt: ["persisted prompt"],
 		task: "persisted task",
 		tools: ["read", "yield"],
 		restrictToolNames: true,
