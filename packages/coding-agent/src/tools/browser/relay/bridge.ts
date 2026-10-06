@@ -759,7 +759,7 @@ export class RelayBridge {
 		// from the user's; create the tab through the page's own browser instead.
 		if (msg.method === "Target.createTarget") {
 			await this.#createTab(conn, msg, inst);
-			return;
+			return true;
 		}
 		// Relay-minted target ids (e.g. from the createTarget above) mean nothing
 		// to Chrome; resolve them through the relay's own handlers.
@@ -769,7 +769,7 @@ export class RelayBridge {
 			parseTargetId(msg.params.targetId)
 		) {
 			await this.#handleBrowserCommand(conn, msg);
-			return;
+			return true;
 		}
 		try {
 			const result = await this.#rpc(
