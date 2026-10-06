@@ -46,7 +46,6 @@ import {
 	scopedUsageLimits,
 	usageResetAtMs,
 	windowRequiredDrain,
-	windowResetAt,
 } from "./usage-report";
 
 /** Temporary block after a transient OAuth refresh failure. */
@@ -291,7 +290,6 @@ export class CredentialSelector {
 				planPriority: 0,
 				secondaryUsed: normalizeUsageFraction(secondary),
 				secondaryRequiredDrain: windowRequiredDrain(secondary, nowMs, strategy.windowDefaults.secondaryMs),
-				secondaryResetAt: windowResetAt(secondary?.window) ?? Number.POSITIVE_INFINITY,
 				primaryUsed: normalizeUsageFraction(primary),
 				primaryRequiredDrain: windowRequiredDrain(primary, nowMs, strategy.windowDefaults.primaryMs),
 				orderPos,
@@ -549,7 +547,6 @@ export class CredentialSelector {
 				secondaryUsed: strategy ? normalizeUsageFraction(secondary) : 0,
 				secondaryRequiredDrain:
 					strategy === undefined ? 0 : windowRequiredDrain(secondary, nowMs, strategy.windowDefaults.secondaryMs),
-				secondaryResetAt: windowResetAt(secondary?.window) ?? Number.POSITIVE_INFINITY,
 				primaryUsed: strategy ? normalizeUsageFraction(primary) : 0,
 				primaryRequiredDrain:
 					strategy === undefined ? 0 : windowRequiredDrain(primary, nowMs, strategy.windowDefaults.primaryMs),
