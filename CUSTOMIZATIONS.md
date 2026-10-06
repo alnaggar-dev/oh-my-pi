@@ -2,7 +2,7 @@
 
 What this fork changes, why, and what must still be true after an upstream sync.
 
-**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `Accounts`, `Browser`), one
+**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `Browser`), one
 `###` per feature under it, seven fields per feature: **What it does**, **Why**, **Files**
 (the files the feature *owns* — every changed file is in exactly one entry's **Files**;
 an entry whose code sits in a file another entry owns names that file and its symbols
@@ -450,73 +450,6 @@ does what I wanted".
     native describe: error, then warning, then success, else dim.
 - **Check:** `bun test packages/tui/test/status-line-advisor.test.ts packages/coding-agent/test/advisor-toggle.test.ts`
 
-## Accounts
-
-### Soonest-reset account is used first
-
-- **What it does:** When several accounts of one provider can serve a request, the
-  usage-based ranking picks the one whose long (weekly) window resets soonest, as long
-  as that window still has headroom. Resets that `compareUsageRankingMetric` treats as
-  equal fall back to upstream's required-drain order. Applies to every provider whose
-  ranking strategy reports a long window, in both OAuth and API-key ranking: Claude,
-  Codex, Kimi Code (its `7d` window), Z.ai (its second-shortest window), Alibaba Token
-  Plan (`credits:7d`), OpenCode Go (`weekly`), xAI OAuth (`credits:1w`, else
-  `included:1mo`), Command Code (`7d`) and Cursor (the requested model's monthly billing pool). **Not Antigravity:** its
-  `findWindowLimits` deliberately returns no secondary window, so every Antigravity
-  account gets `secondaryResetAt = ∞` and the new rule never separates them.
-- **Why:** A policy choice, not an upstream bug fix. Upstream ranks by required drain
-  (`headroom ÷ hours left`), which already prefers a half-used account resetting in 3
-  days (0.5 ÷ 72 h ≈ 0.0069) over a barely-used one resetting in 6 (0.9 ÷ 144 h ≈
-  0.0063). The rules differ when the sooner-resetting account is mostly used: 70% used
-  and resetting in 3 days (0.3 ÷ 72 h ≈ 0.0042) vs 10% used and resetting in 6 (≈
-  0.0063). Upstream picks the 6-day account; the fork uses up the 3-day account's
-  remaining quota before it expires. Keep it fork-only; do not propose it as
-  upstream's default.
-- **Files:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`.
-- **Depends on upstream:** `compareUsageRankedCandidatePriority` in `auth/rank.ts` and its
-  order of checks (blocked, plan priority, allowance spent, reserve, priority boost, hot 5h guard,
-  measured-first, per-account policy priority) — the new rule is inserted after the
-  account-policy priority and before required drain; the `UsageRankedCandidate` shape
-  built in both `#rankOAuthSelections` and `#rankApiKeySelections` of
-  `CredentialSelector` in `auth/select.ts`; `windowResetAt` in `auth/usage-report.ts`;
-  `compareUsageRankingMetric`'s relative tolerance; each provider strategy's
-  `findWindowLimits` choosing the secondary window (for Claude, the more pressured of the
-  shared and model-tier weekly rows); session affinity pins (a pinned session skips
-  ranking until the pin is evicted). **The tie window is not a designed constant:** it
-  is `compareUsageRankingMetric`'s relative 1e-6 tolerance applied to epoch
-  milliseconds — about 30 minutes in 2026, growing slowly as the epoch grows.
-  **Known interaction:** with `retry.usageAwareFallback` on (off by default), the
-  reserve release may re-pick the same nearly empty account, because it now ranks
-  first on reset time. **Deliberate test flips:** two upstream tests in
-  `packages/ai/test/auth-storage-codex-selection.test.ts` ("weights 3 accounts by
-  weekly/secondary drain rate") are renamed and inverted to expect the
-  soonest-resetting account; an upstream edit to either is a conflict to resolve in
-  the fork's favor.
-  **Open upstream interactions:** PR #8919 (open; still written against drain code
-  upstream has since moved to `windowRequiredDrain` in
-  `packages/ai/src/auth/usage-report.ts`) wants an untouched Anthropic seat, which
-  has no reset clock yet, started first by giving it top drain urgency. The fork's
-  rule runs before drain and sorts a window with no reset time last, so that boost is
-  never reached and its new test would likely fail (not run); decide which rule wins
-  if it lands. Issue #10203 (open): outside Anthropic a session pin has no idle
-  cutoff (only the Claude strategy sets `stickyWarmMs`), so a pinned session never
-  reaches either ranking rule; that is the likelier cause of quota expiring unused.
-  Issue #10929 (closed): ChatGPT can report Codex's 7-day window as the primary one;
-  Codex's `findWindowLimits` still returns it as the secondary through its `7d`
-  window-id fallback, so the rule sees its reset time. If that fallback goes, such an
-  account gets no reset time and sorts last.
-- **Tripwire paths:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`, `packages/ai/src/auth/usage-report.ts`, `packages/ai/src/auth/affinity.ts`, `packages/ai/src/usage.ts`, `packages/ai/src/usage/claude.ts`, `packages/ai/src/usage/openai-codex.ts`, `packages/ai/src/usage/google-antigravity.ts`, `packages/ai/src/usage/kimi.ts`, `packages/ai/src/usage/zai.ts`, `packages/ai/src/usage/alibaba-token-plan.ts`, `packages/ai/src/usage/opencode-go.ts`, `packages/ai/src/usage/xai-oauth.ts`, `packages/ai/src/usage/commandcode.ts`, `packages/ai/src/usage/cursor.ts`, `packages/ai/src/usage/registry.ts`
-- **Must still be true:**
-  - Among unblocked, measured accounts below the 5h hot threshold, the one whose weekly
-    window resets earliest is selected, regardless of how much of it is already used.
-  - An account whose weekly window is fully spent sorts behind accounts with headroom,
-    even if it resets first.
-  - An account with no known weekly reset time sorts after those with one.
-  - Blocked accounts, plan priority, reserve, the 85% 5h hot guard,
-    measured-before-unmeasured, and a user-set account priority still take precedence
-    over reset order.
-- **Check:** `bun test packages/ai/test/auth-storage-codex-selection.test.ts packages/ai/test/auth-storage-claude-fable-fallback.test.ts packages/ai/test/auth-storage-antigravity-selection.test.ts packages/coding-agent/test/auth-storage-rotation.test.ts`
-
 ## Browser
 
 ### Relay keeps page-requested tabs in the page's own browser
@@ -799,48 +732,76 @@ does what I wanted".
   (worker init and background-tab input on headless Chromium; the relay path needs a
   live extension and has no automated test).
 
-### `tab.run` listeners and interception stay scoped to the run
+### `tab.run` keeps puppeteer's own page listeners across runs
 
-- **What it does:** Inside `tab.run`, `page` is a proxy whose listener methods track
-  only the run's own listeners. For the run's duration the real Page also gets own
-  `on`/`off` that mark a listener run-owned only when it is added from the run's async
-  context (`AsyncLocalStorage`), so listeners added through an escaped real Page
-  (`page.mainFrame().page()`, `browser.pages()`) or from inside a run-owned handler are
-  removed at the end, while puppeteer's internal subscriptions, made from the CDP socket
-  callback, survive. Request interception is restored after the run only when the run
-  called `setRequestInterception`.
-- **Why:** Upstream's cleanup also removed puppeteer's own subscriptions made during a
-  run, so `page.waitForNetworkIdle` timed out on a request an earlier run started. And
-  restoring interception after every run broadcast Fetch/Network commands to every
-  attached target, which a busy cross-origin frame (a Cloudflare challenge) left
-  unanswered, failing the run with `Failed to restore browser request interception
-  after browser.run`.
+- **What it does:** Upstream's `createRunPageScope` overrides `on`/`once`/`off`/
+  `removeAllListeners`/`setRequestInterception` on the real Page for a run and removes
+  every listener registered meanwhile. The fork adds one layer on top: a registration
+  counts as run-owned only when it comes from the run's async context
+  (`AsyncLocalStorage`, entered around `runtime.run`). Owned handlers are wrapped so they
+  run in that context, so a listener added from inside one is owned too, and every call
+  through the run's `page` facade runs in it as well, so a `page.on` from a
+  `browser.once(...)`, CDP-session or `exposeFunction` callback is owned too. Everything
+  else passes straight through to puppeteer: `on` and `once` go untracked, and `off`
+  forwards a handler the run does not own. Puppeteer's internal subscriptions, made
+  from the CDP socket callback, therefore survive the run. A callback that reaches the
+  real Page some other way (`page.mainFrame().page()` inside a `browser.on` callback)
+  still registers untracked.
+- **Why:** Upstream's cleanup removes puppeteer's in-flight request subscriptions made
+  during a run, so `page.waitForNetworkIdle` in a later run times out on a request an
+  earlier run started (reproduced on upstream fc6c0c90da). The `tab.goal` loop waits for
+  network idle after every step. The fork's earlier proxy was dropped for upstream's
+  real-page overrides: an escaped page (`page.mainFrame().page()`) bypassed the proxy,
+  so its `setRequestInterception(true)` left the next run's requests held and its
+  `removeAllListeners()` wiped the worker's console, request and dialog listeners.
 - **Files:** `packages/coding-agent/src/tools/browser/tab-worker.ts`
-  (`createRunPageScope`, `RunPageScope.enter`, `OwnedListener`, `runPageContext`, and
-  the `pageScope.enter` wrapper around `runtime.run`; the file's focus-release hunks are
-  named under the relay-focus entry's **Depends on upstream**).
-- **Depends on upstream:** puppeteer's event emitter: `once` implemented through `on`,
-  and `off` called with the handler `on` received; `request` handler promises awaited
-  before cooperative interception resolves (the owned wrapper returns the handler's
-  result); `#private` fields that need methods bound to the real page (the proxy binds
-  and caches them); events dispatched from the CDP socket callback, outside the run's
-  async context. If puppeteer ever dispatches inside the caller's context, its internal
-  subscriptions become run-owned again and are removed. `AsyncLocalStorage` carrying
-  through `JsRuntime.run` in `packages/coding-agent/src/eval/js/shared/runtime.ts` and
-  the user code's awaits; `restoreInterception` in
+  (`createRunPageScope`, the `pageScope.enter` wrapper around `runtime.run`, and
+  `pageScope.enter` passed to the page facade's `bindRunFacade`; the file's
+  focus-release hunks are named under the relay-focus entry's **Depends on
+  upstream**), `packages/coding-agent/src/tools/run-scope.ts` (the optional `enter`
+  parameter of `bindRunFacade`, which runs each facade method call inside it and is
+  passed down to nested facades, and returning the facade, not the raw target, from a
+  method that returns its own target, so `page.on(...).once(...)` stays on it; this
+  applies to every facade). **Port ahead of sync:** the branch base predates
+  upstream #14410 (15359daa30), so `createRunPageScope` also carries that PR's
+  `setRequestInterception` override, `interceptionChanged` gate and
+  `detach`/`restoreInterception` split, copied verbatim. On the next sync take
+  upstream's `createRunPageScope` and run call site (its `recoverTab` path, and `detach`
+  before `#stopLoading` from 4b17decb11), then re-apply only: `RunPageScope.enter`,
+  `OwnedListener`, `runPageContext`, `owner`, `remember`/`drop`/`forget` keyed on
+  `OwnedListener`, the context check in `on`/`once`, the pass-through in `off`, the
+  `pageScope.enter` wrapper, and `bindRunFacade`'s `enter` argument for `page`. Delete
+  the fork's "never touch interception" test then, because upstream's
+  `browser-network.test.ts` covers it.
+- **Depends on upstream:** upstream's real-page override design in `createRunPageScope`
+  (own properties restored from their saved descriptors in `detach`); puppeteer's event
+  emitter: `once` implemented through `on`, `off` called with the handler `on`
+  received, `removeAllListeners()` without a type disposing the Page (closing it), which
+  the override keeps away from user code; `request` handler promises awaited before
+  cooperative interception resolves (the owned wrapper returns the handler's result);
+  events dispatched from the CDP socket callback, outside the run's async context. If
+  puppeteer ever dispatches inside the caller's context, its internal subscriptions
+  become run-owned again and are removed. `AsyncLocalStorage` carrying through
+  `JsRuntime.run` in `packages/coding-agent/src/eval/js/shared/runtime.ts` and the user
+  code's awaits; `restoreInterception` in
   `packages/coding-agent/src/tools/browser/network.ts` and
   `REQUEST_INTERCEPTION_CLEANUP_TIMEOUT_MS`; the worker-level listeners (request
   logging, dialogs, console capture) being registered outside any run.
-- **Tripwire paths:** `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/browser/network.ts`, `packages/coding-agent/src/eval/js/shared/runtime.ts`, `package.json`, `patches/puppeteer-core@25.3.0.patch`
+- **Tripwire paths:** `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/run-scope.ts`, `packages/coding-agent/src/tools/browser/network.ts`, `packages/coding-agent/src/eval/js/shared/runtime.ts`, `package.json`, `patches/puppeteer-core@25.3.0.patch`
 - **Must still be true:**
-  - Listeners a run adds through `page`, through the real Page behind the proxy, or
-    from inside a run-owned handler are gone after the run; worker listeners survive,
-    and `page.removeAllListeners()` in a run removes only the run's own.
+  - Listeners a run adds through `page` or an escaped page reference (from its code,
+    timers, promise chains, or inside a run-owned handler), or through `page` (fluent
+    chains included) from a callback another emitter fires during the run, are gone
+    after the run; worker listeners survive, and `removeAllListeners()` in a run,
+    through any page reference, removes only the run's own.
   - A request that finishes after its run does not stall `waitForNetworkIdle` in the
     next run.
-  - A run that enables interception and throws leaves no request held.
+  - A run that enables interception through an escaped page reference and throws
+    leaves no request held.
   - An async `request` handler resolves cooperative interception after it awaits.
   - Runs that never touch interception succeed beside an unresponsive cross-site frame.
+  - After a sync onto upstream #14410 or later, the fork's diff in `createRunPageScope`
+    is only the async-context ownership layer.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-run-listeners.test.ts packages/coding-agent/test/tools/browser-network.test.ts`
 
 ### Off-screen `text/` clicks and crashed tab workers

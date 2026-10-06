@@ -881,7 +881,7 @@ class NavigationTimeoutError extends ToolError {}
 
 interface RunPageScope {
 	page: Page;
-	/** Run user code in this scope's async context; listeners it adds through the real Page become run-owned. */
+	/** Run user code in this scope's async context; the listeners it registers become run-owned. */
 	enter<T>(fn: () => T): T;
 	/** Restore the page's own listener methods and remove every handler this run registered. */
 	detach(): void;
@@ -900,37 +900,33 @@ const runPageContext = new AsyncLocalStorage<object>();
 
 /**
  * Expose the tab page while retaining every event handler created by this run.
- * User code gets a proxy whose listener methods track only its own registrations.
- * The proxy is escapable — `page.mainFrame().page()`, `page.target().page()`, and
- * `browser.pages()` return the real Page — so for the run's duration the real Page
- * also gets own `on`/`off`: `on` records a registration as run-owned only when it is
- * made from this run's async context (`enter`); puppeteer's `once` goes through
- * `on`, and `off` resolves an owned handler to its registered listener. Owned
- * handlers are registered wrapped so they run in that context too: events are
- * dispatched from the CDP socket callback, and a listener added from inside a
- * run-owned handler must still be run-owned. Puppeteer's internal subscriptions
- * (in-flight request tracking subscribes on every `request` event) are made from
- * that socket callback, outside the context, so they pass through untracked and,
- * like worker-level routing, request logging, dialogs, and console capture, survive
- * cleanup. When the run calls `setRequestInterception`, interception is restored to
- * the tab's persistent route/allowlist state after the run. Runs that never touch it
- * skip the restore: the first puppeteer toggle broadcasts Fetch/Network commands to
- * every attached target, and a busy out-of-process frame (e.g. a Cloudflare
- * challenge) can leave that broadcast unanswered for seconds.
+ * The facade removes only run-owned listeners, preserving worker-level routing,
+ * request logging, dialogs, and console capture. Raw interception is restored
+ * to the tab's persistent route/allowlist state after a run that changed it.
+ *
+ * A registration is run-owned only when it is made from this run's async context
+ * (`enter`). Puppeteer's internal subscriptions are made from the CDP socket
+ * callback, outside that context (in-flight request tracking subscribes on every
+ * `request` event), so they pass through untracked and outlive the run; removing
+ * them left `waitForNetworkIdle` waiting on a request an earlier run started.
+ * Owned handlers are registered wrapped so they run in that context too, keeping a
+ * listener added from inside a run-owned handler run-owned.
  */
 function createRunPageScope(page: Page, restoreInterception: () => Promise<void>): RunPageScope {
-	const owned = new Map<unknown, OwnedListener[]>();
-	// Captured before the own `on`/`off` below, so proxy registrations are recorded once.
+	const handlers = new Map<unknown, OwnedListener[]>();
+	const owner = {};
 	const on = page.on;
 	const off = page.off;
 	const once = page.once;
 	const setRequestInterception = page.setRequestInterception;
-	const owner = {};
-	const ownOn = Object.getOwnPropertyDescriptor(page, "on");
-	const ownOff = Object.getOwnPropertyDescriptor(page, "off");
-	let interceptionTouched = false;
+	const onDescriptor = Object.getOwnPropertyDescriptor(page, "on");
+	const offDescriptor = Object.getOwnPropertyDescriptor(page, "off");
+	const onceDescriptor = Object.getOwnPropertyDescriptor(page, "once");
+	const removeAllDescriptor = Object.getOwnPropertyDescriptor(page, "removeAllListeners");
+	const interceptionDescriptor = Object.getOwnPropertyDescriptor(page, "setRequestInterception");
+	let interceptionChanged = false;
 
-	const own = (type: unknown, handler: unknown, invoke: unknown = handler): OwnedListener => {
+	const remember = (type: unknown, handler: unknown, invoke: unknown = handler): OwnedListener => {
 		const entry: OwnedListener = {
 			handler,
 			listener:
@@ -941,127 +937,109 @@ function createRunPageScope(page: Page, restoreInterception: () => Promise<void>
 							runPageContext.run(owner, () => Reflect.apply(invoke, undefined, [event]))
 					: invoke,
 		};
-		const entries = owned.get(type);
-		if (entries) entries.push(entry);
-		else owned.set(type, [entry]);
+		const owned = handlers.get(type);
+		if (owned) owned.push(entry);
+		else handlers.set(type, [entry]);
 		Reflect.apply(on, page, [type, entry.listener]);
 		return entry;
 	};
 	const drop = (type: unknown, entry: OwnedListener): void => {
-		const entries = owned.get(type);
-		const index = entries?.indexOf(entry) ?? -1;
-		if (!entries || index < 0) return;
+		const owned = handlers.get(type);
+		const index = owned?.indexOf(entry) ?? -1;
+		if (!owned || index < 0) return;
 		Reflect.apply(off, page, [type, entry.listener]);
-		entries.splice(index, 1);
-		if (entries.length === 0) owned.delete(type);
+		owned.splice(index, 1);
+		if (owned.length === 0) handlers.delete(type);
 	};
-	const findOwned = (type: unknown, handler: unknown): OwnedListener | undefined =>
-		owned.get(type)?.findLast(entry => entry.handler === handler);
-	const forget = (type: unknown, handler?: unknown): void => {
-		if (handler !== undefined) {
-			const entry = findOwned(type, handler);
-			if (entry) drop(type, entry);
-			return;
+	/** Remove run-owned registrations; reports whether any matched. */
+	const forget = (type: unknown, handler?: unknown): boolean => {
+		const owned = handlers.get(type);
+		if (!owned) return false;
+		if (handler === undefined) {
+			for (const entry of owned) Reflect.apply(off, page, [type, entry.listener]);
+			handlers.delete(type);
+			return true;
 		}
-		for (const entry of owned.get(type) ?? []) Reflect.apply(off, page, [type, entry.listener]);
-		owned.delete(type);
+		const entry = owned.findLast(registered => registered.handler === handler);
+		if (!entry) return false;
+		drop(type, entry);
+		return true;
 	};
 
-	Object.defineProperty(page, "on", {
-		configurable: true,
-		writable: true,
-		value: (type: unknown, handler: unknown): Page => {
-			if (runPageContext.getStore() === owner) own(type, handler);
-			else Reflect.apply(on, page, [type, handler]);
-			return page;
-		},
-	});
-	// Puppeteer's `once` and rxjs teardown call `off` with the handler they passed to `on`.
-	Object.defineProperty(page, "off", {
-		configurable: true,
-		writable: true,
-		value: (type: unknown, handler?: unknown): Page => {
-			const entry = handler === undefined ? undefined : findOwned(type, handler);
-			if (entry) {
-				drop(type, entry);
+	Object.defineProperties(page, {
+		on: {
+			configurable: true,
+			value: (type: unknown, handler: unknown): Page => {
+				if (runPageContext.getStore() === owner) remember(type, handler);
+				else Reflect.apply(on, page, [type, handler]);
 				return page;
-			}
-			if (handler === undefined) owned.delete(type);
-			Reflect.apply(off, page, [type, handler]);
-			return page;
+			},
 		},
-	});
-
-	const overrides: Record<string, unknown> = {
-		setRequestInterception: (value: boolean): Promise<void> => {
-			interceptionTouched = true;
-			return Reflect.apply(setRequestInterception, page, [value]);
+		once: {
+			configurable: true,
+			value: (type: unknown, handler: unknown): Page => {
+				if (runPageContext.getStore() !== owner || typeof handler !== "function") {
+					Reflect.apply(once, page, [type, handler]);
+					return page;
+				}
+				const entry = remember(type, handler, (event: unknown): unknown => {
+					drop(type, entry);
+					return Reflect.apply(handler, page, [event]);
+				});
+				return page;
+			},
 		},
-		on: (type: unknown, handler: unknown): Page => {
-			own(type, handler);
-			return scoped;
+		off: {
+			configurable: true,
+			value: (type: unknown, handler?: unknown): Page => {
+				// Puppeteer's `once` and rxjs teardown remove the untracked listeners they added.
+				if (!forget(type, handler) && handler !== undefined) Reflect.apply(off, page, [type, handler]);
+				return page;
+			},
 		},
-		once: (type: unknown, handler: unknown): Page => {
-			if (typeof handler !== "function") {
-				Reflect.apply(once, page, [type, handler]);
-				return scoped;
-			}
-			const entry = own(type, handler, (event: unknown): unknown => {
-				drop(type, entry);
-				return Reflect.apply(handler, scoped, [event]);
-			});
-			return scoped;
+		removeAllListeners: {
+			configurable: true,
+			value: (type?: unknown): Page => {
+				if (type !== undefined) forget(type);
+				else {
+					// Map iteration tolerates deletion of the current key by forget().
+					for (const ownedType of handlers.keys()) forget(ownedType);
+				}
+				return page;
+			},
 		},
-		off: (type: unknown, handler?: unknown): Page => {
-			forget(type, handler);
-			return scoped;
-		},
-		removeAllListeners: (type?: unknown): Page => {
-			if (type !== undefined) forget(type);
-			else {
-				// Map iteration tolerates deletion of the current key by forget().
-				for (const ownedType of owned.keys()) forget(ownedType);
-			}
-			return scoped;
-		},
-	};
-	// Bind forwarded methods to the real page so puppeteer's `#private` fields resolve;
-	// cache per function so `scoped.goto === scoped.goto` holds.
-	const bound = new WeakMap<object, unknown>();
-	const scoped: Page = new Proxy(page, {
-		get(target, prop) {
-			if (typeof prop === "string" && Object.hasOwn(overrides, prop)) return overrides[prop];
-			const value: unknown = Reflect.get(target, prop, target);
-			if (typeof value !== "function") return value;
-			let method = bound.get(value);
-			if (!method) {
-				method = value.bind(target);
-				bound.set(value, method);
-			}
-			return method;
-		},
-		set(target, prop, value) {
-			return Reflect.set(target, prop, value, target);
+		setRequestInterception: {
+			configurable: true,
+			value: (value: boolean): Promise<void> => {
+				interceptionChanged = true;
+				return Reflect.apply(setRequestInterception, page, [value]);
+			},
 		},
 	});
 
 	return {
-		page: scoped,
+		page,
 		enter<T>(fn: () => T): T {
 			return runPageContext.run(owner, fn);
 		},
 		detach() {
-			if (ownOn) Object.defineProperty(page, "on", ownOn);
+			if (onDescriptor) Object.defineProperty(page, "on", onDescriptor);
 			else Reflect.deleteProperty(page, "on");
-			if (ownOff) Object.defineProperty(page, "off", ownOff);
+			if (offDescriptor) Object.defineProperty(page, "off", offDescriptor);
 			else Reflect.deleteProperty(page, "off");
-			for (const [type, entries] of owned) {
-				for (const entry of entries) Reflect.apply(off, page, [type, entry.listener]);
+			if (onceDescriptor) Object.defineProperty(page, "once", onceDescriptor);
+			else Reflect.deleteProperty(page, "once");
+			if (removeAllDescriptor) Object.defineProperty(page, "removeAllListeners", removeAllDescriptor);
+			else Reflect.deleteProperty(page, "removeAllListeners");
+			if (interceptionDescriptor) Object.defineProperty(page, "setRequestInterception", interceptionDescriptor);
+			else Reflect.deleteProperty(page, "setRequestInterception");
+			for (const [type, owned] of handlers) {
+				for (const entry of owned) Reflect.apply(off, page, [type, entry.listener]);
 			}
-			owned.clear();
+			handlers.clear();
 		},
 		async restoreInterception() {
-			if (!interceptionTouched) return;
+			if (!interceptionChanged) return;
 			try {
 				await withTimeout(
 					restoreInterception(),
@@ -1777,7 +1755,7 @@ export class WorkerCore {
 			runtime.setCwd(msg.session.cwd);
 			const onFloatingRejection = (reason: unknown): void => this.#recordFloatingRejection(active, reason);
 			runtime.setRunScope({
-				page: bindRunFacade(runPage.page, signal, active.rejectionOwner, onFloatingRejection),
+				page: bindRunFacade(runPage.page, signal, active.rejectionOwner, onFloatingRejection, pageScope.enter),
 				browser: bindRunFacade(browser, signal, active.rejectionOwner, onFloatingRejection),
 				tab: bindRunFacade(tabApi, signal, active.rejectionOwner, onFloatingRejection),
 				assert: (cond: unknown, text?: string): void => {
@@ -1870,6 +1848,7 @@ export class WorkerCore {
 			// load in flight. A run that merely ended keeps an unawaited goto going.
 			if (ac.signal.aborted && this.#network?.hasPendingMainFrameNavigation()) await this.#stopLoading();
 			try {
+
 				await runPage?.restoreInterception();
 			} catch (error) {
 				// A finished run keeps its result; the supervisor still recycles the tab.

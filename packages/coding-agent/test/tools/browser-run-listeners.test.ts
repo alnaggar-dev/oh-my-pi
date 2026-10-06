@@ -103,26 +103,25 @@ return { added, cleared: page.listenerCount("console") };`,
 		expect(after).toBe(baseline);
 	}, 30_000);
 
-	test("removes listeners a run adds through the real page behind the proxy", async () => {
+	test("an escaped page reference removes only the run's listeners", async () => {
 		const invoke = createHost();
 		await invoke({ action: "open", name: "escaped", url: `${baseUrl}/` });
-		const baseline = valueOf(
-			await invoke({ action: "run", name: "escaped", code: `return page.listenerCount("console");` }),
-		);
+		const counts = `return ["console", "request", "dialog"].map(type => page.listenerCount(type));`;
+		const baseline = valueOf(await invoke({ action: "run", name: "escaped", code: counts })) as number[];
 		const during = valueOf(
 			await invoke({
 				action: "run",
 				name: "escaped",
 				code: `const real = page.mainFrame().page();
 real.on("console", () => {}).once("console", () => {});
-return real.listenerCount("console");`,
+const added = real.listenerCount("console");
+real.removeAllListeners();
+return added;`,
 			}),
 		);
-		expect(during).toBe((baseline as number) + 2);
-		const after = valueOf(
-			await invoke({ action: "run", name: "escaped", code: `return page.listenerCount("console");` }),
-		);
-		expect(after).toBe(baseline);
+		expect(during).toBe(baseline[0] + 2);
+		const after = valueOf(await invoke({ action: "run", name: "escaped", code: counts }));
+		expect(after).toEqual(baseline);
 	}, 30_000);
 
 	test("removes listeners a run-owned handler adds while handling an event", async () => {
@@ -144,6 +143,29 @@ return null;`,
 		});
 		const after = valueOf(
 			await invoke({ action: "run", name: "nested", code: `return page.listenerCount("request");` }),
+		);
+		expect(after).toBe(baseline);
+	}, 30_000);
+
+	test("removes page listeners a browser event callback adds during the run", async () => {
+		const invoke = createHost();
+		await invoke({ action: "open", name: "callback", url: `${baseUrl}/` });
+		const baseline = valueOf(
+			await invoke({ action: "run", name: "callback", code: `return page.listenerCount("console");` }),
+		);
+		// Browser events arrive from the CDP socket, outside the run's async context.
+		await invoke({
+			action: "run",
+			name: "callback",
+			code: `const fired = Promise.withResolvers();
+browser.once("targetcreated", () => { page.on("console", () => {}).once("console", () => {}); fired.resolve(); });
+const extra = await browser.newPage();
+await fired.promise;
+await extra.close();
+return null;`,
+		});
+		const after = valueOf(
+			await invoke({ action: "run", name: "callback", code: `return page.listenerCount("console");` }),
 		);
 		expect(after).toBe(baseline);
 	}, 30_000);
@@ -179,7 +201,7 @@ return "idle";`,
 			await invoke({
 				action: "run",
 				name: "held",
-				code: `await page.setRequestInterception(true);
+				code: `await page.mainFrame().page().setRequestInterception(true);
 throw new Error("setup failed");`,
 			});
 		} catch (error) {
