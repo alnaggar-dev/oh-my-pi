@@ -2,7 +2,7 @@
 
 What this fork changes, why, and what must still be true after an upstream sync.
 
-**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `Accounts`, `Browser`), one
+**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `Browser`), one
 `###` per feature under it, seven fields per feature: **What it does**, **Why**, **Files**
 (the files the feature *owns* — every changed file is in exactly one entry's **Files**;
 an entry whose code sits in a file another entry owns names that file and its symbols
@@ -449,73 +449,6 @@ does what I wanted".
   - The model segment's eye badge colors are unchanged in both the ANSI render and the
     native describe: error, then warning, then success, else dim.
 - **Check:** `bun test packages/tui/test/status-line-advisor.test.ts packages/coding-agent/test/advisor-toggle.test.ts`
-
-## Accounts
-
-### Soonest-reset account is used first
-
-- **What it does:** When several accounts of one provider can serve a request, the
-  usage-based ranking picks the one whose long (weekly) window resets soonest, as long
-  as that window still has headroom. Resets that `compareUsageRankingMetric` treats as
-  equal fall back to upstream's required-drain order. Applies to every provider whose
-  ranking strategy reports a long window, in both OAuth and API-key ranking: Claude,
-  Codex, Kimi Code (its `7d` window), Z.ai (its second-shortest window), Alibaba Token
-  Plan (`credits:7d`), OpenCode Go (`weekly`), xAI OAuth (`credits:1w`, else
-  `included:1mo`), Command Code (`7d`) and Cursor (the requested model's monthly billing pool). **Not Antigravity:** its
-  `findWindowLimits` deliberately returns no secondary window, so every Antigravity
-  account gets `secondaryResetAt = ∞` and the new rule never separates them.
-- **Why:** A policy choice, not an upstream bug fix. Upstream ranks by required drain
-  (`headroom ÷ hours left`), which already prefers a half-used account resetting in 3
-  days (0.5 ÷ 72 h ≈ 0.0069) over a barely-used one resetting in 6 (0.9 ÷ 144 h ≈
-  0.0063). The rules differ when the sooner-resetting account is mostly used: 70% used
-  and resetting in 3 days (0.3 ÷ 72 h ≈ 0.0042) vs 10% used and resetting in 6 (≈
-  0.0063). Upstream picks the 6-day account; the fork uses up the 3-day account's
-  remaining quota before it expires. Keep it fork-only; do not propose it as
-  upstream's default.
-- **Files:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`.
-- **Depends on upstream:** `compareUsageRankedCandidatePriority` in `auth/rank.ts` and its
-  order of checks (blocked, plan priority, allowance spent, reserve, priority boost, hot 5h guard,
-  measured-first, per-account policy priority) — the new rule is inserted after the
-  account-policy priority and before required drain; the `UsageRankedCandidate` shape
-  built in both `#rankOAuthSelections` and `#rankApiKeySelections` of
-  `CredentialSelector` in `auth/select.ts`; `windowResetAt` in `auth/usage-report.ts`;
-  `compareUsageRankingMetric`'s relative tolerance; each provider strategy's
-  `findWindowLimits` choosing the secondary window (for Claude, the more pressured of the
-  shared and model-tier weekly rows); session affinity pins (a pinned session skips
-  ranking until the pin is evicted). **The tie window is not a designed constant:** it
-  is `compareUsageRankingMetric`'s relative 1e-6 tolerance applied to epoch
-  milliseconds — about 30 minutes in 2026, growing slowly as the epoch grows.
-  **Known interaction:** with `retry.usageAwareFallback` on (off by default), the
-  reserve release may re-pick the same nearly empty account, because it now ranks
-  first on reset time. **Deliberate test flips:** two upstream tests in
-  `packages/ai/test/auth-storage-codex-selection.test.ts` ("weights 3 accounts by
-  weekly/secondary drain rate") are renamed and inverted to expect the
-  soonest-resetting account; an upstream edit to either is a conflict to resolve in
-  the fork's favor.
-  **Open upstream interactions:** PR #8919 (open; still written against drain code
-  upstream has since moved to `windowRequiredDrain` in
-  `packages/ai/src/auth/usage-report.ts`) wants an untouched Anthropic seat, which
-  has no reset clock yet, started first by giving it top drain urgency. The fork's
-  rule runs before drain and sorts a window with no reset time last, so that boost is
-  never reached and its new test would likely fail (not run); decide which rule wins
-  if it lands. Issue #10203 (open): outside Anthropic a session pin has no idle
-  cutoff (only the Claude strategy sets `stickyWarmMs`), so a pinned session never
-  reaches either ranking rule; that is the likelier cause of quota expiring unused.
-  Issue #10929 (closed): ChatGPT can report Codex's 7-day window as the primary one;
-  Codex's `findWindowLimits` still returns it as the secondary through its `7d`
-  window-id fallback, so the rule sees its reset time. If that fallback goes, such an
-  account gets no reset time and sorts last.
-- **Tripwire paths:** `packages/ai/src/auth/rank.ts`, `packages/ai/src/auth/select.ts`, `packages/ai/src/auth/usage-report.ts`, `packages/ai/src/auth/affinity.ts`, `packages/ai/src/usage.ts`, `packages/ai/src/usage/claude.ts`, `packages/ai/src/usage/openai-codex.ts`, `packages/ai/src/usage/google-antigravity.ts`, `packages/ai/src/usage/kimi.ts`, `packages/ai/src/usage/zai.ts`, `packages/ai/src/usage/alibaba-token-plan.ts`, `packages/ai/src/usage/opencode-go.ts`, `packages/ai/src/usage/xai-oauth.ts`, `packages/ai/src/usage/commandcode.ts`, `packages/ai/src/usage/cursor.ts`, `packages/ai/src/usage/registry.ts`
-- **Must still be true:**
-  - Among unblocked, measured accounts below the 5h hot threshold, the one whose weekly
-    window resets earliest is selected, regardless of how much of it is already used.
-  - An account whose weekly window is fully spent sorts behind accounts with headroom,
-    even if it resets first.
-  - An account with no known weekly reset time sorts after those with one.
-  - Blocked accounts, plan priority, reserve, the 85% 5h hot guard,
-    measured-before-unmeasured, and a user-set account priority still take precedence
-    over reset order.
-- **Check:** `bun test packages/ai/test/auth-storage-codex-selection.test.ts packages/ai/test/auth-storage-claude-fable-fallback.test.ts packages/ai/test/auth-storage-antigravity-selection.test.ts packages/coding-agent/test/auth-storage-rotation.test.ts`
 
 ## Browser
 
