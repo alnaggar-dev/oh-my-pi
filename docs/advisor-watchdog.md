@@ -392,6 +392,8 @@ Advisor usage is separate model usage. `/advisor status` computes token/context 
 
 `advisor.evictStaleResults` defaults to `true`. Before each review, investigative `read`/`grep`/`glob` results from older reviews are replaced with short placeholders; the latest review's results remain. Set it to `false` to retain those older tool results in the advisor's live context.
 
+Inside a review, an advisor tool call other than `advise` that byte-matches an earlier identical call returns `[Unchanged since your earlier identical call]` while the original full result remains in context. If that original was evicted, pruned, errored, contained an image, or changed, the new result is kept in full.
+
 On prefix-bound thinking models, that eviction also drops signed reasoning after the pruning boundary, including reasoning in the latest review. Primary deltas and advice notes are not evicted.
 
 The advisor has its own append-only context. Before each advisor prompt, `AgentSession` estimates incoming tokens and may maintain advisor context:

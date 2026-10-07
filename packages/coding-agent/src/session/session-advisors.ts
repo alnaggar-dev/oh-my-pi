@@ -72,6 +72,7 @@ import {
 	resolveAdvisorDeliveryChannel,
 	slugifyAdvisorName,
 } from "../advisor";
+import { AdvisorToolResultDedupe } from "../advisor/tool-result-dedupe";
 import { evictStaleToolResults } from "../advisor/tool-result-eviction";
 import type { ModelRegistry } from "../config/model-registry";
 import {
@@ -1285,6 +1286,7 @@ export class SessionAdvisors {
 				(note, severity, turn) => this.#routeAdvice(advisorRef, note, severity, turn),
 				emissionGuard,
 			);
+			const toolResultDedupe = new AdvisorToolResultDedupe();
 
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
@@ -1443,7 +1445,10 @@ export class SessionAdvisors {
 				// records in index order and a not-yet-started sibling would see the
 				// aborted signal and become a skipped placeholder — a lost note.
 				afterToolCall: ctx => {
-					if (ctx.toolCall.name !== adviseTool.name) return undefined;
+					if (ctx.toolCall.name !== adviseTool.name) {
+						if (ctx.isError) return undefined;
+						return toolResultDedupe.check(ctx.toolCall, ctx.result, advisorAgent.state.messages);
+					}
 					if (ctx.isError) return undefined;
 					let lastAdviseId: string | undefined;
 					for (const block of ctx.assistantMessage.content) {
