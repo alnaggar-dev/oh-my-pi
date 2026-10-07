@@ -2478,6 +2478,40 @@ describe("advisor", () => {
 			expect(leakedSecretPieces(rendered, toolSecret)).toEqual([]);
 			expect(leakedSecretPieces(rendered, userSecret)).toEqual([]);
 		});
+
+		it("redacts user execution sources in advisor history before cutting their previews", async () => {
+			const secret = distinctSecret(80);
+			const obfuscator = new SecretObfuscator([{ type: "plain", content: secret }]);
+			const promptInputs: Array<string | AgentMessage[]> = [];
+			const agent = makeAgent(promptInputs);
+			const prefix = "x".repeat(103);
+			agent.state.messages.push(
+				{
+					role: "bashExecution",
+					command: `echo ${prefix}${secret}`,
+					exitCode: 0,
+					timestamp: 1,
+				} as unknown as AgentMessage,
+				{
+					role: "pythonExecution",
+					code: `print("${prefix}${secret}")`,
+					exitCode: 0,
+					timestamp: 2,
+				} as unknown as AgentMessage,
+			);
+			const runtime = new AdvisorRuntime(agent, {
+				snapshotMessages: () => [{ role: "user", content: "review the execution", timestamp: 3 } as AgentMessage],
+				obfuscator,
+			});
+
+			runtime.onTurnEnd();
+			await runtime.waitForCatchup(1_000, 1);
+
+			const bash = agent.state.messages[0] as AgentMessage & { command: string };
+			const python = agent.state.messages[1] as AgentMessage & { code: string };
+			expect(leakedSecretPieces(bash.command, secret)).toEqual([]);
+			expect(leakedSecretPieces(python.code, secret)).toEqual([]);
+		});
 		it("does not scan tool-call arguments hidden by the primary-argument preview", async () => {
 			const obfuscator = new SecretObfuscator([
 				{ type: "plain", content: "OTHERSECRET", friendlyName: "TOKABC123" },

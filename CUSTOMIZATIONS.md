@@ -34,7 +34,8 @@ does what I wanted".
 - **Files:** `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorIncludeThinking`,
   `cfgAdvisorProjectContext`),
   `packages/coding-agent/src/advisor/runtime.ts` (the `includeThinking` host flag that
-  seeds `#includeThinking`),
+  seeds `#includeThinking`; its `obfuscateAdvisorMessage` hunk is named under the
+  preview-redaction entry's **Depends on upstream**),
   `packages/coding-agent/src/advisor/config.ts` (only the `filterAdvisorTools` comment,
   kept accurate about which legacy tool aliases exist),
   `docs/advisor-watchdog.md` (its "Controlling token spend" section and the
@@ -251,7 +252,9 @@ does what I wanted".
   source, custom/irc/async-result, branch, compaction and file-mention one-liners — are
   redacted before their 120/80-character cut. Redaction covers the text through the end
   of the word holding the last visible character (at most 8 KiB), so a secret the cut
-  lands in is redacted whole, while text after the cut is never scanned. (The fork's
+  lands in is redacted whole, while text after the cut is never scanned. The same holds
+  when the advisor re-scrubs its own history after it learns a new secret: `bashExecution`
+  and `pythonExecution` source there is also redacted before its cut. (The fork's
   300-line cap for expanded edit diffs landed upstream as #13184 and is upstream code
   now.)
 - **Why:** A cut through a plain secret leaves a fragment the later whole-transcript redaction
@@ -271,15 +274,20 @@ does what I wanted".
   **Open upstream risk — PR #12848** (open) makes `boundedFencedToolContext` return
   `{ content, truncated }`; it now touches only upstream code, but check the
   `details.diff` call still reads `.content` if it lands.
-  **Known gap (upstream code, left alone):** `obfuscateAdvisorMessage` in
-  `packages/coding-agent/src/advisor/runtime.ts` still cuts `bashExecution` and
-  `pythonExecution` source with `formatExecutionSourcePreview` (no transform) before
-  redacting it.
+  Fork code it relies on in a file another entry owns: in
+  `packages/coding-agent/src/advisor/runtime.ts` (spend-controls entry), the
+  `bashExecution` and `pythonExecution` cases of `obfuscateAdvisorMessage` passing the
+  advisor's obfuscator as `formatExecutionSourcePreview`'s transform, instead of
+  upstream's cut-then-obfuscate. `scrubAdvisorHistory` reaches them when it rewrites the
+  advisor's own `state.messages`.
 - **Tripwire paths:** `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
 - **Must still be true:**
   - A secret straddling a one-line preview's cut (tool command, user `!` command) leaves
     no 8-character piece in the advisor prompt; a token starting after the cut is never
     scanned, and upstream's preview-cap test passes unchanged.
+  - The same holds for `bashExecution`/`pythonExecution` source that `scrubAdvisorHistory`
+    rewrites in the advisor's own history: no 8-character piece of a secret straddling
+    the cut survives.
   - Without a transform, previews render byte-identically to upstream's `oneLine`.
   - Fenced output containing backticks still gets a wrapper the content cannot break.
   - `primaryArgText` returns raw text and never calls `oneLine` itself, so every branch
@@ -801,10 +809,13 @@ does what I wanted".
 
 - **What it does:** `tab.click("text/…")` scrolls each candidate match into view
   before the actionability check, compares candidates in document coordinates, and no
-  longer calls `isIntersectingViewport`; the candidate lookup also honors the click's
-  abort and timeout. After init, the supervisor watches each tab's worker: when it
-  exits on its own (uncaught error, unhandled rejection), or a send throws
-  `InvalidStateError`, the tab is force-killed, so pending runs fail at once, the tab
+  longer calls `isIntersectingViewport`. Every page call in the candidate lookup is raced
+  with the click's abort and timeout, and an abort ends the lookup at once (disposing the
+  candidates it already holds) instead of being swallowed as a failed candidate. After
+  init, the supervisor watches each tab's worker: when it
+  exits on its own (uncaught error, unhandled rejection), or the required `run` send
+  throws `InvalidStateError` (`safeSend` stays log-only), the tab is force-killed, so
+  pending runs fail at once, the tab
   leaves `browser.tabs()`, and the next call says `Tab "x" was killed: … Reopen it.`
   The worker's last error is logged at warn level.
 - **Why:** On Salla Portal, `tab.click("text/View Snippets")` on a button below the
@@ -836,6 +847,8 @@ does what I wanted".
   - A `text/` match below the fold is scrolled into view and clicked, and a `text/`
     click on a tab that produces no animation frames finishes instead of stalling.
   - A covered `text/` match still fails with "blocked: covered by …".
+  - A `text/` click aborted while a candidate's page call hangs rejects at once with the
+    abort error; ordinary per-candidate failures (a detached node) are still skipped.
   - A worker that dies after init kills its tab: the next run rejects with the
     "was killed … Reopen it." error, not "Worker has been terminated", and the tab is
     gone from the tab list.

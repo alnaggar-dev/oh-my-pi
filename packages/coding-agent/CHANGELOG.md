@@ -62,6 +62,9 @@
 - Corrected tool behavior and configuration documentation for `read`, background `bash`, Python evaluation, replace editing, goal removal, and `advisor.immuneTurns`.
 - Fixed custom glob backends from hanging indefinitely; scans now respect the tool deadline and report incomplete results when necessary.
 - Fixed `--resume <path>` from silently creating a new session for a missing path; it now reports the missing path, consistent with `--fork <path>` and `--resume <id>`.
+- Fixed `ask` questions in Tern covering the end of the transcript with a sheet that blocked scrolling, hiding the explanation the question was about; the question now sits in the composer's place, framed like the composer, below a transcript you can read and scroll while deciding ([#14812](https://github.com/can1357/oh-my-pi/pull/14812) by [@H4vC](https://github.com/H4vC))
+- Fixed a cancelled or timed-out browser `tab.click("text/…")` continuing to check match candidates instead of stopping at once
+- Fixed secrets in user `!`/`$` commands leaking into an advisor's history when it re-redacts that history and the command preview was cut in the middle of a secret
 
 ## [18.8.0] - 2026-10-07
 

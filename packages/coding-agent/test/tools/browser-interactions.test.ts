@@ -6,6 +6,8 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { disposeAllVmContexts } from "@oh-my-pi/pi-coding-agent/eval/js/context-manager";
 import { createBrowserPrelude } from "@oh-my-pi/pi-coding-agent/tools/browser";
 import { CmuxTab } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/cmux-tab";
+import { clickQueryHandlerText } from "@oh-my-pi/pi-coding-agent/tools/browser/interactions";
+import { acquireBrowser, releaseBrowser } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
 import { releaseAllTabs } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import { TERN_KIT_SOURCE } from "@oh-my-pi/pi-coding-agent/tools/browser/tern/page-kit";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
@@ -135,6 +137,64 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser click timeouts", () => {
 			).toContain("last check: detached");
 		} finally {
 			await prelude.invoke({ action: "close", name: tabName, kill: true }, context).catch(() => undefined);
+		}
+	}, 30_000);
+
+	test("rejects promptly when a text-click candidate evaluation is aborted", async () => {
+		const browserHandle = await acquireBrowser({ kind: "headless", headless: true }, { cwd: process.cwd() });
+		if (!("browser" in browserHandle)) throw new Error("Expected a Puppeteer browser");
+		const page = await browserHandle.browser.newPage();
+		try {
+			await page.setContent('<button id="abort-candidate">Abort candidate</button>');
+			const [candidate] = await page.$$("text/Abort candidate");
+			if (!candidate) throw new Error("Expected a text-query candidate");
+			await candidate.evaluate(element => {
+				Object.defineProperty(element, "closest", {
+					configurable: true,
+					value: () => {
+						// Puppeteer's page callback type cannot name DOM globals in this test environment.
+						const target = element as unknown as { dataset: { closestEntered?: string } };
+						target.dataset.closestEntered = "1";
+						return Promise.withResolvers<never>().promise;
+					},
+				});
+			});
+
+			const controller = new AbortController();
+			const reason = new Error("candidate lookup aborted");
+			const settled = clickQueryHandlerText(
+				page,
+				"text/Abort candidate",
+				'tab.click("text/Abort candidate")',
+				5_000,
+				controller.signal,
+			).then(
+				() => ({ status: "resolved" as const }),
+				error => ({ status: "rejected" as const, error }),
+			);
+			await page.waitForFunction(
+				() => {
+					const page = globalThis as unknown as {
+						document: { querySelector(selector: string): { dataset: { closestEntered?: string } } | null };
+					};
+					return page.document.querySelector("#abort-candidate")?.dataset.closestEntered === "1";
+				},
+				{ timeout: 1_000 },
+			);
+
+			controller.abort(reason);
+			// Real Chromium CDP calls cannot run under fake timers; bound the formerly unending lookup.
+			const outcome = await Promise.race([settled, Bun.sleep(500).then(() => ({ status: "hung" as const }))]);
+			if (outcome.status !== "rejected") {
+				throw new Error(`Text-click candidate lookup ${outcome.status} after abort`);
+			}
+			if (!(outcome.error instanceof Error)) throw new Error("Expected candidate lookup to reject with an Error");
+			expect(outcome.error.name).toBe("AbortError");
+			expect(outcome.error.message).toBe("Aborted: candidate lookup aborted");
+			expect(outcome.error.cause).toBe(reason);
+		} finally {
+			await page.close().catch(() => undefined);
+			if (browserHandle.browser.connected) await releaseBrowser(browserHandle, { kill: true });
 		}
 	}, 30_000);
 });

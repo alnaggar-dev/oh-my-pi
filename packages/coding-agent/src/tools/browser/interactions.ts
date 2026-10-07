@@ -407,8 +407,12 @@ export async function resolveActionableQueryHandlerClickTarget(
 		let candidate = handle;
 		let owned = false;
 		try {
-			const proxy = await handle.evaluateHandle(el =>
-				(el as Element).closest('a,button,[role="button"],[role="link"],input[type="button"],input[type="submit"]'),
+			const proxy = await untilAborted(signal, () =>
+				handle.evaluateHandle(el =>
+					(el as Element).closest(
+						'a,button,[role="button"],[role="link"],input[type="button"],input[type="submit"]',
+					),
+				),
 			);
 			const element = proxy.asElement();
 			if (element) {
@@ -431,8 +435,14 @@ export async function resolveActionableQueryHandlerClickTarget(
 			if (actionable.ok || actionable.coveredBy) {
 				candidates.push({ handle: candidate, x: rect.x, y: rect.y, owned });
 			} else if (owned) await candidate.dispose().catch(() => undefined);
-		} catch {
+		} catch (error) {
 			if (owned) await candidate.dispose().catch(() => undefined);
+			if (signal?.aborted || (signal !== undefined && error === signal.reason)) {
+				for (const kept of candidates) {
+					if (kept.owned) await kept.handle.dispose().catch(() => undefined);
+				}
+				throw error;
+			}
 		}
 	}
 	candidates.sort((a, b) => a.y - b.y || a.x - b.x);
