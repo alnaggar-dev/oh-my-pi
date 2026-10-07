@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Anthropic prompt caching after long in-place history rewrites such as pruned tool results; a cache breakpoint now stops the re-billed region at the rewrite instead of falling back to an older checkpoint.
+
 ## [18.8.0] - 2026-10-07
 
 ### Breaking Changes

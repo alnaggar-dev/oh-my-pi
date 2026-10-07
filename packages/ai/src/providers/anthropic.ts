@@ -77,6 +77,7 @@ import {
 	kStreamingBlockIndex,
 	kStreamingLastParseLen,
 	kStreamingPartialJson,
+	markRewriteAt,
 } from "../utils/block-symbols";
 import { withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
@@ -102,6 +103,7 @@ import {
 	type AnthropicMessagesClientLike,
 	calculateAnthropicRetryDelayMs,
 } from "./anthropic-client";
+import { findRewriteBoundary, hasUnbilledRewrite } from "./anthropic-rewrite-boundary";
 import {
 	type ToolInputSchema as AnthropicToolInputSchema,
 	type Tool as AnthropicWireTool,
@@ -3981,15 +3983,18 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 	}
 	// Prioritize:
 	// 1. Most recent trailing message
-	// 2. Latest decimation checkpoints (newest first) to maintain stable long-context anchors
-	// 3. Newest message at or before the first per-call/turn-scoped mark, so a
+	// 2. Rewrite boundary
+	// 3. Latest decimation checkpoints (newest first) to maintain stable long-context anchors
+	// 4. Newest message at or before the first per-call/turn-scoped mark, so a
 	//    volatile interior message costs only its own re-billed bytes instead
 	//    of invalidating the whole reusable prefix behind it
-	// 4. Second trailing message
+	// 5. Second trailing message
 	const candidateIndices: number[] = [];
 	if (trailingCandidates.length > 0) {
 		candidateIndices.push(trailingCandidates[0]);
 	}
+	const rewriteBoundary = findRewriteBoundary(params.messages, messageEnd);
+	if (rewriteBoundary >= 0 && !candidateIndices.includes(rewriteBoundary)) candidateIndices.push(rewriteBoundary);
 	for (let i = decimationIndices.length - 1; i >= 0; i--) {
 		if (!candidateIndices.includes(decimationIndices[i])) {
 			candidateIndices.push(decimationIndices[i]);
@@ -5150,6 +5155,8 @@ export function convertAnthropicMessages(
 		opts?.credentialId,
 	);
 
+	const markRewrites = hasUnbilledRewrite(transformedMessages);
+
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const msg = transformedMessages[i];
 
@@ -5407,6 +5414,7 @@ export function convertAnthropicMessages(
 			// Add the current tool result
 			toolResults.push(buildToolResultBlock(model, msg, hoistedImages));
 			copyPerCallContextMessage(toolResultParam, msg);
+			if (markRewrites && msg.prunedAt !== undefined) markRewriteAt(toolResultParam, msg.prunedAt);
 
 			// Look ahead for consecutive toolResult messages
 			let j = i + 1;
@@ -5414,6 +5422,7 @@ export function convertAnthropicMessages(
 				const nextMsg = transformedMessages[j] as ToolResultMessage; // We know it's a toolResult
 				toolResults.push(buildToolResultBlock(model, nextMsg, hoistedImages));
 				copyPerCallContextMessage(toolResultParam, nextMsg);
+				if (markRewrites && nextMsg.prunedAt !== undefined) markRewriteAt(toolResultParam, nextMsg.prunedAt);
 				j++;
 			}
 
