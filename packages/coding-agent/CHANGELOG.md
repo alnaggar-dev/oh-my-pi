@@ -5,7 +5,7 @@
 ### Fixed
 
 - Fixed `ask` questions in Tern covering the end of the transcript with a sheet that blocked scrolling, hiding the explanation the question was about; the question now sits in the composer's place, framed like the composer, below a transcript you can read and scroll while deciding ([#14812](https://github.com/can1357/oh-my-pi/pull/14812) by [@H4vC](https://github.com/H4vC))
-- Fixed `page.waitForNetworkIdle` in `tab.run` timing out on a request started by an earlier `tab.run`
+- Fixed `page.waitForNetworkIdle` in `tab.run` timing out on a request started by an earlier `tab.run` ([#14868](https://github.com/can1357/oh-my-pi/pull/14868) by [@alnaggar-dev](https://github.com/alnaggar-dev))
 ### Changed
 
 - Generated session titles now carry their card in the title itself (`🧪 FLAKY: Fix flaky park tests`), so the `/resume` picker and session listings show the icon and short code too; `title.icons` applies to newly generated titles.
