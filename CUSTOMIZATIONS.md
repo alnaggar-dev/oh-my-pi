@@ -863,14 +863,16 @@ does what I wanted".
   OMP-launched Chromium, and the shared broker browser's persistent profile),
   `seedOwnedProfilePreferences` sets `profile.password_manager_leak_detection: false` in
   `Default/Preferences`, keeps every other preference, skips the write when the flag is
-  already off, and replaces the file atomically.
+  already off, and replaces the file atomically. Seeding is best-effort on both launch
+  paths: a failure is logged at warn level, removes any staged temp file, and never
+  blocks the launch. Upstream PR #14862 carries this change.
 - **Why:** After a password form submit, leak detection opens a tab-modal "Change your
   password" dialog; while it is open Chromium drops `Input.dispatchMouseEvent`, so
   coordinate clicks did nothing, and a hidden browser offers no way to close it.
 - **Files:** `packages/coding-agent/src/tools/browser/launch.ts`
-  (`seedOwnedProfilePreferences` and its call in `launchHeadlessBrowser`),
-  `packages/coding-agent/src/tools/browser/shared-daemon.ts` (the seed call in
-  `ensureSharedBrowser`, logged and ignored on failure).
+  (`seedOwnedProfilePreferences`, `writeOwnedProfilePreferences` and the seed call in
+  `launchHeadlessBrowser`), `packages/coding-agent/src/tools/browser/shared-daemon.ts`
+  (the seed call in `ensureSharedBrowser`).
 - **Depends on upstream:** `launchHeadlessBrowser` creating its own
   `omp-chrome-profile-*` directory only when no `--user-data-dir` is passed, so a
   caller's profile is never written; `ensureSharedBrowser` using a stable
@@ -890,5 +892,6 @@ does what I wanted".
   - Seeding keeps a reused profile's other preferences and creates the file on a fresh
     profile.
   - A profile the caller passes with `--user-data-dir` is never written.
-  - A seeding failure does not stop the shared browser from starting.
+  - A seeding failure is logged and never stops the OMP-launched or shared browser from
+    starting, and it leaves no staged `Preferences.omp-<pid>` file behind.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-profile-cleanup.test.ts`
