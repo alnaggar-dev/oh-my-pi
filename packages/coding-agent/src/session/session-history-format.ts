@@ -91,8 +91,6 @@ const EXPANDED_TOOL_IO_MAX_LINES = 80;
 const EXPANDED_DIFF_MAX_LINES = 300;
 const EXPANDED_ASK_FIELD_MAX_BYTES = 2 * 1024;
 const EXPANDED_ASK_FIELD_MAX_LINES = 20;
-/** Longest one-line preview window `transform` ever scans. */
-const PREVIEW_TRANSFORM_SCAN_MAX = 8 * 1024;
 
 /** Per-tool preference order for the most informative scalar argument. */
 const PRIMARY_ARG_KEYS = [
