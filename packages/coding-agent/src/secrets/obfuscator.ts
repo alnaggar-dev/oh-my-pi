@@ -456,6 +456,59 @@ export class SecretObfuscator {
 		this.#obfuscating = enabled;
 	}
 
+	/**
+	 * Length of the shortest prefix of `text` (at least `limit`) that
+	 * {@link obfuscate} can redact in place of the whole text for everything
+	 * starting before `limit`. The prefix holds every secret that starts there,
+	 * and every regex entry finds exactly the matches before `limit` in it that
+	 * it finds in the whole text, so lookahead and other trailing context
+	 * survive the cut. Text past the prefix stays unscanned and mints nothing;
+	 * when no shorter prefix qualifies the answer is `text.length`. Mints no
+	 * placeholders.
+	 */
+	redactionPrefixEnd(text: string, limit: number, sharedRegexSecretValues?: ReadonlySet<string>): number {
+		if (!this.obfuscates() || text.length <= limit) return text.length;
+		const { key: fullMatches, end: regexEnd } = this.#regexMatchesBefore(text, limit);
+		let end = Math.max(limit, regexEnd);
+		const extendThrough = (literal: string): void => {
+			if (literal.length === 0) return;
+			for (let at = text.indexOf(literal); at !== -1 && at < limit; at = text.indexOf(literal, at + 1)) {
+				end = Math.max(end, at + literal.length);
+			}
+		};
+		this.#syncLiteralCaches();
+		for (const literal of this.#configuredLiterals) extendThrough(literal);
+		for (const value of sharedRegexSecretValues ?? EMPTY_SECRET_VALUES) extendThrough(value);
+		// A match can depend on context past its own end (lookahead, `\b`, `$`):
+		// widen until the prefix reproduces the whole text's matches exactly.
+		while (end < text.length && this.#regexMatchesBefore(text.slice(0, end), limit).key !== fullMatches) {
+			end = Math.min(text.length, end * 2);
+		}
+		return end;
+	}
+
+	/** Regex matches starting before `limit`, as a comparable key, and the furthest match end. */
+	#regexMatchesBefore(text: string, limit: number): { key: string; end: number } {
+		let key = "";
+		let end = 0;
+		for (const [index, entry] of this.#regexEntries.entries()) {
+			entry.regex.lastIndex = 0;
+			for (;;) {
+				const match = entry.regex.exec(text);
+				if (match === null || match.index >= limit) break;
+				if (match[0].length === 0) {
+					entry.regex.lastIndex++;
+					continue;
+				}
+				const matchEnd = match.index + match[0].length;
+				key += `${index}:${match.index}:${matchEnd},`;
+				end = Math.max(end, matchEnd);
+			}
+			entry.regex.lastIndex = 0;
+		}
+		return { key, end };
+	}
+
 	/** Obfuscate all secrets in text. Bidirectional placeholders for obfuscate mode, one-way for replace. */
 	obfuscate(text: string, sharedRegexSecretValues?: ReadonlySet<string>): string {
 		if (!this.obfuscates()) return text;

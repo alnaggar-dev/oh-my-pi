@@ -430,27 +430,40 @@ describe("formatSessionHistoryMarkdown", () => {
 		expect(mid).not.toContain("elided");
 	});
 
-	it("redacts an expanded diff before middle truncation", () => {
-		const secret = `BEGIN_SECRET_${"x".repeat(5_000)}_END_SECRET`;
-		const diff = `--- a/big.ts\n+++ b/big.ts\n@@ -1 +1 @@\n+${"head".repeat(1_000)}${secret}${"tail".repeat(1_000)}`;
+	it("redacts secrets that cross the preview cut at a space or past 8 KiB", () => {
+		// Reviewer repro: a two-word secret straddling the 120-char cut, plus a
+		// single token longer than any fixed scan window.
+		const spaced = "SECRETONE SECRETTWO";
+		const long = `LONGSECRET_${"z".repeat(9 * 1024)}`;
+		const transform = (text: string): string => text.replaceAll(spaced, "[redacted]").replaceAll(long, "[redacted]");
 		const output = formatSessionHistoryMarkdown(
 			[
 				{
-					role: "assistant",
-					content: [{ type: "toolCall", id: "c1", name: "edit", arguments: { path: "big.ts" } }],
+					role: "bashExecution",
+					command: `${"p".repeat(105)}${spaced} suffix`,
+					output: "",
+					exitCode: 0,
 					timestamp: 1,
 				},
-				{ role: "toolResult", toolCallId: "c1", toolName: "edit", content: "ok", details: { diff }, timestamp: 2 },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "c1",
+							name: "bash",
+							arguments: { command: `${"p".repeat(105)}${spaced} suffix` },
+						},
+						{ type: "toolCall", id: "c2", name: "bash", arguments: { command: `${"q".repeat(100)}${long}` } },
+					],
+					timestamp: 2,
+				},
 			],
-			{
-				expandEditDiffs: true,
-				watchedRoles: true,
-				transformExpandedToolIO: text => text.replaceAll(secret, "#REDACTED#"),
-			},
+			{ transformExpandedToolIO: transform },
 		);
 
-		expect(output).toContain("#REDACTED#");
-		expect(output).not.toContain("BEGIN_SECRET_");
-		expect(output).not.toContain("_END_SECRET");
+		expect(output).not.toContain("SECRETONE");
+		expect(output).not.toContain("LONGSECRET");
+		expect(output.match(/\[redacted\]/g)).toHaveLength(3);
 	});
 });

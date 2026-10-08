@@ -34,8 +34,8 @@ does what I wanted".
 - **Files:** `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorIncludeThinking`,
   `cfgAdvisorProjectContext`),
   `packages/coding-agent/src/advisor/runtime.ts` (the `includeThinking` host flag that
-  seeds `#includeThinking`; its `obfuscateAdvisorMessage` hunk is named under the
-  preview-redaction entry's **Depends on upstream**),
+  seeds `#includeThinking`; its `advisorToolIOTransform` import and call sites are named
+  under the preview-redaction entry's **Depends on upstream**),
   `packages/coding-agent/src/advisor/config.ts` (only the `filterAdvisorTools` comment,
   kept accurate about which legacy tool aliases exist),
   `docs/advisor-watchdog.md` (its "Controlling token spend" section and the
@@ -250,41 +250,57 @@ does what I wanted".
 
 - **What it does:** One-line previews — tool primary argument, tool intent, user `!`/`$`
   source, custom/irc/async-result, branch, compaction and file-mention one-liners — are
-  redacted before their 120/80-character cut. Redaction covers the text through the end
-  of the word holding the last visible character (at most 8 KiB), so a secret the cut
-  lands in is redacted whole, while text after the cut is never scanned. The same holds
-  when the advisor re-scrubs its own history after it learns a new secret: `bashExecution`
-  and `pythonExecution` source there is also redacted before its cut. (The fork's
-  300-line cap for expanded edit diffs landed upstream as #13184 and is upstream code
-  now.)
+  redacted before their 120/80-character cut. With the advisor's obfuscator the redacted
+  text is a prefix that reaches past every secret starting in the visible part, widened
+  until each secret regex finds the same matches there as in the whole text, so a secret
+  holding a space, one longer than any fixed window, or one whose regex needs lookahead
+  past the cut is redacted whole, while text after that prefix is never scanned. The
+  same holds when the advisor re-scrubs its own history after it learns a new secret:
+  `bashExecution` and `pythonExecution` source there is also redacted before its cut.
+  Upstream PR #14863 carries this change. (The fork's 300-line cap for expanded edit
+  diffs landed upstream as #13184 and is upstream code now.)
 - **Why:** A cut through a plain secret leaves a fragment the later whole-transcript redaction
   pass cannot recognize, so the visible half reached the advisor.
-- **Files:** `packages/coding-agent/src/session/session-history-format.ts` (`previewLine`,
-  `PREVIEW_TRANSFORM_SCAN_MAX`, `primaryArgText`, and the `transform` parameters on the
-  preview formatters).
+- **Files:** `packages/coding-agent/src/session/session-history-format.ts`
+  (`ToolIOTransform`, `previewLine`, `primaryArgText`, and the `transform` parameters on
+  the preview formatters), `packages/coding-agent/src/secrets/obfuscator.ts`
+  (`redactionPrefixEnd`, `#regexMatchesBefore`),
+  `packages/coding-agent/src/advisor/delta-split.ts` (`AdvisorObfuscator.redactionPrefixEnd`,
+  `advisorToolIOTransform` and its use in `renderAdvisorDeltaChunks`).
 - **Depends on upstream:** upstream's `oneLine` and preview caps;
   `formatSessionHistoryMarkdown`'s option object (`expandEditDiffs`, `expandToolIO`,
   `transformExpandedToolIO`) — the advisor sets all of these, so an upstream default
-  change silently changes what it is billed for; the advisor passing its secret
-  redaction as `transformExpandedToolIO` on both render paths (`#renderPreparedDelta` in
-  `packages/coding-agent/src/advisor/runtime.ts`, `renderAdvisorDeltaChunks` in
-  `packages/coding-agent/src/advisor/delta-split.ts`); upstream's rule that execution
-  source past the preview cap is never scanned (its test `does not scan execution source
-  after the advisor preview cap`).
+  change silently changes what it is billed for; upstream's rule that execution source
+  past the preview cap is never scanned (its test `does not scan execution source after
+  the advisor preview cap`), which is why the prefix is bounded instead of the whole
+  text being redacted. In the obfuscator: `compileSecretRegex`
+  (`packages/coding-agent/src/secrets/regex.ts`) forcing the `g` flag, which the
+  `exec` loop in `#regexMatchesBefore` needs to terminate; `#configuredLiterals` listing
+  every plain and replace-mode literal; `obfuscate` minting placeholders only for regex
+  matches (plain secrets are registered at construction), so skipping hidden text is
+  what keeps hidden content from changing placeholder labels. The prefix check compares
+  regex matches on raw text, while `obfuscate` matches on a placeholder-expanded view; a
+  change there that lets a match depend on bytes past its raw-text context would need
+  the check widened.
   **Open upstream risk — PR #12848** (open) makes `boundedFencedToolContext` return
   `{ content, truncated }`; it now touches only upstream code, but check the
   `details.diff` call still reads `.content` if it lands.
   Fork code it relies on in a file another entry owns: in
   `packages/coding-agent/src/advisor/runtime.ts` (spend-controls entry), the
-  `bashExecution` and `pythonExecution` cases of `obfuscateAdvisorMessage` passing the
-  advisor's obfuscator as `formatExecutionSourcePreview`'s transform, instead of
-  upstream's cut-then-obfuscate. `scrubAdvisorHistory` reaches them when it rewrites the
-  advisor's own `state.messages`.
-- **Tripwire paths:** `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
+  `advisorToolIOTransform` import, its use as `#renderPreparedDelta`'s
+  `transformExpandedToolIO`, and the `bashExecution` and `pythonExecution` cases of
+  `obfuscateAdvisorMessage` passing it to `formatExecutionSourcePreview` instead of
+  upstream's cut-then-obfuscate. `scrubAdvisorHistory` reaches those cases when it
+  rewrites the advisor's own `state.messages`.
+- **Tripwire paths:** `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`, `packages/coding-agent/src/secrets/obfuscator.ts`, `packages/coding-agent/src/secrets/regex.ts`
 - **Must still be true:**
   - A secret straddling a one-line preview's cut (tool command, user `!` command) leaves
-    no 8-character piece in the advisor prompt; a token starting after the cut is never
-    scanned, and upstream's preview-cap test passes unchanged.
+    no 8-character piece in the advisor prompt, including a plain secret holding a
+    space, a regex secret longer than 8 KiB, and a regex secret whose lookahead context
+    lies past the cut. A token starting after every secret that reaches the visible part
+    is never scanned, and upstream's preview-cap test passes unchanged.
+  - A transform without `redactionPrefixEnd` redacts the whole flattened text before the
+    cut.
   - The same holds for `bashExecution`/`pythonExecution` source that `scrubAdvisorHistory`
     rewrites in the advisor's own history: no 8-character piece of a secret straddling
     the cut survives.
