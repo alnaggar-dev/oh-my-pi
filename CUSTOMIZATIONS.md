@@ -916,3 +916,25 @@ does what I wanted".
   - A seeding failure is logged and never stops the OMP-launched or shared browser from
     starting, and it leaves no staged `Preferences.omp-<pid>` file behind.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-profile-cleanup.test.ts`
+
+## Titles and labels
+
+### `--no-title` / `PI_NO_TITLE` stops every title-model request
+
+- **What it does:** With `PI_NO_TITLE` set (what `--no-title` sets), `generateSessionTitle`
+  returns `null` before any eligibility logic, and `generateTaskLabel` returns `null`
+  before building its request, so no session title, mid-run replan title, or subagent
+  task label reaches the title model.
+- **Why:** Upstream honored the switch only for the first session title; subagent labels
+  and replan titles still sent title-model requests the user had turned off.
+- **Files:** `packages/coding-agent/src/utils/title-generator.ts`,
+  `packages/coding-agent/src/task/label.ts`
+- **Depends on upstream:** `--no-title` being mapped to the `PI_NO_TITLE` env var, and
+  every title-model caller going through `generateSessionTitle` or `generateTaskLabel`.
+  A new upstream caller that calls the title model directly bypasses the guard.
+- **Tripwire paths:** `packages/coding-agent/src/utils/title-generator.ts`, `packages/coding-agent/src/task/label.ts`
+- **Must still be true:**
+  - With `PI_NO_TITLE` set, task label generation returns `null` and makes no model call.
+  - With `PI_NO_TITLE` set, session title generation returns `null` and makes no model
+    call.
+- **Check:** `bun test packages/coding-agent/test/task-label.test.ts`

@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed relative file links in Tern assistant replies opening against the folder omp was started in after `/wt` or `/move`; they now open the file in the session's working directory ([#14879](https://github.com/can1357/oh-my-pi/pull/14879) by [@H4vC](https://github.com/H4vC))
+- Fixed `--no-title` / `PI_NO_TITLE` leaving subagent label generation active: every title-model request (session titles, mid-run replan titles, and task labels) is now suppressed by the same switch.
 
 ## [18.8.3] - 2026-10-07
 
