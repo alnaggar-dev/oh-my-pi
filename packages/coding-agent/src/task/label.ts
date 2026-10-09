@@ -1,7 +1,7 @@
 /**
  * Tiny-model UI labels for spawned subagents.
  */
-import { logger, prompt } from "@oh-my-pi/pi-utils";
+import { $env, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import taskLabelSystemPrompt from "../prompts/system/task-label.md" with { type: "text" };
@@ -30,6 +30,7 @@ export async function generateTaskLabel(
 ): Promise<string | null> {
 	const text = assignment.trim();
 	if (!text) return null;
+	if ($env.PI_NO_TITLE) return null;
 	try {
 		const label = await generateSessionTitle(
 			text,

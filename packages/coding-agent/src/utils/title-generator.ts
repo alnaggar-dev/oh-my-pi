@@ -170,6 +170,13 @@ export async function generateSessionTitle(
 	signal?: AbortSignal,
 	credentialSourceSessionId?: string,
 ): Promise<string | null> {
+	// Global kill switch (--no-title / PI_NO_TITLE): no title-model request may
+	// leave the process. Checked before any eligibility logic so every caller
+	// (session titles, subagent labels) is covered.
+	if ($env.PI_NO_TITLE) {
+		logger.debug("title-generator: skipped by PI_NO_TITLE", { sessionId });
+		return null;
+	}
 	// Defer titling for greetings / acknowledgements / empty input. The default
 	// tiny title model can't reliably decline trivial input, so this happens
 	// deterministically before any model is invoked; the caller retries on the
