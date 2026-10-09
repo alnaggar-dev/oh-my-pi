@@ -557,11 +557,7 @@ does what I wanted".
   getter), `packages/coding-agent/src/tools/browser/declarations.d.ts`
   (`BrowserGoalOptions`, `BrowserGoalReport`, `BrowserTab.goal`),
   `packages/coding-agent/src/tools/browser/prelude.js` and
-  `packages/coding-agent/src/tools/browser/prelude.py` (`tab.goal`),
-  `packages/coding-agent/src/judgment/index.ts` (only `cachedJudgeRoleChain` keying its
-  1 s chain reuse on `settings.revision` as well as the `Settings` instance; upstream
-  keyed it on the instance alone, so a judge-role switch left `hasNativeJudge` reporting
-  native while the next judge still ran the cached chat model).
+  `packages/coding-agent/src/tools/browser/prelude.py` (`tab.goal`).
 - **Depends on upstream:** The judgment module in
   `packages/coding-agent/src/judgment/index.ts`: `hasNativeJudge` (the judge role
   chain's first candidate is native) gates both the docs and the action, so a change in
