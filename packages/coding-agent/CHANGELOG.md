@@ -872,6 +872,7 @@
 - Fixed quadratic slowdown in `omp cleanse` on large tsc/clippy/golangci output ([#14706](https://github.com/can1357/oh-my-pi/pull/14706) by [@H4vC](https://github.com/H4vC))
 - Fixed documents served as `application/octet-stream` being downloaded twice ([#14708](https://github.com/can1357/oh-my-pi/pull/14708) by [@H4vC](https://github.com/H4vC))
 - Fixed collab TUI guests rebuilding the transcript per token ([#14715](https://github.com/can1357/oh-my-pi/pull/14715) by [@H4vC](https://github.com/H4vC))
+- Fixed `--no-title` / `PI_NO_TITLE` leaving subagent label generation active: every title-model request (session titles, mid-run replan titles, and task labels) is now suppressed by the same switch.
 
 ## [18.8.3] - 2026-10-07
 
