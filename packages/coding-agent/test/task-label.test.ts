@@ -89,6 +89,26 @@ describe("task label generation", () => {
 		expect(labeled).toBe("Sleep then reply done");
 	});
 
+	it("skips label generation entirely when PI_NO_TITLE is set", async () => {
+		const model = getModelOrThrow("claude-sonnet-4-5");
+		const complete = vi.spyOn(ai, "completeSimple");
+		const previous = Bun.env.PI_NO_TITLE;
+		Bun.env.PI_NO_TITLE = "1";
+		try {
+			const labeled = await generateTaskLabel(
+				"Sleep forty seconds then reply done",
+				createRegistry(model),
+				createSettings(model),
+				"AuthLoader",
+			);
+			expect(labeled).toBeNull();
+			expect(complete).not.toHaveBeenCalled();
+		} finally {
+			if (previous === undefined) delete Bun.env.PI_NO_TITLE;
+			else Bun.env.PI_NO_TITLE = previous;
+		}
+	});
+
 	it("treats a case-insensitive Name-N collision as an echoed handle", () => {
 		expect(labelEchoesHandle("AuthLoader-3", "authloader")).toBe(true);
 		expect(labelEchoesHandle("AuthLoader-3", "AuthLoader")).toBe(true);
