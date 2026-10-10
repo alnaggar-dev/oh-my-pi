@@ -740,27 +740,34 @@ does what I wanted".
   `Default/Preferences`, keeps every other preference, skips the write when the flag is
   already off, and replaces the file atomically. Seeding is best-effort on both launch
   paths: a failure is logged at warn level, removes any staged temp file, and never
-  blocks the launch. Upstream PR #14862 carries this change.
+  blocks the launch. On the shared profile, each describe, adopt-or-start round in
+  `ensureSharedBrowser` holds a cross-process file lock on the profile, and only the
+  holder that finds no live broker Chrome seeds, right before its start request; a
+  client that adopts never writes. If the lock wait times out, the client warns and
+  runs the round without seeding. Upstream PR #14862 carries this change.
 - **Why:** After a password form submit, leak detection opens a tab-modal "Change your
   password" dialog; while it is open Chromium drops `Input.dispatchMouseEvent`, so
   coordinate clicks did nothing, and a hidden browser offers no way to close it.
 - **Files:** `packages/coding-agent/src/tools/browser/launch.ts`
   (`seedOwnedProfilePreferences`, `writeOwnedProfilePreferences` and the seed call in
   `launchHeadlessBrowser`), `packages/coding-agent/src/tools/browser/shared-daemon.ts`
-  (the seed call in `ensureSharedBrowser`).
+  (`claimProfile`, `adoptOrStart` and the lock-held round in `ensureSharedBrowser`).
 - **Depends on upstream:** `launchHeadlessBrowser` creating its own
   `omp-chrome-profile-*` directory only when no `--user-data-dir` is passed, so a
   caller's profile is never written; `ensureSharedBrowser` using a stable
   `<name>.profile` under the daemon runtime dir and reaching the seed only when no live
   broker Chrome runs on it (Chromium reads `Preferences` only at startup and rewrites
-  it from memory); Chromium's `profile.password_manager_leak_detection` pref and its
+  it from memory); `acquireFileLock` in `packages/utils/src/file-lock.ts` being an
+  OS-backed, cross-process lease released when its holder exits, with `retries`,
+  `retryDelayMs` and `signal` bounding the wait; Chromium's
+  `profile.password_manager_leak_detection` pref and its
   `Default` profile layout. Relay and connected browsers use the user's own profile and
   are never seeded. **Known gap (upstream paths, left alone):** two other OMP-owned
   profiles are not seeded either — Chromium spawned through `app.path`
   (`resolveSpawnArgs` in `packages/coding-agent/src/tools/browser/attach.ts`) and the
   headful SSO sign-in browser (`captureBrowserSession` in
   `packages/coding-agent/src/utils/browser-session.ts`).
-- **Tripwire paths:** `packages/coding-agent/src/tools/browser/launch.ts`, `packages/coding-agent/src/tools/browser/shared-daemon.ts`, `packages/coding-agent/src/launch/paths.ts`
+- **Tripwire paths:** `packages/coding-agent/src/tools/browser/launch.ts`, `packages/coding-agent/src/tools/browser/shared-daemon.ts`, `packages/coding-agent/src/launch/paths.ts`, `packages/utils/src/file-lock.ts`
 - **Must still be true:**
   - Chromium on the OMP-launched temp profile and on the shared broker profile starts
     with password leak detection off.
@@ -769,6 +776,9 @@ does what I wanted".
   - A profile the caller passes with `--user-data-dir` is never written.
   - A seeding failure is logged and never stops the OMP-launched or shared browser from
     starting, and it leaves no staged `Preferences.omp-<pid>` file behind.
+  - When two clients race a cold start of the shared browser, only the one that
+    launches Chrome writes `Preferences`, before launch; the other adopts the live
+    Chrome without writing.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-profile-cleanup.test.ts`
 
 ## Titles and labels
