@@ -2112,15 +2112,12 @@ async function forceKillTab(name: string, reason: string): Promise<void> {
 	// A release already owns this tab's teardown. Joining it keeps one worker
 	// termination, one browser-hold release, and one ownership decision — the
 	// racing pair otherwise released the shared browser's hold twice and let the
-	// second path forget a target this one is retaining. Checked before `dead`,
-	// because a release marks the tab dead before its teardown finishes.
+	// second path forget a target this one is retaining.
 	const ongoing = releaseInflight.get(tab);
 	if (ongoing) {
 		await ongoing.promise.catch(() => undefined);
 		return;
 	}
-	// Already torn down by an earlier kill: a second pass would release the browser hold twice.
-	if (tab.state === "dead") return;
 	killedTabs.set(name, reason);
 	tab.state = "dead";
 	const error = postmortem.markExpectedCleanupError(new ToolError(reason));
