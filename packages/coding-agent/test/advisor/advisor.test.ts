@@ -2619,6 +2619,7 @@ describe("advisor", () => {
 			expect(rendered).not.toContain("tok_zzz");
 			expect(rendered).not.toContain("SECRET_b");
 		});
+
 		it("redacts user execution sources in advisor history before cutting their previews", async () => {
 			const secret = distinctSecret(80);
 			const obfuscator = new SecretObfuscator([{ type: "plain", content: secret }]);

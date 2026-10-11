@@ -927,7 +927,6 @@
 - Fixed custom glob backends from hanging indefinitely; scans now respect the tool deadline and report incomplete results when necessary.
 - Fixed `--resume <path>` from silently creating a new session for a missing path; it now reports the missing path, consistent with `--fork <path>` and `--resume <id>`.
 - Fixed `ask` questions in Tern covering the end of the transcript with a sheet that blocked scrolling, hiding the explanation the question was about; the question now sits in the composer's place, framed like the composer, below a transcript you can read and scroll while deciding ([#14812](https://github.com/can1357/oh-my-pi/pull/14812) by [@H4vC](https://github.com/H4vC))
-- Fixed secrets in user `!`/`$` commands leaking into an advisor's history when it re-redacts that history and the command preview was cut in the middle of a secret
 
 ## [18.8.0] - 2026-10-07
 
@@ -1730,6 +1729,7 @@ Older entries are archived in [packages/coding-agent/CHANGELOG.md@3faa7ce5154a](
 - Fixed Collab hosts becoming unable to reclaim a room after a brief network interruption; hosts now retry room recovery without losing guests or queued updates.
 - Fixed one-shot commands that stopped before completing, such as `omp config set` on a fresh Windows profile, incorrectly exiting successfully without output; they now report failure with diagnostic guidance.
 - Fixed coordinate clicks being dropped after a password form submit in OMP-launched Chromium
+- Fixed typed text being dropped in a browser relay tab that is not the active Chrome tab
 - Preserved MCP `structuredContent` in live tool result `details`, allowing eval callers to consume server data without parsing the model-facing JSON rendering; spilled results omit the duplicate structured payload from session persistence while retaining the artifact reference ([#13397](https://github.com/can1357/oh-my-pi/issues/13397), [#13398](https://github.com/can1357/oh-my-pi/pull/13398) by [@shawnkoh](https://github.com/shawnkoh)).
 - Fixed a Collab host ending with `a host is already connected for this room` after a brief network drop: when the relay still holds the dropped connection, the host now retries every few seconds for up to 150 s and reclaims its room, and a refused retry no longer resets the guest list or drops queued updates ([#12514](https://github.com/can1357/oh-my-pi/issues/12514), [#13355](https://github.com/can1357/oh-my-pi/pull/13355) by [@alphastorm](https://github.com/alphastorm))
 - Fixed a one-shot command that stopped before completing (for example `omp config set` on a fresh Windows profile) exiting 0 with no output; it now exits 1 with a stderr line naming the command and pointing at `PI_DEBUG_STARTUP` ([#13373](https://github.com/can1357/oh-my-pi/pull/13373) by [@alphastorm](https://github.com/alphastorm))
