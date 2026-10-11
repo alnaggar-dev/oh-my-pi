@@ -34,13 +34,12 @@ does what I wanted".
 - **Files:** `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorIncludeThinking`,
   `cfgAdvisorProjectContext`),
   `packages/coding-agent/src/advisor/runtime.ts` (the `includeThinking` host flag that
-  seeds `#includeThinking`; its `advisorToolIOTransform` import and call sites are named
-  under the preview-redaction entry's **Depends on upstream**),
+  seeds `#includeThinking`),
   `packages/coding-agent/src/advisor/config.ts` (only the `filterAdvisorTools` comment,
   kept accurate about which legacy tool aliases exist),
   `docs/advisor-watchdog.md` (its "Controlling token spend" section and the
   `advisors[].tools` legacy-alias sentence; the other fork paragraphs are named under
-  the dedupe, loop-bound and preview-redaction entries' **Depends on upstream**),
+  the dedupe and loop-bound entries' **Depends on upstream**),
   `docs/settings.md` (the two `advisor.*` rows, and the `advisor` segment paragraph,
   named under the advisor-segment entry).
 - **Depends on upstream:** the settings registry (`register`, handle `.get`/`.set` in
@@ -157,13 +156,15 @@ does what I wanted".
   "next_user_message"`, `isPerCallContextMessage`, tool-control-only `system`
   messages), which `isAnchorable` copies and must stay in step with; the 4-breakpoint
   budget and head-caching plan (`countHeadBreakpoints`, `buildAnthropicSystemBlocks`'s
-  OAuth identity breakpoint, `applyHeadCaching`'s last-tool and stable-system anchors)
+  OAuth identity breakpoint, `applyHeadCaching`'s last non-deferred tool and stable-system anchors)
   that the message budget subtracts from; the decimation anchors; the merge path that
   collapses consecutive tool results into one wire message; the TTL `getCacheControl`
   picks (overridable by `cacheRetention` or `PI_CACHE_RETENTION`); Anthropic's
   20-position lookback, encoded as `ANTHROPIC_REWRITE_BOUNDARY_POSITIONS = 16`.
   Compaction summaries replace the root instead of rewriting in place, so the boundary
-  ignores them. **Known stale comment:** upstream's numbered "Prioritize:" comment in
+  ignores them. Upstream's cache_control-rejection replay (#11812, `dropCacheControl`)
+  sends a request with no breakpoints at all, boundary included; that is intended.
+  **Known stale comment:** upstream's numbered "Prioritize:" comment in
   `applyPromptCaching` is left untouched and no longer matches the real order, which
   is: most recent trailing message, rewrite boundary, decimation anchors newest first,
   the newest message at or before the first per-call or turn-scoped mark, second
@@ -246,79 +247,6 @@ does what I wanted".
     sites in `packages/coding-agent/src/advisor/loop-guard.ts`.
 - **Check:** `bun test packages/coding-agent/test/advisor-tool-call-loop-guard.test.ts packages/coding-agent/test/advisor/cumulative-loop-guard.test.ts packages/ai/test/tool-call-loop-guard.test.ts packages/coding-agent/test/agent-session-tool-call-loop-guard.test.ts`
 
-### Redacted one-line previews inside advisor deltas
-
-- **What it does:** One-line previews — tool primary argument, tool intent, user `!`/`$`
-  source, custom/irc/async-result, branch, compaction and file-mention one-liners — are
-  redacted before their 120/80-character cut. With the advisor's obfuscator the redacted
-  text is a prefix ending at a clean cut point: no secret anywhere in the text crosses
-  it, and each secret regex finds the same matches in the prefix as in the whole text.
-  Only that redacted prefix is ever shown, so a secret holding a space, one longer than
-  any fixed window, one whose regex needs lookahead past the cut, or one a short
-  replacement pulls into view is redacted whole, while text after the prefix is never
-  scanned. The same holds when the advisor re-scrubs its own history after it learns a
-  new secret: `bashExecution` and `pythonExecution` source there is also redacted before
-  its cut.
-  Upstream PR #14863 carries this change. (The fork's 300-line cap for expanded edit
-  diffs landed upstream as #13184 and is upstream code now.)
-- **Why:** A cut through a plain secret leaves a fragment the later whole-transcript redaction
-  pass cannot recognize, so the visible half reached the advisor.
-- **Files:** `packages/coding-agent/src/session/session-history-format.ts`
-  (`ToolIOTransform`, `previewLine`, `primaryArgText`, and the `transform` parameters on
-  the preview formatters), `packages/coding-agent/src/secrets/obfuscator.ts`
-  (`redactionPrefixEnd`, `#regexMatches`, `RegexMatchSpan`),
-  `packages/coding-agent/src/advisor/delta-split.ts` (`AdvisorObfuscator.redactionPrefixEnd`,
-  `advisorToolIOTransform` and its use in `renderAdvisorDeltaChunks`).
-- **Depends on upstream:** upstream's `oneLine` and preview caps;
-  `formatSessionHistoryMarkdown`'s option object (`expandEditDiffs`, `expandToolIO`,
-  `transformExpandedToolIO`) — the advisor sets all of these, so an upstream default
-  change silently changes what it is billed for; upstream's rule that execution source
-  past the preview cap is never scanned (its test `does not scan execution source after
-  the advisor preview cap`), which is why the prefix is bounded instead of the whole
-  text being redacted. In the obfuscator: `compileSecretRegex`
-  (`packages/coding-agent/src/secrets/regex.ts`) forcing the `g` flag, which the
-  `exec` loop in `#regexMatches` needs to terminate; `#configuredLiterals` listing
-  every plain and replace-mode literal; `obfuscate` minting placeholders only for regex
-  matches (plain secrets are registered at construction), so skipping hidden text is
-  what keeps hidden content from changing placeholder labels; `obfuscate` redacting a
-  clean-cut prefix the same as that part of the whole text, which is what makes
-  showing any part of it safe however much replacements shrink it. The prefix check
-  compares regex matches on raw text, while `obfuscate` matches on a
-  placeholder-expanded view; a change there that lets a match depend on bytes past its
-  raw-text context would need the check widened.
-  **Open upstream risk — PR #12848** (open) makes `boundedFencedToolContext` return
-  `{ content, truncated }`; it now touches only upstream code, but check the
-  `details.diff` call still reads `.content` if it lands.
-  Fork code it relies on in a file another entry owns: in
-  `packages/coding-agent/src/advisor/runtime.ts` (spend-controls entry), the
-  `advisorToolIOTransform` import, its use as `#renderPreparedDelta`'s
-  `transformExpandedToolIO`, and the `bashExecution` and `pythonExecution` cases of
-  `obfuscateAdvisorMessage` passing it to `formatExecutionSourcePreview` instead of
-  upstream's cut-then-obfuscate. `scrubAdvisorHistory` reaches those cases when it
-  rewrites the advisor's own `state.messages`.
-- **Tripwire paths:** `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`, `packages/coding-agent/src/secrets/obfuscator.ts`, `packages/coding-agent/src/secrets/regex.ts`
-- **Must still be true:**
-  - A secret straddling a one-line preview's cut (tool command, user `!` command) leaves
-    no 8-character piece in the advisor prompt, including a plain secret holding a
-    space, a regex secret longer than 8 KiB, a regex secret whose lookahead context lies
-    past the cut, and a later secret that a replacement shorter than its match pulls
-    into the visible part. Text after the clean cut point is never scanned, and
-    upstream's preview-cap test passes unchanged.
-  - A transform without `redactionPrefixEnd` redacts the whole flattened text before the
-    cut.
-  - The same holds for `bashExecution`/`pythonExecution` source that `scrubAdvisorHistory`
-    rewrites in the advisor's own history: no 8-character piece of a secret straddling
-    the cut survives.
-  - Without a transform, previews render byte-identically to upstream's `oneLine`.
-  - Fenced output containing backticks still gets a wrapper the content cannot break.
-  - `primaryArgText` returns raw text and never calls `oneLine` itself, so every branch
-    (`advise`, `grep`, `glob`, `ast_grep`, the key list, the JSON fallback) is cut only
-    by `previewLine`, after redaction; an upstream `return oneLine(...)` there would
-    bring the leak back with no merge conflict. `formatToolResultErrorPreview` keeps
-    upstream's `oneLine` on purpose: its input is the whole tool result, already
-    redacted.
-- **Check:** `bun test packages/coding-agent/test/advisor/advisor.test.ts packages/coding-agent/test/session/session-history-format.test.ts`
-
 ## Status line and TUI
 
 ### Auto-thinking classifier readout (hook status, rolled up over the subagent bus)
@@ -374,8 +302,10 @@ does what I wanted".
   rides the hook-status path: `InteractiveModeContext.setHookStatus` →
   `ExtensionUiController.setHookStatus` → `StatusLineComponent.setHookStatus` (drops
   its render cache) plus `ui.requestRender()`; hook statuses render as lines under the
-  bar unless `showHookStatus` is false, and inside the `status` segment, both through
-  `sanitizeStatusText`, which strips color. Superseded detection is
+  bar unless `showHookStatus` is false (through `sanitizeHookStatusText`, which keeps
+  SGR color since #14500), and inside the `status` segment (through
+  `sanitizeStatusText`, which strips color); the readout emits no color either way.
+  Superseded detection is
   `promptGeneration() !== generation` in `applyAutoThinkingLevel`; `classifyDifficulty`
   and its 4 s timeout decide classified vs fallback. `applyAutoThinkingLevel` is the only
   caller of `classifyDifficulty` and carries upstream's `solutionSpace` parameter (task-spawned
@@ -601,10 +531,10 @@ does what I wanted".
   (run-listener entry), which keeps `waitForNetworkIdle` working across the loop's
   back-to-back runs; `openerId` on relay page targets (`#pageInfo` in
   `packages/coding-agent/src/tools/browser/relay/bridge.ts`, relay-opener entry), which
-  new-tab detection needs on relay tabs; `seedOwnedProfilePreferences` in
-  `packages/coding-agent/src/tools/browser/launch.ts` (password-leak entry), without
-  which a click after a password submit is dropped.
-- **Tripwire paths:** `packages/coding-agent/src/judgment/index.ts`, `packages/ai/src/judgment/types.ts`, `packages/ai/src/judgment/typesafe.ts`, `packages/ai/src/index.ts`, `packages/ai/src/stream.ts`, `packages/ai/src/oneshot-retry.ts`, `packages/coding-agent/src/config/model-resolver.ts`, `packages/coding-agent/src/config/model-registry.ts`, `packages/coding-agent/src/config/model-roles.ts`, `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/run-code.ts`, `packages/coding-agent/src/tools/browser/dialogs.ts`, `patches/puppeteer-core@25.3.0.patch`, `package.json`, `packages/coding-agent/src/eval/preludes.ts`, `packages/coding-agent/src/tools/eval.ts`, `packages/coding-agent/src/eval/js/tool-bridge.ts`, `packages/coding-agent/src/eval/bridge-timeout.ts`, `packages/coding-agent/src/tools/tool-timeouts.ts`, `packages/coding-agent/src/tools/tool-result.ts`, `packages/coding-agent/src/tools/browser.ts`, `packages/coding-agent/src/tools/browser/prelude.js`, `packages/coding-agent/src/tools/browser/prelude.py`, `packages/coding-agent/src/tools/browser/prelude-definition.ts`, `packages/coding-agent/src/tools/browser/declarations.d.ts`, `packages/coding-agent/src/tools/browser/settings.ts`, `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`
+  new-tab detection needs on relay tabs. Upstream's `seedOwnedProfilePreferences` in
+  `packages/coding-agent/src/tools/browser/launch.ts` (merged from the fork as #14862),
+  without which a click after a password submit is dropped.
+- **Tripwire paths:** `packages/coding-agent/src/judgment/index.ts`, `packages/ai/src/judgment/types.ts`, `packages/ai/src/judgment/typesafe.ts`, `packages/ai/src/index.ts`, `packages/ai/src/stream.ts`, `packages/ai/src/oneshot-retry.ts`, `packages/coding-agent/src/config/model-resolver.ts`, `packages/coding-agent/src/config/model-registry.ts`, `packages/coding-agent/src/config/model-roles.ts`, `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/run-code.ts`, `packages/coding-agent/src/tools/browser/dialogs.ts`, `patches/puppeteer-core@25.3.0.patch`, `package.json`, `packages/coding-agent/src/eval/preludes.ts`, `packages/coding-agent/src/tools/eval.ts`, `packages/coding-agent/src/eval/js/tool-bridge.ts`, `packages/coding-agent/src/eval/bridge-timeout.ts`, `packages/coding-agent/src/tools/tool-timeouts.ts`, `packages/coding-agent/src/tools/tool-result.ts`, `packages/coding-agent/src/tools/browser.ts`, `packages/coding-agent/src/tools/browser/prelude.js`, `packages/coding-agent/src/tools/browser/prelude.py`, `packages/coding-agent/src/tools/browser/prelude-definition.ts`, `packages/coding-agent/src/tools/browser/declarations.d.ts`, `packages/coding-agent/src/tools/browser/settings.ts`, `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`, `packages/coding-agent/src/tools/browser/launch.ts`, `packages/coding-agent/src/tools/browser/shared-daemon.ts`
 - **Must still be true:**
   - With `browser.goal.enabled: auto`, the action and its docs exist only when the judge
     role's first candidate is native; otherwise the call fails with a "disabled" error
@@ -709,77 +639,28 @@ does what I wanted".
   "Worker has been terminated" until it was closed and reopened by hand.
 - **Files:** `packages/coding-agent/src/tools/browser/tab-supervisor.ts`
   (`WorkerHandle.onExit`, the `terminated` flag and `close` listener in `wrapBunWorker`,
-  the no-op `onExit` of the inline worker, `attachTabWorker` at the acquire and both
-  recycle sites, the `InvalidStateError` branch around the `run` send, and the
-  already-dead early return in `forceKillTab`, which must stay below the release join
-  because `releaseTabInner` marks the tab dead before its teardown finishes).
+  the no-op `onExit` of the inline worker, `attachTabWorker` at the acquire site and in
+  the recycle's `publish` helper (both recycle attempts), and the `InvalidStateError`
+  branch around the `run` send). The fork no longer changes `forceKillTab`:
+  upstream's version joins a release before anything else, so the fork's own
+  already-dead early return and its test were dropped.
 - **Depends on upstream:** Bun Workers firing `error` then `close` on an uncaught error
   or unhandled rejection and `postMessage` throwing `InvalidStateError` afterwards
   (checked on Bun 1.3.14); `installBrowserWorkerRejectionGuard` in
   `packages/coding-agent/src/tools/run-scope.ts` rethrowing unowned rejections, which is
   what kills a worker; `forceKillTab` joining an in-flight release (`releaseInflight`)
-  before its already-dead early return, `killedTabs` and the "was killed" message in
+  first and publishing its own teardown there before its first await, which is what
+  keeps a second kill from releasing the browser hold twice; `recoverWorkerTab` killing
+  only a tab that is still alive; `killedTabs` and the "was killed" message in
   `runInTabWithSnapshot`; `safeSend` staying log-only, because an aborted run's own
   error must win over a kill.
 - **Tripwire paths:** `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/browser/tab-worker-entry.ts`, `packages/coding-agent/src/tools/run-scope.ts`, `package.json`
 - **Must still be true:**
-
   - A worker that dies after init kills its tab: the next run rejects with the
     "was killed … Reopen it." error, not "Worker has been terminated", and the tab is
     gone from the tab list.
   - Release, recycle and force-kill terminations are never reported as crashes.
-  - A force-kill that lands while a release is in flight waits for that release
-    instead of returning while the browser hold is still held.
-- **Check:** `bun test packages/coding-agent/test/tools/browser-worker-exit.test.ts packages/coding-agent/test/tools/browser-tab-worker-startup.test.ts packages/coding-agent/test/tools/browser-freeze-settle.test.ts packages/coding-agent/test/tools/browser-shared-wedge.test.ts`
-
-### Password leak detection off in OMP-owned Chromium profiles
-
-- **What it does:** Before Chromium starts on a profile OMP owns (the temp profile of an
-  OMP-launched Chromium, and the shared broker browser's persistent profile),
-  `seedOwnedProfilePreferences` sets `profile.password_manager_leak_detection: false` in
-  `Default/Preferences`, keeps every other preference, skips the write when the flag is
-  already off, and replaces the file atomically. Seeding is best-effort on both launch
-  paths: a failure is logged at warn level, removes any staged temp file, and never
-  blocks the launch. On the shared profile, each describe, adopt-or-start round in
-  `ensureSharedBrowser` holds a cross-process file lock on the profile, and only the
-  holder that finds no live broker Chrome seeds, right before its start request; a
-  client that adopts never writes. If the lock wait times out, the client warns and
-  runs the round without seeding. Upstream PR #14862 carries this change.
-- **Why:** After a password form submit, leak detection opens a tab-modal "Change your
-  password" dialog; while it is open Chromium drops `Input.dispatchMouseEvent`, so
-  coordinate clicks did nothing, and a hidden browser offers no way to close it.
-- **Files:** `packages/coding-agent/src/tools/browser/launch.ts`
-  (`seedOwnedProfilePreferences`, `writeOwnedProfilePreferences` and the seed call in
-  `launchHeadlessBrowser`), `packages/coding-agent/src/tools/browser/shared-daemon.ts`
-  (`claimProfile`, `adoptOrStart` and the lock-held round in `ensureSharedBrowser`).
-- **Depends on upstream:** `launchHeadlessBrowser` creating its own
-  `omp-chrome-profile-*` directory only when no `--user-data-dir` is passed, so a
-  caller's profile is never written; `ensureSharedBrowser` using a stable
-  `<name>.profile` under the daemon runtime dir and reaching the seed only when no live
-  broker Chrome runs on it (Chromium reads `Preferences` only at startup and rewrites
-  it from memory); `acquireFileLock` in `packages/utils/src/file-lock.ts` being an
-  OS-backed, cross-process lease released when its holder exits, with `retries`,
-  `retryDelayMs` and `signal` bounding the wait; Chromium's
-  `profile.password_manager_leak_detection` pref and its
-  `Default` profile layout. Relay and connected browsers use the user's own profile and
-  are never seeded. **Known gap (upstream paths, left alone):** two other OMP-owned
-  profiles are not seeded either — Chromium spawned through `app.path`
-  (`resolveSpawnArgs` in `packages/coding-agent/src/tools/browser/attach.ts`) and the
-  headful SSO sign-in browser (`captureBrowserSession` in
-  `packages/coding-agent/src/utils/browser-session.ts`).
-- **Tripwire paths:** `packages/coding-agent/src/tools/browser/launch.ts`, `packages/coding-agent/src/tools/browser/shared-daemon.ts`, `packages/coding-agent/src/launch/paths.ts`, `packages/utils/src/file-lock.ts`
-- **Must still be true:**
-  - Chromium on the OMP-launched temp profile and on the shared broker profile starts
-    with password leak detection off.
-  - Seeding keeps a reused profile's other preferences and creates the file on a fresh
-    profile.
-  - A profile the caller passes with `--user-data-dir` is never written.
-  - A seeding failure is logged and never stops the OMP-launched or shared browser from
-    starting, and it leaves no staged `Preferences.omp-<pid>` file behind.
-  - When two clients race a cold start of the shared browser, only the one that
-    launches Chrome writes `Preferences`, before launch; the other adopts the live
-    Chrome without writing.
-- **Check:** `bun test packages/coding-agent/test/tools/browser-profile-cleanup.test.ts`
+- **Check:** `bun test packages/coding-agent/test/tools/browser-worker-exit.test.ts packages/coding-agent/test/tools/browser-tab-worker-startup.test.ts packages/coding-agent/test/tools/browser-freeze-settle.test.ts`
 
 ## Titles and labels
 
