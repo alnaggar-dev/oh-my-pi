@@ -1505,7 +1505,6 @@
 - Added a context-aware hint system for empty composers that displays suggestions based on agent activity and effort
 - Added an optional `scope` to the `retain` and `learn` tools, offered when `mnemopi.scoping` is `global` or `per-project-tagged`: `scope: "global"` stores a memory or lesson in the Mnemopi bank every project recalls instead of the current project's bank ([#13324](https://github.com/can1357/oh-my-pi/pull/13324) by [@alphastorm](https://github.com/alphastorm)).
 - Added `/btw` to the commands available from a focused subagent view; it asks about the focused agent's transcript instead of the main session's, and its answers can be copied or followed up but not branched into the main session ([#13412](https://github.com/can1357/oh-my-pi/pull/13412) by [@H4vC](https://github.com/H4vC))
-- Added `tab.goal(goal, { max_steps, timeout })` to the browser eval prelude: a fast judge-driven loop that finishes a multi-step form, search, or navigation task on an open tab in one call (needs a native System One judge; see the `browser.goal.*` settings)
 
 ### Changed
 
@@ -1520,7 +1519,6 @@
 - The default image model chain now uses `openai/gpt-image-2`, `openai-codex/gpt-image-2`, and the GA `gemini-3-pro-image` (Google and OpenRouter) instead of `gpt-image-1` and the Gemini preview id.
 - Reduced CPU while streaming replies and tool calls: the reveal no longer deep-compares frozen leading content on every flush, streamed argument extraction no longer re-verifies the whole prefix, and deltas no longer queue extension notifications when no extension listens for `message_update` ([#13650](https://github.com/can1357/oh-my-pi/pull/13650) by [@H4vC](https://github.com/H4vC)).
 - Reduced CPU and allocations for in-memory reads (URLs, notebooks, converted documents), tool-result spill checks, write read-projection guards, and hashline prefix stripping ([#13650](https://github.com/can1357/oh-my-pi/pull/13650) by [@H4vC](https://github.com/H4vC)).
-- Updated the OMP Browser Relay extension to 0.2.0 so relay tabs report which tab opened them; run `omp browser-relay install` and reload the extension to get it
 - Updated `spelling.autocomplete` to an enum-based configuration for engine selection
 - Optimized mid-session `/computer` toggles to bypass full system-prompt rebuilds
 - Updated window input policy to default to background actions and replaced the `delivery` option with a `takeover` boolean flag for opt-in activation
@@ -1538,7 +1536,6 @@
 - Fixed `tool_call` `additionalContext` being delivered more than once when several extension or hook handlers on the same call returned identical text ([#13633](https://github.com/can1357/oh-my-pi/pull/13633) by [@andrebrait](https://github.com/andrebrait))
 - Fixed hosted OpenAI web search on hosts that accept only string tool_choice values, such as Command Code ([#13666](https://github.com/can1357/oh-my-pi/pull/13666) by [@riicodespretty](https://github.com/riicodespretty))
 - Fixed a browser tab whose worker crashed staying listed as open and failing every call with "Worker has been terminated"; the tab is now closed and the next call says to reopen it
-- Fixed `tab.goal` skipping buttons whose text sits directly in a shadow-DOM custom element (such as Salla's `s-button`), and naming shadow-DOM fields from the label before them
 
 ### Removed
 

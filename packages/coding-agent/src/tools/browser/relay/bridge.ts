@@ -74,8 +74,6 @@ interface TargetInfo {
 	title: string;
 	url: string;
 	attached: boolean;
-	/** Target id of the opener page; puppeteer's `Target.opener()` resolves it. */
-	openerId?: string;
 	canAccessOpener: boolean;
 }
 
@@ -167,8 +165,6 @@ class TabState {
 	pinned: boolean;
 	/** Chrome tab group id from the last snapshot; -1 when ungrouped. */
 	groupId: number;
-	/** Chrome tab id of the tab that opened this one, if Chrome recorded one. */
-	openerTabId: number | undefined;
 	/** Whether `chrome.debugger` is currently attached to this tab. */
 	attached = false;
 	/** Set when attach failed or the user cancelled the debugger bar; cleared on navigation. */
@@ -224,7 +220,6 @@ class TabState {
 		this.windowId = snap.windowId;
 		this.pinned = snap.pinned;
 		this.groupId = snap.groupId;
-		this.openerTabId = snap.openerTabId;
 	}
 
 	update(snap: TabSnapshot): void {
@@ -235,7 +230,6 @@ class TabState {
 		this.windowId = snap.windowId;
 		this.pinned = snap.pinned;
 		this.groupId = snap.groupId;
-		this.openerTabId = snap.openerTabId;
 	}
 }
 
@@ -1757,14 +1751,12 @@ export class RelayBridge {
 	}
 
 	#pageInfo(tab: TabState, attached: boolean): TargetInfo {
-		const opener = tab.openerTabId === undefined ? undefined : this.#tabs.get(tabKeyOf(tab.extCode, tab.openerTabId));
 		return {
 			targetId: pageTargetIdFromKey(tab.tabKey),
 			type: "page",
 			title: tab.title,
 			url: tab.url || "about:blank",
 			attached,
-			...(opener && { openerId: pageTargetIdFromKey(opener.tabKey) }),
 			canAccessOpener: false,
 		};
 	}
