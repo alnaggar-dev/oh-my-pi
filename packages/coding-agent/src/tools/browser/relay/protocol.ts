@@ -19,13 +19,6 @@ export interface TabSnapshot {
 	pinned: boolean;
 	/** Chrome tab group id; -1 when ungrouped. */
 	groupId: number;
-	/**
-	 * Tab whose page opened this one (link with a target, `window.open`), from
-	 * `webNavigation.onCreatedNavigationTarget`; the relay reports it as the page target's
-	 * `openerId`. Chrome fires that event after `tabs.onCreated`, so it first arrives in a
-	 * `tabUpdated`. Absent for tabs no page opened, and on extensions before 0.2.0.
-	 */
-	openerTabId?: number;
 }
 
 /** RPCs the relay may ask the extension to perform. */
