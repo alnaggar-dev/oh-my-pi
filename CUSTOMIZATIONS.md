@@ -144,17 +144,20 @@ does what I wanted".
 - **Files:** `packages/ai/src/providers/anthropic-rewrite-boundary.ts`
   (`ANTHROPIC_REWRITE_BOUNDARY_POSITIONS`, `countLookbackPositions`, `isAnchorable`,
   `findRewriteBoundary`, `hasUnbilledRewrite`), `packages/ai/src/providers/anthropic.ts`
-  (call sites only: the import, a 2-line call in `applyPromptCaching` that ranks the
-  boundary right after the most recent trailing message, the `hasUnbilledRewrite` gate
+  (call sites only: the import, a `findRewriteBoundary` call plus one budget-gated
+  block in `applyPromptCaching` that decorates the boundary right after the most
+  recent trailing message, the `hasUnbilledRewrite` gate
   in `convertAnthropicMessages` and one `markRewriteAt` line per merged tool result),
   `packages/ai/src/utils/block-symbols.ts` (`kRewriteAt`, `markRewriteAt`,
   `rewriteAtOf` — symbol-keyed so the mark never reaches the wire).
 - **Depends on upstream:** `prunedAt` on `ToolResultMessage` and the rule that a prune
-  rewrites tool results in place; the `candidateIndices` list in `applyPromptCaching`
-  (the call site sits right after the first trailing candidate is pushed) and its
-  `messageEnd`; upstream's trailing-candidate filter there (skip `clear_at ===
-  "next_user_message"`, `isPerCallContextMessage`, tool-control-only `system`
-  messages), which `isAnchorable` copies and must stay in step with; the 4-breakpoint
+  rewrites tool results in place; the single backward walk in `applyPromptCaching`
+  (`trailingCandidates`, `messageEnd`; the call site sits right after the first
+  trailing candidate is decorated and must stay before the decimation loop) and its
+  rule that re-decorating a message spends no breakpoint (`applyCacheControlToLastBlock`
+  returns false); upstream's trailing-candidate filter there (skip `clear_at ===
+  "next_user_message"`, `isPerCallContextMessage`, `isToolControlMessage`), which
+  `isAnchorable` copies and must stay in step with; the 4-breakpoint
   budget and head-caching plan (`countHeadBreakpoints`, `buildAnthropicSystemBlocks`'s
   OAuth identity breakpoint, `applyHeadCaching`'s last non-deferred tool and stable-system anchors)
   that the message budget subtracts from; the decimation anchors; the merge path that
@@ -164,7 +167,7 @@ does what I wanted".
   Compaction summaries replace the root instead of rewriting in place, so the boundary
   ignores them. Upstream's cache_control-rejection replay (#11812, `dropCacheControl`)
   sends a request with no breakpoints at all, boundary included; that is intended.
-  **Known stale comment:** upstream's numbered "Prioritize:" comment in
+  **Known stale comment:** upstream's numbered "Priority order:" comment in
   `applyPromptCaching` is left untouched and no longer matches the real order, which
   is: most recent trailing message, rewrite boundary, decimation anchors newest first,
   the newest message at or before the first per-call or turn-scoped mark, second
@@ -451,7 +454,8 @@ does what I wanted".
   page opened by loading its URL in the same tab. It returns `{ status, reason?,
   detail?, steps, url, elapsed_ms, log_artifact? }`; the step log with probabilities
   goes to a session artifact only. `browser.goal.enabled` (`auto`, `off`) turns it on
-  only when the judge role's first candidate is a native System One model;
+  only when the judge role's first candidate is a native judge (System One, or
+  upstream's newer OpenAI Decisions and Workers AI Clef wires);
   `browser.goal.maxSteps` (60) is the default step budget and a run defaults to 120 s.
   The goal docs join the browser prelude docs only while it is enabled. The element
   reader walks out of shadow roots through their hosts when naming a control from the
@@ -493,7 +497,10 @@ does what I wanted".
   chain's first candidate is native) gates both the docs and the action, so a change in
   chain order or in `kindOf` hides the feature or runs it on a prompted judge whose
   probabilities do not fit the loop's fixed thresholds (risk 0.5, done check 0.5 and
-  0.8); `ChainJudge.withCandidate` (returned by `resolveJudge`) rethrowing the abort
+  0.8). "Native" is upstream's `isJudgmentApi` (`JUDGMENT_WIRES` in
+  `packages/ai/src/judgment/native.ts`): the thresholds were tuned on System One
+  answers, and a wire upstream adds there (OpenAI Decisions and Workers AI Clef so far)
+  turns the loop on with the same thresholds; `ChainJudge.withCandidate` (returned by `resolveJudge`) rethrowing the abort
   reason, which the loop reports as `TIMEOUT` or `ABORTED`; `journalJudgmentUsage`
   (session manager only), with the judge's purpose set by the required
   `JudgeDeps.purpose: "browser-goal"` and the text model's by the required
@@ -534,7 +541,7 @@ does what I wanted".
   new-tab detection needs on relay tabs. Upstream's `seedOwnedProfilePreferences` in
   `packages/coding-agent/src/tools/browser/launch.ts` (merged from the fork as #14862),
   without which a click after a password submit is dropped.
-- **Tripwire paths:** `packages/coding-agent/src/judgment/index.ts`, `packages/ai/src/judgment/types.ts`, `packages/ai/src/judgment/typesafe.ts`, `packages/ai/src/index.ts`, `packages/ai/src/stream.ts`, `packages/ai/src/oneshot-retry.ts`, `packages/coding-agent/src/config/model-resolver.ts`, `packages/coding-agent/src/config/model-registry.ts`, `packages/coding-agent/src/config/model-roles.ts`, `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/run-code.ts`, `packages/coding-agent/src/tools/browser/dialogs.ts`, `patches/puppeteer-core@25.3.0.patch`, `package.json`, `packages/coding-agent/src/eval/preludes.ts`, `packages/coding-agent/src/tools/eval.ts`, `packages/coding-agent/src/eval/js/tool-bridge.ts`, `packages/coding-agent/src/eval/bridge-timeout.ts`, `packages/coding-agent/src/tools/tool-timeouts.ts`, `packages/coding-agent/src/tools/tool-result.ts`, `packages/coding-agent/src/tools/browser.ts`, `packages/coding-agent/src/tools/browser/prelude.js`, `packages/coding-agent/src/tools/browser/prelude.py`, `packages/coding-agent/src/tools/browser/prelude-definition.ts`, `packages/coding-agent/src/tools/browser/declarations.d.ts`, `packages/coding-agent/src/tools/browser/settings.ts`, `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`, `packages/coding-agent/src/tools/browser/launch.ts`, `packages/coding-agent/src/tools/browser/shared-daemon.ts`
+- **Tripwire paths:** `packages/coding-agent/src/judgment/index.ts`, `packages/ai/src/judgment/types.ts`, `packages/ai/src/judgment/native.ts`, `packages/ai/src/judgment/wire.ts`, `packages/ai/src/judgment/systemone.ts`, `packages/ai/src/judgment/openai-decisions.ts`, `packages/ai/src/index.ts`, `packages/ai/src/stream.ts`, `packages/ai/src/oneshot-retry.ts`, `packages/coding-agent/src/config/model-resolver.ts`, `packages/coding-agent/src/config/model-registry.ts`, `packages/coding-agent/src/config/model-roles.ts`, `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/run-code.ts`, `packages/coding-agent/src/tools/browser/dialogs.ts`, `patches/puppeteer-core@25.3.0.patch`, `package.json`, `packages/coding-agent/src/eval/preludes.ts`, `packages/coding-agent/src/tools/eval.ts`, `packages/coding-agent/src/eval/js/tool-bridge.ts`, `packages/coding-agent/src/eval/bridge-timeout.ts`, `packages/coding-agent/src/tools/tool-timeouts.ts`, `packages/coding-agent/src/tools/tool-result.ts`, `packages/coding-agent/src/tools/browser.ts`, `packages/coding-agent/src/tools/browser/prelude.js`, `packages/coding-agent/src/tools/browser/prelude.py`, `packages/coding-agent/src/tools/browser/prelude-definition.ts`, `packages/coding-agent/src/tools/browser/declarations.d.ts`, `packages/coding-agent/src/tools/browser/settings.ts`, `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`, `packages/coding-agent/src/tools/browser/launch.ts`, `packages/coding-agent/src/tools/browser/shared-daemon.ts`
 - **Must still be true:**
   - With `browser.goal.enabled: auto`, the action and its docs exist only when the judge
     role's first candidate is native; otherwise the call fails with a "disabled" error
