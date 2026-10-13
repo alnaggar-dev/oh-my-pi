@@ -292,9 +292,10 @@ does what I wanted".
   executor's spawn and in-turn revival (`buildSubagentSessionOptions` in
   `task/executor.ts`), structured subagents (`buildExecutorOptions` in
   `task/structured-subagent.ts`), work pools (`task/workpool.ts`), vibe
-  (`vibe/runtime.ts`) and cold revival (`createPersistedSubagentReviverFactory` in
-  `task/persisted-revive.ts`, wired from `main.ts`). A path that stops forwarding
-  publishes on a fresh bus nobody listens to, with no type error;
+  (`vibe/runtime.ts`), cold revival (`createPersistedSubagentReviverFactory` in
+  `task/persisted-revive.ts`, wired from `main.ts`) and `--restore` subagent revival
+  (`restoreSession` in `task/restore.ts`, given the bus by `main.ts`). A path that
+  stops forwarding publishes on a fresh bus nobody listens to, with no type error;
   `createAgentSessionScoped` gives a session without a bus a fresh one. The interactive
   root's bus must be the object `InteractiveMode` holds (`main.ts` passes one bus to
   both `createAgentSession` and `runInteractiveMode`), and `InteractiveMode` must set it
@@ -324,7 +325,7 @@ does what I wanted".
   `theme.symbol("icon.intelligence")`, `theme.sep.dot`, `theme.status.warning` in every
   symbol preset. A classification that finishes after its session was disposed (but
   was not superseded) still counts.
-- **Tripwire paths:** `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/workpool.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/task/index.ts`, `packages/coding-agent/src/task/spawn-run.ts`, `packages/coding-agent/src/task/speculative-launch.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/modes/types.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/modes/controllers/extension-ui-controller.ts`, `packages/coding-agent/src/modes/rpc/rpc-subagents.ts`, `packages/coding-agent/src/collab/host.ts`, `packages/coding-agent/src/utils/event-bus.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/overlays/session-observer-registry.ts`, `packages/tui/src/chrome/shared.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/theme-class.ts`
+- **Tripwire paths:** `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/workpool.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/task/restore.ts`, `packages/coding-agent/src/task/index.ts`, `packages/coding-agent/src/task/spawn-run.ts`, `packages/coding-agent/src/task/speculative-launch.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/modes/types.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/modes/controllers/extension-ui-controller.ts`, `packages/coding-agent/src/modes/rpc/rpc-subagents.ts`, `packages/coding-agent/src/collab/host.ts`, `packages/coding-agent/src/utils/event-bus.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/overlays/session-observer-registry.ts`, `packages/tui/src/chrome/shared.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/theme-class.ts`
 - **Must still be true:**
   - While any classification in the tree is in flight, the readout shows the `⟳ auto`
     marker ahead of the counts.
