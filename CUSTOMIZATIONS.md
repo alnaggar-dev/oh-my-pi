@@ -30,9 +30,7 @@ does what I wanted".
   context files such as AGENTS.md, verbatim — in the advisor's system prompt or not).
   Both carry `protocolDefault: ["rpc", "acp"]` like every other `advisor.*` setting. That
   pin is soft: RPC/ACP start at the default only while no config layer sets the value, so
-  a `false` saved in `config.yml` still applies there. Review cadence itself is
-  upstream's (`advisor.reviewMode`, `advisor.reviewInterval`); the fork's own
-  `advisor.reviewOn` was dropped in favor of it.
+  a `false` saved in `config.yml` still applies there.
 - **Why:** Reasoning and the project-context block are a large, repeated share of every
   advisor request; a review averages ~$0.11.
 - **Files:** `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorIncludeThinking`,
@@ -90,8 +88,6 @@ does what I wanted".
   `read` puts it and only when it names this call's `path`. Calls are identical when
   their `toolCallSignature` matches: tool name plus arguments with key order and the
   agent-authored intent fields (`i`, `__intent`) ignored, values compared verbatim.
-  (The stale-result eviction that used to live in this entry landed upstream as #13238
-  and is upstream code now.)
 - **Why:** 13% of advisor investigation calls were byte-identical repeats, each one
   re-inflating the context that upstream's stale-result eviction trims.
 - **Files:** `packages/coding-agent/src/advisor/tool-result-dedupe.ts`
@@ -425,9 +421,7 @@ does what I wanted".
 
 - **What it does:** The browser tool prompt tells the agent never to dismiss Chrome's
   "started debugging this browser" bar, because its X or Cancel detaches every relay
-  tab until its URL changes (a reload does not lift it). Upstream now opens a tab that
-  a relay page session asks for in that page's own browser (`097470cc9e`, which took
-  over #14865), so the fork no longer changes the bridge.
+  tab until its URL changes (a reload does not lift it).
 - **Why:** In a real session an agent opened a separate Chrome window, then clicked the
   X on that window's debugging bar, which detached every relay tab, and it looped on
   "No page targets available" until the user stepped in.
@@ -455,8 +449,7 @@ does what I wanted".
   (`safeSend` stays log-only), the tab is force-killed. Either way pending runs fail at
   once, the tab leaves `browser.tabs()`, and the next call says
   `Tab "x" was killed: … Reopen it.`
-  The worker's last error is logged at warn level. Upstream now carries the off-screen
-  `text/` click fix this entry used to hold (`4282a60275`, which took over #14864).
+  The worker's last error is logged at warn level.
 - **Why:** A tab whose worker had died stayed listed as open and failed every call with
   "Worker has been terminated" until it was closed and reopened by hand.
 - **Files:** `packages/coding-agent/src/tools/browser/tab-supervisor.ts`
@@ -464,9 +457,7 @@ does what I wanted".
   the no-op `onExit` of the inline worker, `attachTabWorker` (with the tool-call abort
   in its `onExit` handler) at the acquire site and in
   the recycle's `publish` helper (both recycle attempts), and the `InvalidStateError`
-  branch around the `run` send). The fork no longer changes `forceKillTab`:
-  upstream's version joins a release before anything else, so the fork's own
-  already-dead early return and its test were dropped.
+  branch around the `run` send).
 - **Depends on upstream:** Bun Workers firing `error` then `close` on an uncaught error
   or unhandled rejection and `postMessage` throwing `InvalidStateError` afterwards
   (checked on Bun 1.3.14); `installBrowserWorkerRejectionGuard` in
