@@ -26,26 +26,33 @@ does what I wanted".
 
 - **What it does:** Two settings trim what each advisor review sends.
   `advisor.includeThinking` (send the main agent's reasoning or not) and
-  `advisor.projectContext` (repeat the AGENTS.md/rules block in the advisor's system
-  prompt or not). Review cadence itself is upstream's (`advisor.reviewMode`,
-  `advisor.reviewInterval`); the fork's own `advisor.reviewOn` was dropped in favor of it.
+  `advisor.projectContext` (repeat the `<project-context>` block — the discovered project
+  context files such as AGENTS.md, verbatim — in the advisor's system prompt or not).
+  Both carry `protocolDefault: ["rpc", "acp"]` like every other `advisor.*` setting. That
+  pin is soft: RPC/ACP start at the default only while no config layer sets the value, so
+  a `false` saved in `config.yml` still applies there. Review cadence itself is
+  upstream's (`advisor.reviewMode`, `advisor.reviewInterval`); the fork's own
+  `advisor.reviewOn` was dropped in favor of it.
 - **Why:** Reasoning and the project-context block are a large, repeated share of every
   advisor request; a review averages ~$0.11.
 - **Files:** `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorIncludeThinking`,
-  `cfgAdvisorProjectContext`),
+  `cfgAdvisorProjectContext`, `cfgAdvisorMaxRequestsPerUpdate`; the cap's behavior is
+  the request-cap entry's),
   `packages/coding-agent/src/advisor/runtime.ts` (the `includeThinking` host flag that
   seeds `#includeThinking`),
   `packages/coding-agent/src/advisor/config.ts` (only the `filterAdvisorTools` comment,
   kept accurate about which legacy tool aliases exist),
   `docs/advisor-watchdog.md` (its "Controlling token spend" section and the
-  `advisors[].tools` legacy-alias sentence; the other fork paragraphs are named under
-  the dedupe and loop-bound entries' **Depends on upstream**),
-  `docs/settings.md` (the two `advisor.*` rows, and the `advisor` segment paragraph,
-  named under the advisor-segment entry).
+  `advisors[].tools` legacy-alias sentence; the runaway-review bullet and the request-cap
+  sentence are named under the request-cap entry's (`### Per-review request cap for
+  advisors`) **Depends on upstream**, the repeat-call paragraph under the dedupe entry's),
+  `docs/settings.md` (the three `advisor.*` rows `advisor.includeThinking`,
+  `advisor.projectContext` and `advisor.maxRequestsPerUpdate`, and the `advisor` segment
+  paragraph, named under the advisor-segment entry).
 - **Depends on upstream:** the settings registry (`register`, handle `.get`/`.set` in
   `packages/coding-agent/src/config/registry.ts`, domains listed in
-  `packages/coding-agent/src/config/all-settings.ts`) and its `ui.condition:
-  "advisorEnabled"` gate; the `cfgAdvisorRuntimeInputs` listener in `agent-session.ts`
+  `packages/coding-agent/src/config/all-settings.ts`) with its `protocolDefault` handling
+  and its `ui.condition: "advisorEnabled"` gate; the `cfgAdvisorRuntimeInputs` listener in `agent-session.ts`
   that rebuilds a running advisor when an input changes (the fork adds
   `includeThinking` and `projectContext` to it) and the runtime signature in
   `session-advisors.ts`, which includes both build-time content settings;
@@ -57,11 +64,13 @@ does what I wanted".
   while the live runtimes match the current config) in
   `packages/coding-agent/src/session/session-advisors.ts` (dedupe entry); the two
   `cfgAdvisorRuntimeInputs` fields in `packages/coding-agent/src/session/agent-session.ts`
-  (auto-thinking entry).
+  (advisor-segment entry).
 - **Tripwire paths:** `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/coding-agent/src/advisor/config.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
 - **Must still be true:**
   - `includeThinking: false` keeps reasoning text out of the advisor's delta;
     `projectContext: false` keeps the `<project-context>` block out of its prompt.
+  - Both settings keep `protocolDefault: ["rpc", "acp"]`, like the other `advisor.*`
+    settings.
   - Changing `includeThinking` or `projectContext` mid-session rebuilds the advisors.
   - With `projectContext: false`, a context-file change does not rebuild advisors that
     were built with the setting off, and turning the setting on later uses the latest
@@ -71,24 +80,37 @@ does what I wanted".
 
 ### Advisor repeat-call de-duplication
 
-- **What it does:** Inside a review, a call identical to an earlier one whose result is
-  still in context returns `[Unchanged since your earlier identical call]`. This covers
+- **What it does:** Inside a review, a call identical to an earlier call from the same
+  review whose result is still in context returns
+  `[Unchanged since your earlier identical call]`. This covers
   every advisor tool except `advise`: by default `read`/`grep`/`glob` (plus `recall`
   when the memory backend provides it), and any built-in granted through a
   `WATCHDOG.yml` `tools:` list. For `read`, the comparison ignores the repeat hint
   upstream `read` appends from the 3rd identical read, but only at the exact spot
-  `read` puts it and only when it names this call's `path`. (The stale-result eviction
-  that used to live in this entry landed upstream as #13238 and is upstream code now.)
+  `read` puts it and only when it names this call's `path`. Calls are identical when
+  their `toolCallSignature` matches: tool name plus arguments with key order and the
+  agent-authored intent fields (`i`, `__intent`) ignored, values compared verbatim.
+  (The stale-result eviction that used to live in this entry landed upstream as #13238
+  and is upstream code now.)
 - **Why:** 13% of advisor investigation calls were byte-identical repeats, each one
   re-inflating the context that upstream's stale-result eviction trims.
-- **Files:** `packages/coding-agent/src/advisor/tool-result-dedupe.ts`,
+- **Files:** `packages/coding-agent/src/advisor/tool-result-dedupe.ts`
+  (`AdvisorToolResultDedupe`, `toolCallSignature`),
+  `packages/coding-agent/src/advisor/tool-result-eviction.ts` (only the `export` on
+  `latestReviewStart`),
   `packages/coding-agent/src/session/session-advisors.ts` (the `AdvisorToolResultDedupe`
   import, the per-runtime `toolResultDedupe` instance, and the dedupe branch in the
-  advisor `afterToolCall` hook; the file's other fork hunks are named under the spend-controls
-  and advisor-segment entries' **Depends on upstream**).
+  advisor `afterToolCall` hook; the request-cap wiring — the `AdvisorRequestCap` import,
+  its construction, the `recordTurn` call guarded by `advisorLoopGuardStopped` and its
+  two `reset` calls — named under the request-cap entry's **Depends on upstream**; the
+  file's other fork hunks are named under the spend-controls and advisor-segment
+  entries' **Depends on upstream**).
 - **Depends on upstream:** `prunedAt` on `ToolResultMessage` — a result upstream's
   `evictStaleToolResults` (`packages/coding-agent/src/advisor/tool-result-eviction.ts`)
-  or any other prune blanked carries it and reads as a miss; `appendRepeatReadHint` in
+  or any other prune blanked carries it and reads as a miss; `latestReviewStart` in the
+  same file staying the exact boundary `evictStaleToolResults` protects from (the
+  latest non-synthetic user message), since dedupe only points at originals at or
+  after it; `appendRepeatReadHint` in
   `packages/coding-agent/src/tools/read.ts` — its exact hint text, that it goes at the
   end of the first text block, and that it quotes the call's `path` argument verbatim
   (matched by `stripRepeatReadHint` in
@@ -98,16 +120,15 @@ does what I wanted".
   (`appendOutputNotice` in `packages/coding-agent/src/tools/output-meta.ts`,
   `formatOutputNotice` in `packages/tui/src/tools/output-meta.ts`) and the agent loop
   keeping `details` on the `ToolResultMessage`; the `AfterToolCallResult` shape
-  including `useless`.
+  including `useless`; `INTENT_FIELD` in `packages/wire/src/index.ts` and
+  `stableStringifyJson` in `packages/utils/src/json.ts` (sorted keys), which
+  `toolCallSignature` builds on.
   Upstream's advisor `afterToolCall` hook in `session-advisors.ts` (added by #13132: a
   turn whose only tool calls are `advise` ends the review). The fork only swaps its
   first line for the dedupe branch, so an upstream rewrite of that line conflicts
   instead of silently dropping dedupe.
-  Fork code it relies on in files other entries own: `toolCallSignature` in
-  `packages/coding-agent/src/advisor/cumulative-loop-guard.ts` (loop-bound entry),
-  which must keep ignoring the agent-authored intent fields and key order and keep
-  argument values verbatim; the repeat-call paragraph in `docs/advisor-watchdog.md`
-  (spend-controls entry).
+  Fork code it relies on in files other entries own: the repeat-call paragraph in
+  `docs/advisor-watchdog.md` (spend-controls entry).
   **Open upstream risk — PR #12516** (open): it moves the advisor onto the shared
   compaction code, whose per-turn prune follows `compaction.supersedeReads` and
   `compaction.dropUseless` (both on by default). On the advisor's history, a newer
@@ -115,11 +136,16 @@ does what I wanted".
   stub points to and blank it, leaving the advisor neither copy. (`dropUseless`
   eliding the stubs themselves is expected: they are flagged `useless` for that.) If
   it lands, re-check dedupe against the shared prune.
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/types.ts`, `packages/agent/src/agent-loop.ts`, `packages/coding-agent/src/advisor/tool-result-eviction.ts`, `packages/coding-agent/src/tools/read.ts`, `packages/coding-agent/src/tools/output-meta.ts`, `packages/tui/src/tools/output-meta.ts`, `packages/coding-agent/src/session/session-advisors.ts`
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/types.ts`, `packages/agent/src/agent-loop.ts`, `packages/coding-agent/src/advisor/tool-result-eviction.ts`, `packages/coding-agent/src/tools/read.ts`, `packages/coding-agent/src/tools/output-meta.ts`, `packages/tui/src/tools/output-meta.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/wire/src/index.ts`, `packages/utils/src/json.ts`
 - **Must still be true:**
   - A repeated identical investigation call returns the "unchanged" stub, but the full
     output is served again if the earlier result was evicted, rolled back, errored,
     held an image, or the file changed.
+  - A repeat whose original sits in an earlier review (before the latest non-synthetic
+    user message) is served in full and becomes the new tracked original, so eviction
+    blanking the old copy never leaves the advisor holding only a stub.
+  - Identical calls differing only in intent text or argument key order still dedupe;
+    a different argument value does not.
   - The 3rd and later identical `read` calls still return the "unchanged" stub even
     though upstream `read` appends a repeat hint with a rising count, including when an
     output notice such as `[Showing lines …]` follows the hint.
@@ -131,232 +157,207 @@ does what I wanted".
 
 ### Cache breakpoint in front of a rewritten region (Anthropic)
 
-- **What it does:** When history was rewritten in place deeper than Anthropic's
-  20-position lookback, the request adds a cache breakpoint on the last cacheable
-  message *before* the rewritten region (skipping per-call, `clear_at` and
+- **What it does:** When history was rewritten in place before a request and the
+  region from the last cacheable message before the earliest unbilled rewrite to the
+  trailing breakpoint spans at least the model's prompt-cache lookback (catalog
+  `prompt-cache-lookback`, read with `resolvePromptCacheLookback`; Claude: 20 block
+  positions, the breakpoint included), the request adds a cache breakpoint on that last
+  cacheable message *before* the region (skipping per-call, `clear_at` and
   tool-control-only messages, which upstream never anchors either), so the re-bill can
-  stop there instead of running back to the previous explicit breakpoint. That only
-  pays off while a cache entry written within 20 positions behind the new breakpoint
-  is still alive: 5 minutes by default on API keys, 1 hour by default on OAuth for
-  models with long retention.
+  stop there instead of running back to the previous explicit breakpoint. A rewrite is
+  unbilled until an assistant turn postdates its `prunedAt`. That only pays off while a
+  cache entry within the lookback behind the new breakpoint is still alive: 5 minutes
+  by default on API keys, 1 hour by default on OAuth for models with long retention.
+  When the newest decimation anchor before the region lies beyond the boundary's
+  lookback, that anchor (refreshed every request, a guaranteed hit) ranks ahead of the
+  boundary. Every distance runs between the blocks that carry `cache_control` (the last
+  block of a message that is not thinking, fallback or tool-control), so trailing
+  thinking never pushes an anchor out of reach. Scope: upstream's #14751
+  (`cacheLookbackFloor` in `packages/agent/src/compaction/pruning.ts`) keeps main-agent
+  warm pruning inside the lookback, so the boundary fires for deep rewriters: advisor
+  stale-result eviction, shake, snapcompact retracts. Models without a catalog lookback
+  (non-Claude models on the Anthropic API) prune with no lookback bound but get no
+  boundary: with no known lookback there is nothing to measure the region against.
 - **Why:** Without it, the money saved by eviction is lost again at the cache-write
-  premium — a cache write costs roughly 16x a cache read per token.
+  premium: a cache write costs 1.25x base input on the 5-minute TTL and 2x on the
+  1-hour TTL, a cache read 0.1x, so a re-written token costs 12.5x (5-minute) or 20x
+  (1-hour) a cached one.
 - **Files:** `packages/ai/src/providers/anthropic-rewrite-boundary.ts`
-  (`ANTHROPIC_REWRITE_BOUNDARY_POSITIONS`, `countLookbackPositions`, `isAnchorable`,
-  `findRewriteBoundary`, `hasUnbilledRewrite`), `packages/ai/src/providers/anthropic.ts`
-  (call sites only: the import, a `findRewriteBoundary` call plus one budget-gated
-  block in `applyPromptCaching` that decorates the boundary right after the most
-  recent trailing message, the `hasUnbilledRewrite` gate
-  in `convertAnthropicMessages` and one `markRewriteAt` line per merged tool result),
-  `packages/ai/src/utils/block-symbols.ts` (`kRewriteAt`, `markRewriteAt`,
-  `rewriteAtOf` — symbol-keyed so the mark never reaches the wire).
+  (`kUnbilledRewrite`, `rewritesBilledThrough`, `markUnbilledRewrite`,
+  `AcceptsCacheControl`, `cacheControlBlockIndex`, `countLookbackPositions`,
+  `rewriteBoundaryBreakpoints`),
+  `packages/ai/src/providers/anthropic.ts` (the import; an `acceptsCacheControl`
+  predicate extracted from `applyCacheControlToLastBlock`'s skip list, which that
+  function and the boundary share; a `model` parameter on `applyPromptCaching` passed
+  from `buildParams`; upstream's decimation loop moved into a `decimationCheckpoints`
+  generator that both the boundary ranking and the decimation loop read; a
+  `rewriteBoundaryBreakpoints` call right after the first trailing candidate is
+  decorated, passing upstream's trailing-candidate filter and `acceptsCacheControl` as
+  predicates, plus one budget-gated loop that decorates its result; the
+  `rewritesBilledThrough` cutoff in `convertAnthropicMessages` and one
+  `markUnbilledRewrite` line per merged tool result).
 - **Depends on upstream:** `prunedAt` on `ToolResultMessage` and the rule that a prune
-  rewrites tool results in place; the single backward walk in `applyPromptCaching`
-  (`trailingCandidates`, `messageEnd`; the call site sits right after the first
-  trailing candidate is decorated and must stay before the decimation loop) and its
-  rule that re-decorating a message spends no breakpoint (`applyCacheControlToLastBlock`
-  returns false); upstream's trailing-candidate filter there (skip `clear_at ===
-  "next_user_message"`, `isPerCallContextMessage`, `isToolControlMessage`), which
-  `isAnchorable` copies and must stay in step with; the 4-breakpoint
-  budget and head-caching plan (`countHeadBreakpoints`, `buildAnthropicSystemBlocks`'s
-  OAuth identity breakpoint, `applyHeadCaching`'s last non-deferred tool and stable-system anchors)
-  that the message budget subtracts from; the decimation anchors; the merge path that
+  rewrites tool results in place; assistant `timestamp`s that postdate the request that
+  produced them; the single backward walk in `applyPromptCaching`
+  (`trailingCandidates`, `stableMessageEnd`, `stableUserTurns`; the call site sits right
+  after the first trailing candidate is decorated and must stay before the decimation
+  loop) and its rule that re-decorating a message spends no breakpoint
+  (`applyCacheControlToLastBlock` returns false); the block types Anthropic rejects
+  `cache_control` on (now the `acceptsCacheControl` predicate); upstream's
+  trailing-candidate filter there (skip `clear_at === "next_user_message"`,
+  `isPerCallContextMessage`, `isToolControlMessage`), passed in as the `isAnchorable`
+  predicate; the 4-breakpoint budget and head-caching plan (`countHeadBreakpoints`,
+  `buildAnthropicSystemBlocks`'s OAuth identity breakpoint, `applyHeadCaching`'s last
+  non-deferred tool and stable-system anchors) that the message budget subtracts from;
+  the decimation anchors
+  (`ANTHROPIC_DECIMATION_INTERVAL`, `isConversationalUser`); the merge path that
   collapses consecutive tool results into one wire message; the TTL `getCacheControl`
-  picks (overridable by `cacheRetention` or `PI_CACHE_RETENTION`); Anthropic's
-  20-position lookback, encoded as `ANTHROPIC_REWRITE_BOUNDARY_POSITIONS = 16`.
-  Compaction summaries replace the root instead of rewriting in place, so the boundary
-  ignores them. Upstream's cache_control-rejection replay (#11812, `dropCacheControl`)
-  sends a request with no breakpoints at all, boundary included; that is intended.
+  picks (overridable by `cacheRetention` or `PI_CACHE_RETENTION`); the catalog
+  `prompt-cache-lookback` axis and `resolvePromptCacheLookback`
+  (`packages/catalog/src/compat/prompt-cache-lookback.ts`) and its block-position
+  counting rule (a run of `tool_use` or `tool_result` blocks is one position), which
+  `countLookbackPositions` mirrors. Compaction summaries replace the root instead of
+  rewriting in place, so the boundary ignores them. Upstream's cache_control-rejection
+  replay (#11812, `dropCacheControl`) sends a request with no breakpoints at all,
+  boundary included; that is intended. The fork's open upstream PR #14867 proposes this
+  feature; if it lands, reconcile with it.
   **Known stale comment:** upstream's numbered "Priority order:" comment in
   `applyPromptCaching` is left untouched and no longer matches the real order, which
-  is: most recent trailing message, rewrite boundary, decimation anchors newest first,
-  the newest message at or before the first per-call or turn-scoped mark, second
-  trailing message.
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/ai/src/providers/anthropic.ts`, `packages/ai/src/utils/block-symbols.ts`, `packages/agent/src/compaction/pruning.ts`
+  is: most recent trailing message; the newest decimation anchor before the rewritten
+  region when it lies beyond the boundary's lookback; the rewrite boundary; decimation
+  anchors newest first; the newest message at or before the first per-call or
+  turn-scoped mark; second trailing message.
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/ai/src/providers/anthropic.ts`, `packages/catalog/src/compat/prompt-cache-lookback.ts`, `packages/catalog/src/compat/rules/classes/anthropic.kdl`, `packages/agent/src/compaction/pruning.ts`
 - **Must still be true:**
-  - A rewrite deeper than the lookback window gets a breakpoint before it plus the
-    usual trailing one, and the request never exceeds 4 breakpoints.
+  - A rewrite whose region reaches back at least the catalog lookback from the
+    trailing breakpoint gets a breakpoint before it plus the usual trailing one, and
+    the request never exceeds 4 breakpoints.
   - A shallow rewrite near the tail changes nothing.
-  - Once a later assistant turn postdates the rewrite, the extra breakpoint disappears.
-  - With several rewrites, the boundary comes from the newest batch only.
+  - Once a later assistant turn postdates a rewrite, it counts as billed and adds no
+    breakpoint.
+  - With several unbilled rewrites, the region starts at the earliest one; billed
+    rewrites never count.
   - When the head is heaviest (OAuth identity block plus a `<memories>` recall suffix),
     upstream moves the identity breakpoint onto the stable-system anchor, so the head
     spends two of the 4 breakpoints and the boundary still fits beside the trailing
     message; the request never exceeds 4.
-  - In a long session (15+ user turns) the boundary outranks upstream's decimation
-    anchors: with two message breakpoints the layout is trailing + boundary; with
-    three, the newest decimation anchor stays and the oldest drops. The trailing
-    breakpoint always stays.
+  - In a long session (15+ user turns): decimation anchors inside or after the
+    rewritten region rank below the boundary. The newest anchor before the region
+    ranks below the boundary when it is within the lookback behind it (the boundary's
+    lookup reaches it: two message breakpoints give trailing + boundary) and above it
+    when it is farther (two give trailing + anchor; three give trailing + anchor +
+    boundary). The trailing breakpoint always stays first.
+  - Distances are measured between `cache_control` blocks: an anchor within the
+    lookback of the boundary's last cacheable block keeps the boundary first even when
+    the boundary message ends in thinking.
+  - A model without a catalog `prompt-cache-lookback` gets no boundary.
   - The boundary never lands on a per-call, `clear_at: "next_user_message"` or
     tool-control-only `system` message; it moves back to the nearest earlier message
     upstream would anchor.
 - **Check:** `bun test packages/ai/test/anthropic-rewrite-boundary-caching.test.ts packages/ai/test/anthropic-head-caching.test.ts`
 
-### Bounded repeated tool calls inside one advisor review
+### Per-review request cap for advisors
 
-- **What it does:** The advisor's loop guard also counts each identical tool call over
-  the whole review, not just back-to-back, so an advisor alternating between two calls
-  is bounded too: at five times `model.toolCallLoopGuard.threshold` it gets a
-  corrective, then upstream's abort. A back-to-back run still gets upstream's
-  corrective verbatim ("N consecutive times"); the whole-review tally gets a copy of it
-  without the word "consecutive".
-- **Why:** Upstream's advisor guard only counts consecutive runs, so an A/B/A/B loop
-  never trips it and burns requests inside one "successful" review. The bound lives in
-  a fork-owned subclass, not in upstream's shared `ToolCallLoopGuard`: the main session
-  uses that class too (a session-long tally would trip on legitimate re-reads, and an
-  earlier fork cut turned its corrective into a persisted, session-wide "NEVER call …
-  again"), and several open upstream PRs edit the exact lines the fork used to change.
-- **Files:** `packages/coding-agent/src/advisor/cumulative-loop-guard.ts`
-  (`CumulativeToolCallLoopGuard`, `CumulativeToolCallDetection`, `toolCallSignature`,
-  `renderAdvisorToolCallLoopRedirect`),
-  `packages/coding-agent/src/prompts/advisor/tool-call-loop-redirect-cumulative.md`
-  (the cumulative corrective), `packages/coding-agent/src/advisor/loop-guard.ts`
-  (imports, `new CumulativeToolCallLoopGuard(...)` and
-  `renderAdvisorToolCallLoopRedirect(detection)` in place of upstream's guard and
-  renderer).
-- **Depends on upstream:** `AdvisorLoopGuard` and its "one corrective, then abort",
-  "reset each update" and "disabled means unbounded" rules; `ToolCallLoopGuard` in
-  `packages/ai/src/utils/tool-call-loop-guard.ts` — its constructor options
-  (`threshold`, `exemptTools`), `recordTurn` being overridable and returning `null`
-  whenever the consecutive bound does not trip (the subclass tallies only then), and
-  the `RepeatedToolCallDetection` shape; upstream's module-private summary helpers,
-  whose limits (result 200 chars, arguments 400 chars) and whitespace collapsing are
-  hand-copied into `cumulative-loop-guard.ts`; `renderToolCallLoopRedirect` (shared by
-  the main session's `LoopGuards` and the advisor) and the wording of
-  `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md`, which the
-  cumulative prompt copies minus "consecutive"; `stableStringifyJson` in
-  `packages/utils/src/json.ts` sorting object keys at every depth; `INTENT_FIELD` from
-  `@oh-my-pi/pi-wire`; the shared settings `model.toolCallLoopGuard.enabled` /
-  `.threshold` / `.exemptTools`.
-  Fork text it relies on in a file another entry owns: the runaway-tool-loop bullet in
-  `docs/advisor-watchdog.md` (spend-controls entry).
-- **Tripwire paths:** `packages/ai/src/utils/tool-call-loop-guard.ts`, `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/tool-call-loop-redirect.ts`, `packages/coding-agent/src/prompts/system/tool-call-loop-redirect.md`, `packages/coding-agent/src/session/stream-guards.ts`, `packages/coding-agent/src/session/settings.ts`, `packages/utils/src/json.ts`
+- **What it does:** `advisor.maxRequestsPerUpdate` (default 50, 0 = no cap) counts
+  completed advisor model requests in one review. When the request that reaches the cap
+  still calls a tool other than `advise`, the advisor gets one synthetic `user`
+  corrective (advise now or end the review); if its next turn still calls any tool
+  other than `advise`, the update is aborted as a silent review, not a provider failure.
+  The count resets wherever upstream resets `AdvisorLoopGuard`, and a turn the loop
+  guard already stopped is not counted.
+- **Why:** A replay of 54,864 local advisor reviews showed the previous 5× whole-review
+  repeated-call tally fired in only 22 of the 90 reviews that ran over 50 requests,
+  often hundreds of requests in; reviews that cycle through mostly distinct calls never
+  trip a repeat counter (one ran 1,093 requests with 1,069 distinct calls). A cap of 50
+  would have saved about $919 against about $154 for the tally.
+- **Files:** `packages/coding-agent/src/advisor/request-cap.ts` (`AdvisorRequestCap`),
+  `packages/coding-agent/src/prompts/advisor/request-cap-reached.md` (the corrective).
+- **Depends on upstream:** `AdvisorLoopGuard` in
+  `packages/coding-agent/src/advisor/loop-guard.ts` staying upstream's, its
+  `AdvisorLoopGuardHost` interface (reused as the cap's host) and its reset points
+  (`prompt` and `reset` of the advisor facade); the advisor `setOnTurnEnd` hook that
+  feeds `recordTurn`, and `advisorLoopGuardStopped` clearing the abort error; #13132's
+  advise-only turn ending the review. Upstream PRs #10117 and #7964 propose the same
+  kind of cap — if one lands, drop this entry for it.
+  Fork code it relies on in files other entries own: `cfgAdvisorMaxRequestsPerUpdate`
+  in `packages/coding-agent/src/advisor/settings.ts` (spend-controls entry); the
+  `AdvisorRequestCap` import, construction, `recordTurn` call (skipped once
+  `advisorLoopGuardStopped` is set) and two `reset` calls in
+  `packages/coding-agent/src/session/session-advisors.ts` (dedupe entry); the
+  runaway-review bullet and request-cap sentence in `docs/advisor-watchdog.md` and the
+  `advisor.maxRequestsPerUpdate` row in `docs/settings.md` (spend-controls entry).
+- **Tripwire paths:** `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/agent/src/agent-loop.ts`, `packages/agent/src/types.ts`
 - **Must still be true:**
-  - An advisor alternating two identical calls gets one corrective once either call
-    reaches five times the threshold, and the review aborts if it keeps alternating.
-  - Only the advisor uses `CumulativeToolCallLoopGuard`; the main session's guard
-    (`packages/coding-agent/src/session/stream-guards.ts`) stays upstream's
-    consecutive-only `ToolCallLoopGuard`.
-  - A consecutive detection's corrective says "N consecutive times"; a cumulative one
-    says "N times". Both keep "this turn", and the cumulative prompt differs from
-    upstream's only by the word "consecutive".
-  - The cumulative corrective's result and argument summaries use upstream's limits
-    (200 / 400 chars) and whitespace collapsing.
-  - Exempt tools are never tallied.
-  - `toolCallSignature` ignores the top-level agent-authored intent fields
-    (`INTENT_FIELD`, `__intent`) and object key order, and keeps argument values
-    verbatim.
-  - The fork changes no upstream loop-guard file except the imports and the two call
-    sites in `packages/coding-agent/src/advisor/loop-guard.ts`.
-- **Check:** `bun test packages/coding-agent/test/advisor-tool-call-loop-guard.test.ts packages/coding-agent/test/advisor/cumulative-loop-guard.test.ts packages/ai/test/tool-call-loop-guard.test.ts packages/coding-agent/test/agent-session-tool-call-loop-guard.test.ts`
+  - The corrective is injected on exactly the cap-th completed request of a review,
+    never before; 0 disables the cap.
+  - A cap-th request that calls only `advise`, or no tools, ends the review without a
+    corrective.
+  - After the corrective, a turn calling a non-`advise` tool aborts the update; a turn
+    calling only `advise`, or no tools, does not.
+  - The count restarts at every `AdvisorLoopGuard.reset()` site.
+  - `packages/coding-agent/src/advisor/loop-guard.ts` equals upstream's.
+- **Check:** `bun test packages/coding-agent/test/advisor/request-cap.test.ts packages/coding-agent/test/advisor-tool-call-loop-guard.test.ts`
 
 ## Status line and TUI
 
-### Auto-thinking classifier readout (hook status, rolled up over the subagent bus)
+### Auto-thinking: auto marker on the resolved level and a notice on repeated classifier fallback
 
-- **What it does:** With thinking set to `auto`, the status line shows a hook status
-  (key `auto-thinking`, the same channel extensions use): a `⟳ auto` pending marker
-  while any session in the spawn tree is classifying, then the tree's count of turns
-  the classifier decided (`🧠 8`) and turns that fell back to a guessed level after a
-  timeout or error (`🧠 8·2⚠`; icon, separator and warning come from the symbol preset,
-  `IQ 8-2[!]` under `ascii`). The marker is held at least a second after the latest
-  classification starts so it is actually visible. Every session on a spawn tree
-  (root, task and structured subagents, work pools, vibe, cold-revived subagents)
-  publishes begin/end frames on the tree's `subagentEventBus`, so subagent
-  classifications count toward the root's readout. It shows on its own line under the
-  bar (`statusLine.showHookStatus`, on by default) and inside the built-in `status`
-  segment when a layout includes it.
-- **Why:** With `auto` on there was no way to see whether the classifier was working,
-  what it picked, or how often it silently fell back; most classifications happen
-  inside subagents, so the readout counts the whole tree. It rides the hook-status path
-  instead of adding a segment because upstream keeps the segment list by hand in three
-  places and open upstream PRs edit the same status-line files. `/tan` tangents run on
-  their own bus, so their classifications are not counted.
-- **Files:** `packages/coding-agent/src/auto-thinking/activity-events.ts`
-  (`AUTO_THINKING_ACTIVITY_EVENT_CHANNEL`, `AutoThinkingActivityFrame`,
-  `isAutoThinkingActivityFrame`), `packages/coding-agent/src/modes/auto-thinking-readout.ts`
-  (`AutoThinkingReadout`, `MIN_CLASSIFYING_VISIBLE_MS`),
-  `packages/coding-agent/src/session/model-controls.ts` (one import, the optional
-  `ModelControlsHost.onAutoThinkingActivity` member, a `begin` emit before
-  `classifyDifficulty` and an `end` emit in its `finally`),
-  `packages/coding-agent/src/session/agent-session.ts` (one pass-through line,
-  `onAutoThinkingActivity: config.onAutoThinkingActivity`, in the `ModelControlsHost` it
-  builds),
-  `packages/coding-agent/src/session/agent-session-types.ts`
-  (`AgentSessionConfig.onAutoThinkingActivity`), `packages/coding-agent/src/sdk.ts` (one
-  import and the callback that emits on `subagentEventBus` in
-  `createAgentSessionScoped`), `packages/coding-agent/src/modes/controllers/event-controller.ts`
-  (creates the readout in its constructor, disposes it in `dispose()`).
-- **Depends on upstream:** Every spawn path must keep forwarding the parent's
-  `subagentEventBus` into `createAgentSession`: the task
-  executor's spawn and in-turn revival (`buildSubagentSessionOptions` in
-  `task/executor.ts`), structured subagents (`buildExecutorOptions` in
-  `task/structured-subagent.ts`), work pools (`task/workpool.ts`), vibe
-  (`vibe/runtime.ts`), cold revival (`createPersistedSubagentReviverFactory` in
-  `task/persisted-revive.ts`, wired from `main.ts`) and `--restore` subagent revival
-  (`restoreSession` in `task/restore.ts`, given the bus by `main.ts`). A path that
-  stops forwarding publishes on a fresh bus nobody listens to, with no type error;
-  `createAgentSessionScoped` gives a session without a bus a fresh one. The interactive
-  root's bus must be the object `InteractiveMode` holds (`main.ts` passes one bus to
-  both `createAgentSession` and `runInteractiveMode`), and `InteractiveMode` must set it
-  and create its `ExtensionUiController` before it constructs `EventController`.
-  Nothing may forward arbitrary bus channels: `RpcSubagentRegistry`
-  (`modes/rpc/rpc-subagents.ts`), `SessionObserverRegistry.subscribeToEventBus` and the
-  collab host (`COLLAB_BUS_CHANNELS`) listen only to `task:subagent:*` today. Rendering
-  rides the hook-status path: `InteractiveModeContext.setHookStatus` →
-  `ExtensionUiController.setHookStatus` → `StatusLineComponent.setHookStatus` (drops
-  its render cache) plus `ui.requestRender()`; hook statuses render as lines under the
-  bar unless `showHookStatus` is false (through `sanitizeHookStatusText`, which keeps
-  SGR color since #14500), and inside the `status` segment (through
-  `sanitizeStatusText`, which strips color); the readout emits no color either way.
-  Superseded detection is
-  `promptGeneration() !== generation` in `applyAutoThinkingLevel`; `classifyDifficulty`
-  and its 4 s timeout decide classified vs fallback. `applyAutoThinkingLevel` is the only
-  caller of `classifyDifficulty` and carries upstream's `solutionSpace` parameter (task-spawned
-  turns pass the delegator's rationale through `PromptOptions.solutionSpace` and
-  `#promptWithMessage`); the fork's frames wrap that one call, so a second upstream caller
-  or a classifier call moved elsewhere would classify without frames. The fork's version
-  of that method has conflicted on every sync that touched its signature: keep upstream's
-  parameters and the fork's `begin`/`end` emits. The `ultrathink` branch skips the
-  classifier and emits no frames. The readout shows only while
-  `viewSession.isAutoThinking`, re-checked on bus frames, hold expiry and the root
-  session's `thinking_level_changed`, so a focus switch to a subagent with a different
-  `auto` state shows at the next such event. Theme reads: `theme.thinking.autoPending`,
-  `theme.symbol("icon.intelligence")`, `theme.sep.dot`, `theme.status.warning` in every
-  symbol preset. A classification that finishes after its session was disposed (but
-  was not superseded) still counts.
-- **Tripwire paths:** `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/agent-session-types.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/task/structured-subagent.ts`, `packages/coding-agent/src/task/workpool.ts`, `packages/coding-agent/src/task/persisted-revive.ts`, `packages/coding-agent/src/task/restore.ts`, `packages/coding-agent/src/task/index.ts`, `packages/coding-agent/src/task/spawn-run.ts`, `packages/coding-agent/src/task/speculative-launch.ts`, `packages/coding-agent/src/vibe/runtime.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/modes/types.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/modes/controllers/extension-ui-controller.ts`, `packages/coding-agent/src/modes/rpc/rpc-subagents.ts`, `packages/coding-agent/src/collab/host.ts`, `packages/coding-agent/src/utils/event-bus.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/tui/src/status-line/component.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/overlays/session-observer-registry.ts`, `packages/tui/src/chrome/shared.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/theme/theme-class.ts`
+- **What it does:** With thinking set to `auto`, the status line's model segment keeps
+  the auto marker on the resolved level (`⟳ high`; `[~] high` under `ascii`, the nerd
+  glyph under `nerd`) so it reads apart from a pinned `high`; pending stays `⟳ auto`.
+  Both the ANSI render and the native `describe` path show it; the composer effort chip
+  keeps the bare level (its glyph and meter are keyed on it). When the auto-thinking
+  classifier fails three turns in a row, the session emits one `warning` notice (source
+  `auto-thinking`) naming the cause (`timed out after 4 s`, or the sanitized, truncated
+  error message) and the fallback level applied; a successful classification resets the
+  streak and re-arms the notice. The streak is per session: `/new` or a session switch
+  starts a fresh one.
+- **Why:** Upstream issues #5951 (auto-resolved and pinned levels looked identical) and
+  #7820 (classifier fallbacks were only logged at debug). Replaces the fork's earlier
+  hook-status readout rolled up over the subagent bus, which touched six upstream files.
+- **Files:** `packages/coding-agent/src/auto-thinking/fallback-notice.ts`
+  (`AUTO_THINKING_NOTICE_SOURCE`, `describeClassifierFailure`,
+  `AutoThinkingFallbackStreak`), `packages/coding-agent/src/session/model-controls.ts`
+  (one import, the `#fallbackStreak` field, and in `applyAutoThinkingLevel` the
+  `classified`/`failure` locals, the `describeClassifierFailure` call in the classifier
+  `catch`, and the `record` (keyed by `sessionManager.getSessionId()`) + `emitNotice`
+  after the fallback level is clamped).
+- **Depends on upstream:** `ModelControls.applyAutoThinkingLevel` as the only caller of
+  `classifyDifficulty`, its `AbortController` aborted only by the 4 s
+  `#AUTO_THINKING_TIMEOUT_MS` timer (so `signal.aborted` means timeout), the
+  `promptGeneration() !== generation || !#autoThinking` early return ahead of the
+  fallback clamp (superseded turns return before the streak is touched), and the
+  `ultrathink` branch that skips the classifier. `ModelControlsHost.emitNotice` →
+  `AgentSession.emitNotice` → `notice` `AgentSessionEvent`, rendered by
+  `EventController.#handleNotice` as `showWarning` and forwarded by RPC and JSON print
+  mode; ACP and text print mode drop non-credential notices, so the warning does not
+  show there. `AgentSession.newSession()`/`switchSession()` reusing one `ModelControls`
+  while changing the session id. `sanitizeText` (`pi-utils`),
+  `truncateToWidth` (`pi-tui`), `theme.thinking.autoPending` in every symbol preset,
+  `leadingGlyph` (compact mode keeps only the marker), `thinkingLevelWord` feeding the
+  native segment and the composer chip. Fork code it relies on in files other entries
+  own: `modelThinkingDisplay` (the auto branch) and the auto-marker span in the model
+  segment's `describe` in `packages/tui/src/status-line/segments.ts` (advisor-segment
+  entry).
+- **Tripwire paths:** `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/prompt/custom-editor.ts`
 - **Must still be true:**
-  - While any classification in the tree is in flight, the readout shows the `⟳ auto`
-    marker ahead of the counts.
-  - A classification faster than the repaint cadence still leaves the marker up for at
-    least 1000 ms after the latest classification starts; an older hold never cuts a
-    newer one short; the hold never delays the turn.
-  - With overlapping classifications the marker stays up until the last one ends, even
-    past the hold.
-  - A subagent's classification counts into its root's readout; a failed or unparseable
-    one counts as a fallback; a superseded one releases its in-flight share without
-    counting.
-  - A task-spawned turn that passes a `solutionSpace` rationale still emits begin/end
-    frames and counts into the root's readout.
-  - Child-only activity updates an idle parent's readout, including the final
-    hold-expiry update.
-  - Cold revival counts into the tree whose `subagentEventBus` it revives on.
-  - Sessions on different subagent buses keep independent readouts.
-  - Nothing renders when the focused session is not on `auto`, or when both counters
-    are zero and nothing is in flight; toggling `auto` shows or hides it without
-    classifier activity; the fallback part appears only after a real fallback.
-  - Under the `ascii` symbol preset the readout is plain ASCII (`IQ 8-2[!]`).
-  - Classifier activity is never an `AgentSessionEvent`, and no RPC or collab surface
-    forwards the `auto-thinking:activity` channel.
-- **Check:** `bun test packages/coding-agent/test/status-line-auto-thinking.test.ts packages/coding-agent/test/auto-thinking-tally.test.ts`
+  - Auto pending renders `⟳ auto`, auto resolved `⟳ <level>`, pinned `<level>` without
+    the marker, in the ANSI and native model segment, under unicode, nerd and ascii.
+  - The composer effort chip still receives a bare level word from `thinkingLevelWord`.
+  - The notice fires exactly once, on the 3rd consecutive non-superseded classifier
+    failure, with the cause and the fallback level; not again until a success.
+  - Superseded classifications and the `ultrathink` bypass neither count nor reset.
+  - The streak starts fresh when the session id changes: failures from a previous
+    session neither count toward nor suppress the next session's notice.
+- **Check:** `bun test packages/tui/test/status-line-auto-thinking.test.ts packages/coding-agent/test/auto-thinking-fallback-notice.test.ts`
 
 ### Advisor status line segment (count, busiest context, cache-hit rate)
 
 - **What it does:** A new `advisor` status line segment, in the `full` preset, shows the
   advisor eye (colored by the worst status in the roster) with the advisor count (`2`,
   or `1/2` when some are not running), the busiest live advisor's context percent in the
-  `context_pct` warning colors, and the session-total advisor cache-hit rate. It is
+  `context_pct` warning colors (the same percent and token thresholds, measured against
+  that advisor's own context window), and the session-total advisor cache-hit rate. It is
   hidden when no advisor is configured. `statusLine.segmentOptions.advisor.showCount`,
   `showContext` and `showCacheHit` turn parts off. The cache split is counted on every
   advisor `message_end` and restored on resume from the same transcript scan as spend.
@@ -375,7 +376,11 @@ does what I wanted".
   the `promptUsageBySlug` option of `loadAdvisorTranscriptCosts`),
   `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`
   (`advisorStatuses`, `advisorUsage`, the fake `getAdvisorUsageSummary`),
-  `packages/coding-agent/src/cli/gallery-fixtures/segments.ts` (the `advisor` variants).
+  `packages/coding-agent/src/cli/gallery-fixtures/segments.ts` (the `advisor` variants),
+  `packages/coding-agent/src/session/agent-session.ts` (`getAdvisorUsageSummary`, the
+  `AdvisorUsageSummary` re-export and the `promptUsageBySlug` plumbing on both restore
+  paths; its two `cfgAdvisorRuntimeInputs` fields and their imports are named under the
+  spend-controls entry's **Depends on upstream**).
 - **Depends on upstream:** the status line keeping its segment list by hand in
   `schema.ts`, `SEGMENTS` and the presets, plus the gallery's `variantsFor` switch — a
   new upstream segment conflicts in all of them; `getAdvisorStatusOverview` and its
@@ -390,14 +395,12 @@ does what I wanted".
   `packages/coding-agent/src/session/session-advisors.ts` (dedupe entry)
   `#advisorPromptUsage`, `#recordAdvisorPromptUsage` in the recorder feed, its clears
   and restores in `clearCost`, `restoreCost`, `beginCostRestoreSnapshot`,
-  `restoreInitialCost` and the re-prime path, `AdvisorUsageSummary`,
-  `getAdvisorUsageSummary`, `#advisorContextPercent` and the `contextPercentCache`
+  `restoreInitialCost` and the re-prime path, `AdvisorUsageSummary` (including the
+  busiest advisor's `contextWindow`), `getAdvisorUsageSummary`, `#advisorContextPercent`
+  and the `contextPercentCache`
   memo (keyed on the message array, its length and tail and the model, cleared after an
-  eviction, and computed with `#estimateAdvisorContextTokens`); in
-  `packages/coding-agent/src/session/agent-session.ts` (auto-thinking entry)
-  `getAdvisorUsageSummary`, the `AdvisorUsageSummary` re-export and the
-  `promptUsageBySlug` plumbing on both restore paths; the `advisor` segment paragraph
-  in `docs/settings.md` (spend-controls entry).
+  eviction, and computed with `#estimateAdvisorContextTokens`); the `advisor` segment
+  paragraph in `docs/settings.md` (spend-controls entry).
 - **Tripwire paths:** `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/chrome/context-thresholds.ts`, `packages/tui/src/theme/symbols.ts`, `packages/coding-agent/src/advisor/transcript-recorder.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`
 - **Must still be true:**
   - With every advisor running the count is the bare total; otherwise it is
@@ -411,6 +414,9 @@ does what I wanted".
     not change.
   - The model segment's eye badge colors are unchanged in both the ANSI render and the
     native describe: error, then warning, then success, else dim.
+  - The advisor context percent gets the same warning level `context_pct` would give
+    for that percent and window, in both the ANSI render and the native describe: a
+    1M-window advisor past 150k tokens is already a warning.
 - **Check:** `bun test packages/tui/test/status-line-advisor.test.ts packages/coding-agent/test/advisor-toggle.test.ts`
 
 ## Browser
@@ -419,9 +425,9 @@ does what I wanted".
 
 - **What it does:** The browser tool prompt tells the agent never to dismiss Chrome's
   "started debugging this browser" bar, because its X or Cancel detaches every relay
-  tab until that tab navigates. Upstream now opens a tab that a relay page session asks
-  for in that page's own browser (`097470cc9e`, which took over #14865), so the fork no
-  longer changes the bridge.
+  tab until its URL changes (a reload does not lift it). Upstream now opens a tab that
+  a relay page session asks for in that page's own browser (`097470cc9e`, which took
+  over #14865), so the fork no longer changes the bridge.
 - **Why:** In a real session an agent opened a separate Chrome window, then clicked the
   X on that window's debugging bar, which detached every relay tab, and it looped on
   "No page targets available" until the user stepped in.
@@ -440,21 +446,23 @@ does what I wanted".
     changes; if upstream re-attaches it on its own, the bullet's warning is stale.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-relay-bridge.test.ts packages/coding-agent/test/tools/browser-relay-server.test.ts`
 
-
 ### Crashed tab workers
 
 - **What it does:** After init, the supervisor watches each tab's worker: when it
-  exits on its own (uncaught error, unhandled rejection), or the required `run` send
-  throws `InvalidStateError` (`safeSend` stays log-only), the tab is force-killed, so
-  pending runs fail at once, the tab
-  leaves `browser.tabs()`, and the next call says `Tab "x" was killed: … Reopen it.`
+  exits on its own (uncaught error, unhandled rejection), the host tool calls its
+  pending runs started are aborted (their replies could only reach the dead worker)
+  and the tab is force-killed; when the required `run` send throws `InvalidStateError`
+  (`safeSend` stays log-only), the tab is force-killed. Either way pending runs fail at
+  once, the tab leaves `browser.tabs()`, and the next call says
+  `Tab "x" was killed: … Reopen it.`
   The worker's last error is logged at warn level. Upstream now carries the off-screen
   `text/` click fix this entry used to hold (`4282a60275`, which took over #14864).
 - **Why:** A tab whose worker had died stayed listed as open and failed every call with
   "Worker has been terminated" until it was closed and reopened by hand.
 - **Files:** `packages/coding-agent/src/tools/browser/tab-supervisor.ts`
   (`WorkerHandle.onExit`, the `terminated` flag and `close` listener in `wrapBunWorker`,
-  the no-op `onExit` of the inline worker, `attachTabWorker` at the acquire site and in
+  the no-op `onExit` of the inline worker, `attachTabWorker` (with the tool-call abort
+  in its `onExit` handler) at the acquire site and in
   the recycle's `publish` helper (both recycle attempts), and the `InvalidStateError`
   branch around the `run` send). The fork no longer changes `forceKillTab`:
   upstream's version joins a release before anything else, so the fork's own
@@ -468,33 +476,47 @@ does what I wanted".
   keeps a second kill from releasing the browser hold twice; `recoverWorkerTab` killing
   only a tab that is still alive; `killedTabs` and the "was killed" message in
   `runInTabWithSnapshot`; `safeSend` staying log-only, because an aborted run's own
-  error must win over a kill.
+  error must win over a kill; `PendingRun.toolCalls` holding each in-flight host tool
+  call's `AbortController` (`dispatchToolCall`), and `forceKillTab` not aborting them
+  itself.
 - **Tripwire paths:** `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/browser/tab-worker-entry.ts`, `packages/coding-agent/src/tools/run-scope.ts`, `package.json`
 - **Must still be true:**
   - A worker that dies after init kills its tab: the next run rejects with the
     "was killed … Reopen it." error, not "Worker has been terminated", and the tab is
     gone from the tab list.
+  - A worker that dies after init aborts the host tool calls its runs left in flight.
   - Release, recycle and force-kill terminations are never reported as crashes.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-worker-exit.test.ts packages/coding-agent/test/tools/browser-tab-worker-startup.test.ts packages/coding-agent/test/tools/browser-freeze-settle.test.ts`
 
 ## Titles and labels
 
-### `--no-title` / `PI_NO_TITLE` stops every title-model request
+### `--no-title` / `PI_NO_TITLE` also stops subagent task labels
 
-- **What it does:** With `PI_NO_TITLE` set (what `--no-title` sets), `generateSessionTitle`
-  returns `null` before any eligibility logic, and `generateTaskLabel` returns `null`
-  before building its request, so no session title, mid-run replan title, or subagent
-  task label reaches the title model.
-- **Why:** Upstream honored the switch only for the first session title; subagent labels
-  and replan titles still sent title-model requests the user had turned off.
-- **Files:** `packages/coding-agent/src/utils/title-generator.ts`,
-  `packages/coding-agent/src/task/label.ts`
-- **Depends on upstream:** `--no-title` being mapped to the `PI_NO_TITLE` env var, and
-  every title-model caller going through `generateSessionTitle` or `generateTaskLabel`.
-  A new upstream caller that calls the title model directly bypasses the guard.
-- **Tripwire paths:** `packages/coding-agent/src/utils/title-generator.ts`, `packages/coding-agent/src/task/label.ts`
+- **What it does:** With `PI_NO_TITLE` set (what `--no-title` sets), `generateTaskLabel`
+  returns `null` before building its request, so spawning a subagent sends no
+  title-model request for its UI label. Titles the user asks for (`/rename` with no
+  argument, title cards, the plan-save filename suggestion) are still generated.
+- **Why:** Upstream already gates every automatic session title at its call sites (first
+  title, deferred retitle, replan refresh, tiny-model prewarm), but subagent labels still
+  sent title-model requests the user had turned off. An earlier fork cut also guarded
+  `generateSessionTitle` itself, which broke `/rename`, title cards and plan-save names
+  under `--no-title` and in every RPC/ACP session; that guard was removed.
+- **Files:** `packages/coding-agent/src/task/label.ts` (the `PI_NO_TITLE` early return in
+  `generateTaskLabel`), `docs/environment-variables.md` (the `PI_NO_TITLE` row),
+  `docs/rpc.md` (the RPC-mode title bullet).
+- **Depends on upstream:** `packages/coding-agent/src/main.ts` mapping `--no-title` to
+  `PI_NO_TITLE`, and setting it unconditionally in `rpc`, `rpc-ui` and `acp` modes, so
+  those hosts get no subagent labels either; the task executor's spawn path being the
+  only caller of `generateTaskLabel`; upstream's own `PI_NO_TITLE` checks at the
+  automatic-title call sites in `packages/coding-agent/src/session/agent-session.ts` and
+  `packages/coding-agent/src/modes/interactive-mode.ts`; explicit generation
+  (`AgentSession.generateTitle`) calling `generateSessionTitle` in
+  `packages/coding-agent/src/utils/title-generator.ts` with no `PI_NO_TITLE` guard. A new
+  upstream automatic-title caller that skips the env check is upstream's gap, not this
+  entry's.
+- **Tripwire paths:** `packages/coding-agent/src/task/label.ts`, `packages/coding-agent/src/task/executor.ts`, `packages/coding-agent/src/utils/title-generator.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/session/agent-session.ts`
 - **Must still be true:**
   - With `PI_NO_TITLE` set, task label generation returns `null` and makes no model call.
-  - With `PI_NO_TITLE` set, session title generation returns `null` and makes no model
-    call.
+  - With `PI_NO_TITLE` set, `generateSessionTitle` still requests a title, so `/rename`,
+    title cards and plan-save names keep working.
 - **Check:** `bun test packages/coding-agent/test/task-label.test.ts`

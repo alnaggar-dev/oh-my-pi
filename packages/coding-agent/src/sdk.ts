@@ -50,7 +50,6 @@ import {
 	formatAdvisorMemoryPrompt,
 } from "./advisor";
 import { AsyncJobManager, type AsyncJobManagerApi } from "./async";
-import { AUTO_THINKING_ACTIVITY_EVENT_CHANNEL } from "./auto-thinking/activity-events";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
 import { createAutoresearchExtension } from "./autoresearch";
 import { loadCapability, reset as resetCapabilities } from "./capability";
@@ -5091,7 +5090,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
 			thinkingLevelCeiling: options.thinkingLevelCeiling,
 			disableModelFallback: options.disableModelFallback,
-			onAutoThinkingActivity: frame => subagentEventBus.emit(AUTO_THINKING_ACTIVITY_EVENT_CHANNEL, frame),
 			initialRetryFallback,
 			deferRetryFallbackValidation: options.deferRetryFallbackValidation,
 			prewalk,
