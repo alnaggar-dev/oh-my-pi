@@ -1673,8 +1673,9 @@ export class WorkerCore {
 				// IntersectionObserver, and input acknowledgements. Keep owned tabs
 				// interactive without raising a window; explicit settle-freeze still applies.
 				await this.#page.emulateFocusedPage(true);
-				// Relay tabs keep their debugger attachment after this worker disconnects.
-				this.#releaseFocusOnClose = payload.mode !== "headless";
+				// Relay tabs keep their debugger attachment after this worker disconnects; a recycled
+				// headless tab attaches too, but it is not user-driven and closes with its worker.
+				this.#releaseFocusOnClose = payload.mode === "attach" && payload.userDriven === true;
 			}
 			this.#webmcp = await installWebMcp(this.#page);
 			await installVitalsObservers(this.#page);

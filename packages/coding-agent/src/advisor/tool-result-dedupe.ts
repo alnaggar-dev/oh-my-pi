@@ -1,7 +1,9 @@
 import type { AfterToolCallResult, AgentMessage, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { formatOutputNotice, type OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
-import { toolCallSignature } from "./cumulative-loop-guard";
+import { stableStringifyJson } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
+import { latestReviewStart } from "./tool-result-eviction";
 
 /** Ceiling on tracked signatures so a long advisor session cannot grow the registry without bound. */
 const MAX_TRACKED_SIGNATURES = 4096;
@@ -11,6 +13,23 @@ export const DEDUPED_RESULT_NOTICE = "[Unchanged since your earlier identical ca
 
 /** Opening of the hint upstream `read` appends (`appendRepeatReadHint` in `tools/read.ts`); the count follows. */
 const REPEAT_READ_HINT_HEAD = "\n\n[You have received this identical output ";
+
+const LEGACY_INTENT_FIELD = "__intent";
+
+function withoutIntent(args: unknown): unknown {
+	if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+	const { [INTENT_FIELD]: _intent, [LEGACY_INTENT_FIELD]: _legacyIntent, ...rest } = args as Record<string, unknown>;
+	return rest;
+}
+
+/**
+ * Stable identity for one tool call: name plus arguments with object keys
+ * sorted and the agent-authored intent dropped, so cosmetic argument
+ * reordering or a reworded intent never hides a genuine repeat.
+ */
+export function toolCallSignature(name: string, args: unknown): string {
+	return stableStringifyJson([name, withoutIntent(args)]);
+}
 
 /**
  * Drops the repeat hint upstream `read` appended to `text` for a call whose
@@ -70,12 +89,19 @@ function comparableText(
  * repeat re-inflates the very prefix stale-result eviction just trimmed, so
  * without this the two levers fight each other.
  *
- * Liveness is checked by scanning the advisor's live message array for the
- * recorded tool-call id instead of clearing the registry on reset, rollback or
- * compaction. A rolled-back, compacted-away or evicted result is simply not
- * found (or carries `prunedAt`), which reads as a miss, serves the full result
- * again and overwrites the entry — so no lifecycle hook can leave the advisor
- * pointing at a copy that is no longer in its context.
+ * A repeat is a hit only while the original result sits in the current
+ * review, at or after the latest non-synthetic user delta. Stale-result
+ * eviction (`evictStaleToolResults`) protects exactly that span, so an
+ * original from an earlier review may be blanked before the next request
+ * while this review's stub survives, leaving the advisor with neither copy. A
+ * cross-review repeat therefore serves the full result and becomes the new
+ * tracked original.
+ *
+ * Liveness is checked by scanning that span for the recorded tool-call id
+ * instead of clearing the registry on reset, rollback or compaction. A
+ * rolled-back, compacted-away or evicted result is simply not found (or
+ * carries `prunedAt`), which reads as a miss, serves the full result again and
+ * overwrites the entry.
  */
 export class AdvisorToolResultDedupe {
 	/** Call signature → id of the tool call whose still-live result answers it. */
@@ -111,7 +137,8 @@ export class AdvisorToolResultDedupe {
 	): boolean {
 		const text = comparableText(toolCall, result.content, result.details);
 		if (text === undefined) return false;
-		for (let i = messages.length - 1; i >= 0; i--) {
+		const reviewStart = latestReviewStart(messages);
+		for (let i = messages.length - 1; i >= reviewStart; i--) {
 			const message = messages[i]!;
 			if (message.role !== "toolResult" || message.toolCallId !== priorId) continue;
 			if (message.prunedAt !== undefined || message.isError) return false;

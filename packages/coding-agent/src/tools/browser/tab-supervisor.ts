@@ -1759,8 +1759,9 @@ function safeSend(tab: WorkerTabSession, msg: WorkerInbound): void {
 /**
  * Route a live tab's worker traffic to the supervisor and turn an unexpected
  * worker exit (uncaught error, unhandled rejection, `process.exit`) into the
- * force-kill path: pending runs reject now, the tab leaves the live list, and
- * the next call reports the kill instead of `Worker has been terminated`.
+ * force-kill path: pending runs reject now and their host tool calls abort, the
+ * tab leaves the live list, and the next call reports the kill instead of
+ * `Worker has been terminated`.
  * Supervisor-initiated `terminate()` never fires `onExit`, and the identity
  * checks ignore a worker a recycle already replaced.
  */
@@ -1781,6 +1782,9 @@ function attachTabWorker(tab: WorkerTabSession, worker: WorkerHandle): void {
 			exitCode,
 			error: lastError?.message,
 		});
+		// The kill rejects the runs but not the host tool calls they started, whose replies only reach a dead worker.
+		const killed = postmortem.markExpectedCleanupError(new ToolError(reason));
+		for (const pending of tab.pending.values()) for (const ctrl of pending.toolCalls.values()) ctrl.abort(killed);
 		forceKillTab(tab.name, reason).catch(error => {
 			logger.warn("Failed to clean up browser tab after its worker exited", {
 				name: tab.name,

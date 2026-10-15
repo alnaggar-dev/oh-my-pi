@@ -52,7 +52,12 @@ const TOOLS: Context["tools"] = [
 
 async function captureWireBody(
 	messages: Message[],
-	{ apiKey = "sk-ant-api-test", systemPrompt = ["You are a precise assistant."], tools = TOOLS } = {},
+	{
+		apiKey = "sk-ant-api-test",
+		systemPrompt = ["You are a precise assistant."],
+		tools = TOOLS,
+		model = MODEL,
+	}: { apiKey?: string; systemPrompt?: string[]; tools?: Context["tools"]; model?: Model<"anthropic-messages"> } = {},
 ): Promise<MessageCreateParams> {
 	let body: MessageCreateParams | undefined;
 	const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
@@ -63,7 +68,7 @@ async function captureWireBody(
 		);
 	}) as typeof fetch;
 
-	await streamAnthropic(MODEL, { systemPrompt, messages, tools }, { apiKey, fetch: fetchMock })
+	await streamAnthropic(model, { systemPrompt, messages, tools }, { apiKey, fetch: fetchMock })
 		.result()
 		.catch(() => undefined);
 
@@ -236,22 +241,47 @@ describe("anthropic rewrite-boundary caching", () => {
 		expect(cachedMessageIndices(rebilled)).not.toContain(3);
 	});
 
-	it("derives the boundary from the newest rewrite batch only", async () => {
+	it("starts the region at the earliest unbilled rewrite, not the newest", async () => {
+		// Two prune passes before one request: cycle 3 (deep) at t=1000, cycle 11
+		// (shallow) at t=2000. Neither is billed, so the region starts at cycle 3.
 		const body = await captureWireBody(
 			history(
 				12,
 				new Map([
 					[3, 1_000],
-					[7, 2_000],
+					[11, 2_000],
 				]),
 			),
 		);
 
-		const cached = cachedMessageIndices(body);
-		// Cycle 7 (the later batch) starts at index 14, so the boundary is 13.
-		expect(cached).toContain(13);
-		// Cycle 3's boundary (index 5) belongs to an already re-billed batch.
-		expect(cached).not.toContain(5);
+		// Index 5 is cycle 3's assistant; index 25 is the trailing user turn.
+		expect(cachedMessageIndices(body)).toEqual([5, 25]);
+	});
+
+	it("ignores an older rewrite a later request already billed", async () => {
+		// Cycle 3 was pruned at t=25, before cycle 3's assistant (t=31) was sent;
+		// only the shallow cycle-11 rewrite is unbilled, and the tail bridges it.
+		const body = await captureWireBody(
+			history(
+				12,
+				new Map([
+					[3, 25],
+					[11, 2_000],
+				]),
+			),
+		);
+		const unpruned = await captureWireBody(history(12, new Map()));
+
+		expect(cachedMessageIndices(body)).toEqual(cachedMessageIndices(unpruned));
+	});
+
+	it("adds no boundary for a model without a catalog lookback", async () => {
+		const model = buildModel({ ...MODEL_SPEC, id: "kimi-k2", name: "Kimi K2" });
+		const pruned = await captureWireBody(history(10, new Map([[2, 1_000]])), { model });
+		const unpruned = await captureWireBody(history(10, new Map()), { model });
+
+		expect(cachedMessageIndices(unpruned)).toContain(21);
+		expect(cachedMessageIndices(pruned)).toEqual(cachedMessageIndices(unpruned));
 	});
 
 	it("skips reasoning blocks when the boundary message ends in thinking", async () => {
@@ -280,16 +310,82 @@ describe("anthropic rewrite-boundary caching", () => {
 		expect(cachedMessageIndices(body)).toEqual([3, 21]);
 	});
 
-	it("takes the decimation anchor's slot in a long session with two message breakpoints", async () => {
+	it("ranks the boundary above decimation anchors inside the rewritten region", async () => {
 		// 17 user turns: the 15th (index 56) is upstream's decimation anchor.
-		// Turn 3's result is pruned, so the boundary is turn 3's assistant (9).
+		// Turn 3's result is pruned, so the boundary is turn 3's assistant (9)
+		// and the anchor sits inside the rewritten region.
 		const unpruned = await captureWireBody(longSession(16, []));
 		const pruned = await captureWireBody(longSession(16, [3]));
 
 		expect(cachedMessageIndices(unpruned)).toEqual([56, 64]);
 		// System + tool anchors leave two message breakpoints: the trailing turn
-		// keeps one and the boundary outranks the decimation anchor for the other.
+		// keeps one and the boundary outranks the in-region anchor for the other.
 		expect(cachedMessageIndices(pruned)).toEqual([9, 64]);
+		expect(countCacheBreakpoints(pruned)).toBe(4);
+	});
+
+	it("keeps the boundary ahead of a decimation anchor within its lookback", async () => {
+		// 20 user turns: the decimation anchor is turn 15's user message (56).
+		// Turn 15's result is pruned, so the boundary (57) sits right after the
+		// anchor and its own lookback reaches the anchor's entry.
+		const unpruned = await captureWireBody(longSession(19, []));
+		const pruned = await captureWireBody(longSession(19, [15]));
+
+		expect(cachedMessageIndices(unpruned)).toEqual([56, 76]);
+		expect(cachedMessageIndices(pruned)).toEqual([57, 76]);
+		expect(countCacheBreakpoints(pruned)).toBe(4);
+	});
+
+	it("ranks a decimation anchor beyond the boundary's lookback ahead of the boundary", async () => {
+		// 25 user turns: the decimation anchor is turn 15's user message (56).
+		// Turn 20's result is pruned; the boundary (77) is 27 positions past the
+		// anchor, so its lookback cannot reach the anchor's entry.
+		const unpruned = await captureWireBody(longSession(24, []));
+		const pruned = await captureWireBody(longSession(24, [20]));
+
+		expect(cachedMessageIndices(unpruned)).toEqual([56, 96]);
+		// Two message breakpoints: trailing turn + the anchor; the boundary drops.
+		expect(cachedMessageIndices(pruned)).toEqual([56, 96]);
+		expect(countCacheBreakpoints(pruned)).toBe(4);
+	});
+
+	it("measures a decimation anchor's reach to the boundary's cache_control block, not past trailing thinking", async () => {
+		// 25 user turns: the decimation anchor is turn 15's user message (56).
+		// Turn 18's result is pruned, so the boundary is turn 18's tool_use
+		// assistant (69). Its two leading thinking blocks put its tool_use 19
+		// positions past the anchor — inside the lookback — while its trailing
+		// thinking block would make the whole message 20.
+		const messages = longSession(24, [18]);
+		const boundary = messages[69];
+		if (boundary.role !== "assistant") throw new Error("expected the boundary assistant at index 69");
+		boundary.content = [
+			{ type: "thinking", thinking: "planning", thinkingSignature: "sig-a" },
+			{ type: "thinking", thinking: "planning more", thinkingSignature: "sig-b" },
+			...boundary.content,
+			{ type: "thinking", thinking: "after the call", thinkingSignature: "sig-c" },
+		];
+		const body = await captureWireBody(messages);
+
+		const wireBoundary = body.messages[69];
+		if (!Array.isArray(wireBoundary.content)) throw new Error("expected block content on the boundary message");
+		expect(wireBoundary.content.map(block => block.type)).toEqual([
+			"thinking",
+			"thinking",
+			"text",
+			"tool_use",
+			"thinking",
+		]);
+		// The anchor's entry is within the boundary's reach, so the boundary
+		// keeps the second message breakpoint and the anchor does not take it.
+		expect(cachedMessageIndices(body)).toEqual([69, 96]);
+		expect(countCacheBreakpoints(body)).toBe(4);
+	});
+
+	it("keeps the far decimation anchor and the boundary when three message breakpoints remain", async () => {
+		// No tools, so only the system anchor spends a head breakpoint.
+		const pruned = await captureWireBody(longSession(24, [20]), { tools: [] });
+
+		expect(cachedMessageIndices(pruned)).toEqual([56, 77, 96]);
 		expect(countCacheBreakpoints(pruned)).toBe(4);
 	});
 
