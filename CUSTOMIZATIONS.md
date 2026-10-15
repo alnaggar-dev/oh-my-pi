@@ -440,6 +440,7 @@ does what I wanted".
     changes; if upstream re-attaches it on its own, the bullet's warning is stale.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-relay-bridge.test.ts packages/coding-agent/test/tools/browser-relay-server.test.ts`
 
+
 ### Crashed tab workers
 
 - **What it does:** After init, the supervisor watches each tab's worker: when it
