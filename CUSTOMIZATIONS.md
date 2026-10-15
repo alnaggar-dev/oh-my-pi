@@ -446,8 +446,9 @@ does what I wanted".
   (`emulateFocus` in the init payload, also when a timed-out tab is recycled), as
   headless tabs already do, so a relay tab behind the user's active tab keeps taking
   typed text and producing frames without being raised. When the worker closes it turns
-  the emulation off again, first in teardown and bounded to 250 ms, because the relay
-  keeps its debugger attached to the user's tab after the worker disconnects.
+  the emulation off again, before any awaited teardown step and bounded to 250 ms,
+  because the relay keeps its debugger attached to the user's tab after the worker
+  disconnects.
 - **Why:** Chrome drops typed text and stalls `requestAnimationFrame` in a background
   tab, so typing into a relay tab that was not the active Chrome tab silently lost input.
 - **Files:** `packages/coding-agent/src/tools/browser/tab-worker.ts`
@@ -468,8 +469,10 @@ does what I wanted".
 - **Must still be true:**
   - A relay tab emulates focus from attach until its worker closes, including after a
     timeout recycle; a connected, non-relay user tab never does.
-  - Closing a relay tab's worker turns focus emulation off before any other teardown
-    step, and a hung release cannot hold the close past the grace window.
+  - Closing a relay tab's worker turns focus emulation off before any awaited teardown
+    step (recording finalization, page and browser teardown); only the synchronous
+    unsubscribe, rejection-guard and element-cache cleanup run first. A hung release
+    cannot hold the close past the grace window.
   - Headless tabs still emulate focus and are closed as before.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-tab-worker-startup.test.ts`
   (worker init and background-tab input on headless Chromium; the relay path needs a
