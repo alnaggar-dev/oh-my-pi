@@ -76,7 +76,6 @@ import {
 	assistantUsageIsBilled,
 	splitAssistantMessageToolTimeline,
 } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
-import { AutoThinkingReadout } from "../auto-thinking-readout";
 import { isWarpCliAgentProtocolActive } from "../warp-events";
 import { ComposerPredictionController } from "./composer-prediction-controller";
 import { StreamingRevealController } from "./streaming-reveal";
@@ -313,7 +312,6 @@ export class EventController {
 	#toolArgsReveal: ToolArgsRevealController;
 	#prevHideThinking = false;
 	#handlers: AgentSessionEventHandlers;
-	readonly #autoThinkingReadout: AutoThinkingReadout;
 	#terminalProgressActive = false;
 	/**
 	 * Whether the running auto-compaction turned terminal progress on itself.
@@ -376,7 +374,6 @@ export class EventController {
 					})
 				: null,
 		);
-		this.#autoThinkingReadout = new AutoThinkingReadout(ctx);
 		this.#streamingReveal = new StreamingRevealController({
 			// Extension text renderers get the full text so far on each drawn update (deltas within one
 			// frame are coalesced), never a partly revealed prefix from the typing reveal.
@@ -489,7 +486,6 @@ export class EventController {
 	dispose(): void {
 		this.#detachToolApprovalPreviewWaiter?.();
 		this.#detachToolApprovalPreviewWaiter = undefined;
-		this.#autoThinkingReadout.dispose();
 		this.#clearApprovalPreviewGates();
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);

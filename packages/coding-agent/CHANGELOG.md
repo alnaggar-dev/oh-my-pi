@@ -771,6 +771,14 @@
 - Agents now send `todo` updates alongside their next tool call instead of spending a separate model turn on them ([#15402](https://github.com/can1357/oh-my-pi/pull/15402) by [@will-bogusz](https://github.com/will-bogusz))
 - The Shared Language Servers setting now says what it does: each connection gets its own server, and a released one is reused while another omp instance keeps the project's mux running ([#14633](https://github.com/can1357/oh-my-pi/pull/14633) by [@jorgoose](https://github.com/jorgoose))
 - Memories saved explicitly through the extension `memory.save` API are now stored as `stated` rather than `unknown`, so they rank as deliberate memories in Mnemopi recall ([#13824](https://github.com/can1357/oh-my-pi/pull/13824) by [@sjawhar](https://github.com/sjawhar))
+- Added `ctx.ui.getEditorComponent()` so extensions can wrap the active custom editor factory instead of replacing it ([#8655](https://github.com/can1357/oh-my-pi/pull/8655) by [@jovi-tsx](https://github.com/jovi-tsx))
+- Added `advisor.maxRequestsPerUpdate` (default 50, 0 = no cap): at the cap an advisor is told to advise or stop, and a review that keeps investigating is aborted
+- Added a warning notice when the auto-thinking classifier fails three turns in a row, naming the cause (timeout or error) and the fallback level it applied ([#7820](https://github.com/can1357/oh-my-pi/issues/7820))
+
+### Removed
+
+- Removed the advisor's whole-review repeated-call tally (5× the loop-guard threshold); the per-review request cap bounds runaway reviews instead
+- Removed the auto-thinking hook-status readout (`⟳ auto` / `🧠 8·2⚠`) and its subagent-tree rollup over the subagent event bus
 
 ### Fixed
 
@@ -871,6 +879,10 @@
 - Closed `read :raw` line ranges now return only the requested content, and newline-terminated files report their actual line count ([#15810](https://github.com/can1357/oh-my-pi/issues/15810)).
 - Fixed `/review` PR file assignments by including exact per-file diff URLs and preserving 1-based indexes across excluded files ([#15463](https://github.com/can1357/oh-my-pi/pull/15463) by [@tkossak](https://github.com/tkossak))
 - Fixed image attachments with uppercase MIME types being dropped; supported image MIME types are now matched case-insensitively ([#15765](https://github.com/can1357/oh-my-pi/pull/15765) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy))
+- Fixed the advisor's repeat-call de-duplication answering a repeat from an earlier review with the "unchanged" stub; stale-result eviction could then blank the original, leaving the advisor with neither copy. A cross-review repeat now gets the full output
+- Fixed the `advisor.projectContext` description, which claimed the omitted block held repo rules and the environment; it holds only the discovered project context files (AGENTS.md and the like)
+- Fixed `/rename` with no argument, title cards and plan-save filename suggestions failing under `--no-title` and in every RPC/ACP session; the switch again stops only automatic session titles, plus subagent task labels
+- Fixed host tool calls started by a browser `run` continuing after that tab's worker crashed; they are now aborted along with the run
 - Fixed `grep` and `ast_grep` returning no matches for a `path` glob that names directories, such as `src/{api,web}` or `src/we?`; matched directories are now searched recursively like a plain directory path, so `src/*` also searches files in `src`'s subdirectories ([#15760](https://github.com/can1357/oh-my-pi/issues/15760))
 - Fixed a structured `display()` value in an Eval cell appearing twice in the TUI and collab view, as text in the cell box and again as the JSON tree; it now shows once, as the tree, while the model still sees the text ([#10778](https://github.com/can1357/oh-my-pi/issues/10778), [#12730](https://github.com/can1357/oh-my-pi/pull/12730) by [@F0Rextasy](https://github.com/F0Rextasy))
 - `omp auth-gateway serve` now bounds its broker-backed session cache instead of growing with every distinct client session ([#15841](https://github.com/can1357/oh-my-pi/issues/15841)).

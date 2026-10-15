@@ -278,6 +278,8 @@
 - Fixed malformed image-generation inputs being forwarded to providers or reported as credential/upstream errors ([#15765](https://github.com/can1357/oh-my-pi/pull/15765) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
 - Fixed broker-backed auth-gateway processes retaining a cache entry for every distinct client session indefinitely under sustained traffic ([#15841](https://github.com/can1357/oh-my-pi/issues/15841)).
 - Fixed turns ending on a pinned error when a provider reports "temporarily unavailable" or finishes with an `unknown`, `other` or `unspecified` finish reason: these now retry automatically ([#15424](https://github.com/can1357/oh-my-pi/pull/15424) by [@lockwo](https://github.com/lockwo))
+- Fixed Anthropic prompt caching missing the deeper region when two history rewrites happened before one request: the extra breakpoint now sits before the earliest rewrite no request has sent yet
+- Fixed Anthropic prompt caching dropping a long session's decimation breakpoint for a rewrite breakpoint whose lookback cannot reach it; that anchor now keeps its slot, and the rewrite breakpoint reads the lookback from the model catalog instead of a hard-coded limit, so models without a catalog lookback no longer get one
 
 ## [18.11.0] - 2026-10-14
 

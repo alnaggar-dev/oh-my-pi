@@ -132,11 +132,34 @@ describe("AdvisorToolResultDedupe", () => {
 
 	it("matches across argument key order and intent wording", () => {
 		const dedupe = new AdvisorToolResultDedupe();
-		dedupe.check(call("t1", { path: "a.ts", i: "Reading the file" }), textResult("contents"), []);
+		dedupe.check(call("t1", { path: "a.ts", i: "Reading the file", __intent: "old" }), textResult("contents"), []);
 		const messages = [liveResult("t1", "contents")];
 		expect(
 			dedupe.check(call("t2", { i: "Checking it once more", path: "a.ts" }), textResult("contents"), messages),
 		).toEqual({ content: [{ type: "text", text: DEDUPED_RESULT_NOTICE }], useless: true });
+	});
+
+	it("serves the full result when an argument value differs", () => {
+		const dedupe = new AdvisorToolResultDedupe();
+		dedupe.check(call("t1", { path: "a.ts" }), textResult("contents"), []);
+		const messages = [liveResult("t1", "contents")];
+		expect(dedupe.check(call("t2", { path: "a.ts " }), textResult("contents"), messages)).toBeUndefined();
+	});
+
+	it("serves the full result when the original sits in an earlier review, then dedupes against the new copy", () => {
+		const dedupe = new AdvisorToolResultDedupe();
+		const review = (text: string): AgentMessage => ({ role: "user", content: text, timestamp: 1 }) as AgentMessage;
+		const messages: AgentMessage[] = [review("review 1")];
+		expect(dedupe.check(call("t1"), textResult("contents"), messages)).toBeUndefined();
+		messages.push(liveResult("t1", "contents"), review("review 2"));
+		// Eviction protects only the latest review, so a stub here would point at
+		// a copy the next eviction pass blanks.
+		expect(dedupe.check(call("t2"), textResult("contents"), messages)).toBeUndefined();
+		messages.push(liveResult("t2", "contents"));
+		expect(dedupe.check(call("t3"), textResult("contents"), messages)).toEqual({
+			content: [{ type: "text", text: DEDUPED_RESULT_NOTICE }],
+			useless: true,
+		});
 	});
 
 	it("never collapses a result carrying an image", () => {

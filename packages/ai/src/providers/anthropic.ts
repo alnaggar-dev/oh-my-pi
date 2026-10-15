@@ -85,7 +85,6 @@ import {
 	kStreamingBlockIndex,
 	kStreamingLastParseLen,
 	kStreamingPartialJson,
-	markRewriteAt,
 } from "../utils/block-symbols";
 import { withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
@@ -115,7 +114,7 @@ import {
 	type AnthropicMessagesClientLike,
 	calculateAnthropicRetryDelayMs,
 } from "./anthropic-client";
-import { findRewriteBoundary, hasUnbilledRewrite } from "./anthropic-rewrite-boundary";
+import { markUnbilledRewrite, rewriteBoundaryBreakpoints, rewritesBilledThrough } from "./anthropic-rewrite-boundary";
 import {
 	type ToolInputSchema as AnthropicToolInputSchema,
 	type Tool as AnthropicWireTool,
@@ -4170,22 +4169,29 @@ function ensureMaxTokensForThinking(params: MessageCreateParamsStreaming, maxAll
 	thinking.budget_tokens = output.budgetTokens;
 }
 
+// Anthropic rejects cache_control on generated reasoning, fallback
+// boundaries, and mid-conversation tool-control blocks. Preserve the
+// requested trailing boundary on ordinary content, including tool use
+// and tool results.
+function acceptsCacheControl(
+	block: ContentBlockParam,
+): block is Exclude<
+	ContentBlockParam,
+	{ type: "thinking" | "redacted_thinking" | "fallback" | "tool_addition" | "tool_removal" }
+> {
+	return (
+		block.type !== "thinking" &&
+		block.type !== "redacted_thinking" &&
+		block.type !== "fallback" &&
+		block.type !== "tool_addition" &&
+		block.type !== "tool_removal"
+	);
+}
+
 function applyCacheControlToLastBlock(blocks: ContentBlockParam[], cacheControl: AnthropicCacheControl): boolean {
 	for (let index = blocks.length - 1; index >= 0; index--) {
 		const block = blocks[index];
-		// Anthropic rejects cache_control on generated reasoning, fallback
-		// boundaries, and mid-conversation tool-control blocks. Preserve the
-		// requested trailing boundary on ordinary content, including tool use
-		// and tool results.
-		if (
-			block.type === "thinking" ||
-			block.type === "redacted_thinking" ||
-			block.type === "fallback" ||
-			block.type === "tool_addition" ||
-			block.type === "tool_removal"
-		) {
-			continue;
-		}
+		if (!acceptsCacheControl(block)) continue;
 		if ("cache_control" in block && block.cache_control != null) return false;
 		blocks[index] = { ...block, cache_control: cloneAnthropicCacheControl(cacheControl) };
 		return true;
@@ -4234,7 +4240,27 @@ function applyCacheControlToMessage(message: MessageParam, cacheControl: Anthrop
 	return false;
 }
 
-function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?: AnthropicCacheControl): void {
+/** Decimation checkpoints newest first: every 15th conversational user turn through `end`, counted from the oldest. */
+function* decimationCheckpoints(messages: readonly MessageParam[], end: number, userTurns: number): Generator<number> {
+	if (userTurns < ANTHROPIC_DECIMATION_INTERVAL) return;
+	let turnsSinceCheckpoint = userTurns % ANTHROPIC_DECIMATION_INTERVAL;
+	for (let index = end; index >= 0; index--) {
+		const message = messages[index];
+		if (!message || !isConversationalUser(message)) continue;
+		if (turnsSinceCheckpoint > 0) {
+			turnsSinceCheckpoint--;
+			continue;
+		}
+		turnsSinceCheckpoint = ANTHROPIC_DECIMATION_INTERVAL - 1;
+		yield index;
+	}
+}
+
+function applyPromptCaching(
+	params: MessageCreateParamsStreaming,
+	model: Model<"anthropic-messages">,
+	cacheControl?: AnthropicCacheControl,
+): void {
 	if (!cacheControl) return;
 
 	const headBreakpoints = countHeadBreakpoints(params);
@@ -4334,28 +4360,27 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 			appliedCount++;
 		}
 	}
-	const rewriteBoundary = findRewriteBoundary(params.messages, messageEnd);
-	if (rewriteBoundary >= 0 && appliedCount < messageBudget) {
-		const message = params.messages[rewriteBoundary];
-		if (message && applyCacheControlToMessage(message, cacheControl)) {
-			appliedCount++;
-		}
+	const rewriteBreakpoints = rewriteBoundaryBreakpoints(
+		params.messages,
+		trailingCandidates[0],
+		model,
+		message =>
+			message.clear_at !== "next_user_message" &&
+			!isPerCallContextMessage(message) &&
+			!isToolControlMessage(message),
+		acceptsCacheControl,
+		decimationCheckpoints(params.messages, stableMessageEnd, stableUserTurns),
+	);
+	for (const index of rewriteBreakpoints) {
+		if (appliedCount >= messageBudget) break;
+		const message = params.messages[index];
+		if (message && applyCacheControlToMessage(message, cacheControl)) appliedCount++;
 	}
 	// Stable historical decimation checkpoint every 15 user turns (15th, 30th, 45th...)
-	if (stableUserTurns >= ANTHROPIC_DECIMATION_INTERVAL) {
-		let turnsSinceCheckpoint = stableUserTurns % ANTHROPIC_DECIMATION_INTERVAL;
-		for (let index = stableMessageEnd; index >= 0 && appliedCount < messageBudget; index--) {
-			const message = params.messages[index];
-			if (!message || !isConversationalUser(message)) continue;
-			if (turnsSinceCheckpoint > 0) {
-				turnsSinceCheckpoint--;
-				continue;
-			}
-			turnsSinceCheckpoint = ANTHROPIC_DECIMATION_INTERVAL - 1;
-			if (applyCacheControlToMessage(message, cacheControl)) {
-				appliedCount++;
-			}
-		}
+	for (const index of decimationCheckpoints(params.messages, stableMessageEnd, stableUserTurns)) {
+		if (appliedCount >= messageBudget) break;
+		const message = params.messages[index];
+		if (message && applyCacheControlToMessage(message, cacheControl)) appliedCount++;
 	}
 	if (stableMessageEnd < messageEnd && stableMessageEnd >= 0 && appliedCount < messageBudget) {
 		const message = params.messages[stableMessageEnd];
@@ -5412,7 +5437,7 @@ function buildParams(
 
 	disableThinkingIfToolChoiceForced(params, model);
 	ensureMaxTokensForThinking(params, maxOutputTokens);
-	applyPromptCaching(params, cacheControl);
+	applyPromptCaching(params, model, cacheControl);
 
 	return { params, requestControls };
 }
@@ -5726,7 +5751,7 @@ export function convertAnthropicMessages(
 		}
 	}
 
-	const markRewrites = hasUnbilledRewrite(transformedMessages);
+	const rewritesBilledAt = rewritesBilledThrough(transformedMessages);
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const msg = transformedMessages[i];
@@ -6014,7 +6039,7 @@ export function convertAnthropicMessages(
 			// Add the current tool result
 			toolResults.push(buildToolResultBlock(model, msg, hoistedImages));
 			copyPerCallContextMessage(toolResultParam, msg);
-			if (markRewrites && msg.prunedAt !== undefined) markRewriteAt(toolResultParam, msg.prunedAt);
+			markUnbilledRewrite(toolResultParam, msg, rewritesBilledAt);
 
 			// Look ahead for consecutive toolResult messages
 			let j = i + 1;
@@ -6022,7 +6047,7 @@ export function convertAnthropicMessages(
 				const nextMsg = transformedMessages[j] as ToolResultMessage; // We know it's a toolResult
 				toolResults.push(buildToolResultBlock(model, nextMsg, hoistedImages));
 				copyPerCallContextMessage(toolResultParam, nextMsg);
-				if (markRewrites && nextMsg.prunedAt !== undefined) markRewriteAt(toolResultParam, nextMsg.prunedAt);
+				markUnbilledRewrite(toolResultParam, nextMsg, rewritesBilledAt);
 				j++;
 			}
 

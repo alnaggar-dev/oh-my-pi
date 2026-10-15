@@ -310,12 +310,9 @@ function modelThinkingDisplay(ctx: SegmentContext): string {
 	const opts = ctx.options.model ?? {};
 	if (opts.showThinkingLevel === false || !state.model?.thinking) return "";
 	if (ctx.session.isAutoThinking) {
-		// Pending (no turn classified yet / classifying) shows a symbol-theme
-		// question-box marker; once resolved it shows `<level>`.
-		const resolved = ctx.session.autoResolvedThinkingLevel();
-		return resolved
-			? (theme.thinking[resolved as keyof Theme["thinking"]] ?? resolved)
-			: `${theme.thinking.autoPending} auto`;
+		// The auto marker stays on the resolved level (`⟳ high`) so it reads
+		// apart from a pinned level; pending shows `⟳ auto`.
+		return `${theme.thinking.autoPending} ${ctx.session.autoResolvedThinkingLevel() ?? "auto"}`;
 	}
 	const level = state.thinkingLevel ?? ThinkingLevel.Off;
 	return level === ThinkingLevel.Off
@@ -390,7 +387,11 @@ const modelSegment: StatusLineSegment = {
 		if (advisor) spans.push(span(` ${advisor.icon}`, advisor.color));
 		if (ctx.session.isFastModeActive() && theme.icon.fast) spans.push(span(` ${theme.icon.fast}`, token));
 		const level = ctx.options.model?.showThinkingLevel === false ? undefined : thinkingLevelWord(ctx.session);
-		if (level !== undefined) spans.push(span(" · ", "dim"), span(level, thinkingLevelToken(level)));
+		if (level !== undefined) {
+			spans.push(span(" · ", "dim"));
+			if (ctx.session.isAutoThinking) spans.push(span(`${theme.thinking.autoPending} `, thinkingLevelToken(level)));
+			spans.push(span(level, thinkingLevelToken(level)));
+		}
 		const slowModeLabel = ctx.session.getAnthropicSlowModeLabel?.();
 		if (slowModeLabel) spans.push(span(`${theme.sep.dot}${slowModeLabel}`, "warning"));
 		return segView(spans, "model", slowModeLabel ? "warning" : undefined);
@@ -1042,7 +1043,8 @@ const cacheHitSegment: StatusLineSegment = {
 /**
  * Advisor roster as one block in the advisor role color (`accent`):
  * eye + running count (`N`, or `running/N` when some are not running), the
- * busiest live advisor's context percent (in `context_pct` warning colors),
+ * busiest live advisor's context percent (in `context_pct` warning colors,
+ * token thresholds included, from that advisor's context window),
  * and the session-total advisor cache-hit rate. Reads only live counters and
  * the session's memoized context percent, never advisor transcripts.
  */
@@ -1066,7 +1068,7 @@ const advisorSegment: StatusLineSegment = {
 
 		const usage = ctx.session.getAdvisorUsageSummary?.();
 		if (opts.showContext !== false && usage && usage.contextPercent !== null) {
-			const color = getContextUsageThemeColor(getContextUsageLevel(usage.contextPercent, 0));
+			const color = getContextUsageThemeColor(getContextUsageLevel(usage.contextPercent, usage.contextWindow));
 			const pct = theme.fg(color, `${Math.round(usage.contextPercent)}%`);
 			parts.push(withIcon(theme.icon.context ? theme.fg("accent", theme.icon.context) : "", pct));
 		}
@@ -1091,7 +1093,7 @@ const advisorSegment: StatusLineSegment = {
 		}
 		const usage = ctx.session.getAdvisorUsageSummary?.();
 		if (opts.showContext !== false && usage && usage.contextPercent !== null) {
-			const color = getContextUsageThemeColor(getContextUsageLevel(usage.contextPercent, 0));
+			const color = getContextUsageThemeColor(getContextUsageLevel(usage.contextPercent, usage.contextWindow));
 			spans.push(span(`${spans.length ? " " : ""}${Math.round(usage.contextPercent)}%`, color));
 		}
 		if (opts.showCacheHit !== false && usage?.cacheRead) {

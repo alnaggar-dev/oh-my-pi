@@ -2116,7 +2116,6 @@ export class AgentSession implements SettingsScope {
 			emit: event => this.#emit(event),
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
-			onAutoThinkingActivity: config.onAutoThinkingActivity,
 		};
 		this.#models = new ModelControls(modelControlsHost, {
 			scopedModels: config.scopedModels,
