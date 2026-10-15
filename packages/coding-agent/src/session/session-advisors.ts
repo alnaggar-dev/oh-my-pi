@@ -74,6 +74,7 @@ import {
 	resolveAdvisorDeliveryChannel,
 	slugifyAdvisorName,
 } from "../advisor";
+import { AdvisorRequestCap } from "../advisor/request-cap";
 import { AdvisorToolResultDedupe } from "../advisor/tool-result-dedupe";
 import { evictStaleToolResults } from "../advisor/tool-result-eviction";
 import type { ModelRegistry } from "../config/model-registry";
@@ -554,6 +555,8 @@ export interface AdvisorStatusOverviewEntry {
 export interface AdvisorUsageSummary {
 	/** Context usage of the busiest live advisor, or null when none reports a window. */
 	contextPercent: number | null;
+	/** That advisor's context window, so the segment applies `context_pct`'s token thresholds; 0 when none. */
+	contextWindow: number;
 	/** Session-total prompt-token split across every advisor, independent of retained history. */
 	cacheRead: number;
 	cacheWrite: number;
@@ -1383,9 +1386,9 @@ export class SessionAdvisors {
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
 			const systemPrompt = [prompt.render(advisorSystemPrompt, { max_notes_per_update: budgetPerUpdate })];
-			// `advisor.projectContext: false` drops the verbatim <project-context>
-			// block (AGENTS.md + rules + environment, ~10k tokens here) from every
-			// advisor request; the advisor can still read those files with its tools.
+			// `advisor.projectContext: false` drops the <project-context> block,
+			// the discovered context files (AGENTS.md and the like) verbatim, from
+			// every advisor request; the advisor can still read those files with its tools.
 			if (includeProjectContext && this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
 			if (this.#advisorMemoryPrompt) systemPrompt.push(this.#advisorMemoryPrompt);
 			if (this.#advisorWatchdogPrompt) systemPrompt.push(this.#advisorWatchdogPrompt);
@@ -1573,15 +1576,28 @@ export class SessionAdvisors {
 					advisorAgent.abort(reason);
 				},
 			});
+			// Fork: per-review request cap (advisor.maxRequestsPerUpdate).
+			const advisorRequestCap = new AdvisorRequestCap({
+				settings: this.#host.settings,
+				name: advisorName,
+				liveMessages: () => advisorAgent.state.messages,
+				appendMessage: message => advisorAgent.appendMessage(message),
+				abort: reason => {
+					advisorLoopGuardStopped = true;
+					advisorAgent.abort(reason);
+				},
+			});
 			advisorAgent.setOnTurnEnd((messages, signal, context) => {
 				if (signal?.aborted) return;
 				advisorLoopGuard.recordTurn(messages, context);
+				if (!advisorLoopGuardStopped) advisorRequestCap.recordTurn(messages, context);
 			});
 
 			const advisorAgentFacade: AdvisorAgent = {
 				prompt: async input => {
 					let quarantined: string | undefined;
 					advisorLoopGuard.reset();
+					advisorRequestCap.reset();
 					advisorLoopGuardStopped = false;
 					try {
 						quarantinedAdvisorOutput = undefined;
@@ -1612,6 +1628,7 @@ export class SessionAdvisors {
 				abort: reason => advisorAgent.abort(reason),
 				reset: () => {
 					advisorLoopGuard.reset();
+					advisorRequestCap.reset();
 					advisorLoopGuardStopped = false;
 					advisorAgent.reset();
 					appendOnlyContext.log.clear();
@@ -2963,9 +2980,13 @@ export class SessionAdvisors {
 	 */
 	getAdvisorUsageSummary(): AdvisorUsageSummary | undefined {
 		let contextPercent: number | null = null;
+		let contextWindow = 0;
 		for (const advisor of this.#advisors) {
 			const percent = this.#advisorContextPercent(advisor);
-			if (percent !== null && (contextPercent === null || percent > contextPercent)) contextPercent = percent;
+			if (percent !== null && (contextPercent === null || percent > contextPercent)) {
+				contextPercent = percent;
+				contextWindow = advisor.agent.state.model.contextWindow ?? 0;
+			}
 		}
 		let cacheRead = 0;
 		let cacheWrite = 0;
@@ -2976,7 +2997,7 @@ export class SessionAdvisors {
 			input += usage.input;
 		}
 		if (this.#advisors.length === 0 && this.#advisorPromptUsage.size === 0) return undefined;
-		return { contextPercent, cacheRead, cacheWrite, input };
+		return { contextPercent, contextWindow, cacheRead, cacheWrite, input };
 	}
 
 	#advisorContextPercent(advisor: ActiveAdvisor): number | null {

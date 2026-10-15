@@ -1,5 +1,5 @@
 import { Settings } from "../../config/settings";
-import type { AgentSession } from "../../session/agent-session";
+import type { AdvisorUsageSummary, AgentSession } from "../../session/agent-session";
 
 export const GALLERY_CONTEXT_WINDOW = 200_000;
 
@@ -12,7 +12,7 @@ export interface GallerySessionOptions {
 	/** Multi-advisor roster; overrides {@link advisorStatus}. */
 	advisorStatuses?: readonly AdvisorPreviewStatus[];
 	advisorYielded?: boolean;
-	advisorUsage?: { contextPercent: number | null; cacheRead: number; cacheWrite: number; input: number };
+	advisorUsage?: AdvisorUsageSummary;
 	usingSubscription?: boolean;
 	cost?: number;
 	premiumRequests?: number;
@@ -79,7 +79,13 @@ export function createGallerySession(options: GallerySessionOptions = {}): Agent
 		getAdvisorCost: () => options.advisorCost ?? 0.08,
 		getAdvisorUsageSummary: () =>
 			advisorStatuses.length > 0
-				? (options.advisorUsage ?? { contextPercent: 12, cacheRead: 44_200, cacheWrite: 2_800, input: 3_000 })
+				? (options.advisorUsage ?? {
+						contextPercent: 12,
+						contextWindow: GALLERY_CONTEXT_WINDOW,
+						cacheRead: 44_200,
+						cacheWrite: 2_800,
+						input: 3_000,
+					})
 				: undefined,
 		isAdvisorUsingSubscription: () => false,
 		getPrewalkState: () => false,

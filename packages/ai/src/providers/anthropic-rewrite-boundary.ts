@@ -1,140 +1,154 @@
-import type { Message } from "../types";
-import { isPerCallContextMessage, rewriteAtOf } from "../utils/block-symbols";
+import { resolvePromptCacheLookback } from "@oh-my-pi/pi-catalog/compat/prompt-cache-lookback";
+import type { Message, Model } from "../types";
 import type { MessageParam } from "./anthropic-wire";
 
-/** Lookback positions a rewritten region may span before it gets its own breakpoint. */
-const ANTHROPIC_REWRITE_BOUNDARY_POSITIONS = 16;
+/**
+ * Marks a tool_result wire message that carries a history rewrite no request
+ * has billed yet. Symbol-keyed so the mark never reaches the wire and never
+ * persists across the JSONL round-trip.
+ */
+const kUnbilledRewrite = Symbol("anthropic.message.unbilledRewrite");
 
-/** Cache-lookback positions spanned by `messages[start..end]`. */
-function countLookbackPositions(messages: readonly MessageParam[], start: number, end: number): number {
+/** Carries the unbilled-rewrite mark without exposing a string-keyed property. */
+type UnbilledRewriteCarrier = object & { [kUnbilledRewrite]?: true };
+
+/**
+ * Billing cutoff for history rewrites: the newest assistant timestamp in
+ * `messages`. A rewrite whose `prunedAt` is older was already sent by the
+ * request that produced that turn; that request paid for it and wrote its own
+ * tail entry, which every later tail reaches.
+ */
+export function rewritesBilledThrough(messages: readonly Message[]): number {
+	let billedThrough = Number.NEGATIVE_INFINITY;
+	for (const message of messages) {
+		if (message.role === "assistant" && message.timestamp > billedThrough) billedThrough = message.timestamp;
+	}
+	return billedThrough;
+}
+
+/** Marks `target` when `source` was rewritten after `billedThrough` (see `rewritesBilledThrough`). */
+export function markUnbilledRewrite(
+	target: UnbilledRewriteCarrier,
+	source: { readonly prunedAt?: number },
+	billedThrough: number,
+): void {
+	if (source.prunedAt !== undefined && source.prunedAt >= billedThrough) target[kUnbilledRewrite] = true;
+}
+
+/** Whether a wire content block can carry `cache_control` (shared with `applyCacheControlToLastBlock`). */
+export type AcceptsCacheControl = (block: Exclude<MessageParam["content"], string>[number]) => boolean;
+
+/** Index of the block that receives a message breakpoint's `cache_control`, or -1 when none can. */
+function cacheControlBlockIndex(message: MessageParam, acceptsCacheControl: AcceptsCacheControl): number {
+	const content = message.content;
+	if (typeof content === "string") return 0;
+	for (let index = content.length - 1; index >= 0; index--) {
+		if (acceptsCacheControl(content[index])) return index;
+	}
+	return -1;
+}
+
+/**
+ * Cache-lookback positions from just after the `cache_control` block of
+ * `messages[after]` (exclusive; `after < 0` starts at the first message)
+ * through the `cache_control` block of `messages[through]` (inclusive): one per
+ * content block, except that a run of consecutive `tool_use` blocks, or of
+ * consecutive `tool_result` blocks, is one position.
+ */
+function countLookbackPositions(
+	messages: readonly MessageParam[],
+	after: number,
+	through: number,
+	acceptsCacheControl: AcceptsCacheControl,
+): number {
 	let positions = 0;
 	let previousType: string | undefined;
-	for (let index = start; index <= end; index++) {
+	for (let index = Math.max(after, 0); index <= through; index++) {
 		const message = messages[index];
 		if (!message) continue;
-		const content = message.content;
-		if (typeof content === "string") {
+		const content = typeof message.content === "string" ? [{ type: "text" }] : message.content;
+		// Without a cc-capable block, use the whole message: start at its first
+		// block and end at its last, which overstates the distance (adds breakpoints).
+		const ccIndex = cacheControlBlockIndex(message, acceptsCacheControl);
+		const first = index === after ? ccIndex + 1 : 0;
+		const last = index === through && ccIndex >= 0 ? ccIndex : content.length - 1;
+		for (let blockIndex = first; blockIndex <= last; blockIndex++) {
+			const type = content[blockIndex].type;
+			if (type === previousType && (type === "tool_use" || type === "tool_result")) continue;
 			positions++;
-			previousType = "text";
-			continue;
-		}
-		for (const block of content) {
-			// Runs of tool_use / tool_result blocks collapse to one position each,
-			// so a wide parallel-tool turn does not evict the previous entry.
-			if (block.type === previousType && (block.type === "tool_use" || block.type === "tool_result")) continue;
-			positions++;
-			previousType = block.type;
+			previousType = type;
 		}
 	}
 	return positions;
 }
 
 /**
- * Whether `applyPromptCaching` would itself anchor on `message`: the same
- * filter it applies to its trailing candidates. A per-call message is rebuilt
- * next request and a turn-scoped (`clear_at`) one is absent from it, so a
- * breakpoint on either never matches; tool-control messages reject
- * `cache_control` outright.
+ * Message breakpoints a history rewrite adds after the trailing one, highest
+ * priority first; `applyPromptCaching` decorates them while its budget lasts,
+ * ahead of the decimation anchors.
+ *
+ * An in-place rewrite (advisor stale-result eviction, shake, snapcompact
+ * retracts, tool-output pruning) changes every prefix hash from the first
+ * rewritten message on. The region starts at the earliest message among all
+ * unbilled rewrites (`markUnbilledRewrite`); rewrites a previous request
+ * already sent never count. The tail breakpoint then has to look back past
+ * the whole region for a live entry. The model's prompt cache checks a fixed
+ * number of block positions behind a breakpoint, the breakpoint included
+ * (catalog `prompt-cache-lookback`; Claude: 20). Past that the lookup falls
+ * back to the previous explicit breakpoint and everything in between is
+ * re-billed at the cache-write premium.
+ *
+ * The boundary is the last message before the region that `isAnchorable`
+ * accepts (the filter `applyPromptCaching` applies to its trailing
+ * candidates). The nearest entry that can still be live ends the message
+ * before it: the tail an earlier request wrote before the boundary turn was
+ * generated. Spans run between `cache_control` blocks (the last block
+ * `acceptsCacheControl` admits; trailing thinking is outside them). The tail
+ * reaches that entry while fewer positions than the lookback separate it from
+ * the tail's block; then nothing is added. Otherwise a breakpoint on the
+ * boundary has its own lookback and limits the re-bill to the bytes after the
+ * entry it finds. That entry lives for the TTL `getCacheControl` picks; when it
+ * has expired the boundary only writes a fresh one. The boundary is needed by
+ * this request alone: its tail entry covers the rewrite for every later
+ * request, and the rewrite counts as billed from then on.
+ *
+ * The newest decimation anchor before the region (`decimationCheckpoints`
+ * yields them newest first) is refreshed by every request, so it is a
+ * guaranteed hit. When it sits within the lookback behind the boundary, the
+ * boundary's lookup reaches its entry and the boundary ranks first; when it
+ * sits farther back, the anchor ranks ahead of the boundary. Anchors inside
+ * or after the region rank below the boundary.
+ *
+ * Returns nothing when there is no trailing breakpoint (`tail`), no unbilled
+ * rewrite before it, no anchorable message before the region, or the model
+ * has no known lookback.
  */
-function isAnchorable(message: MessageParam | undefined): boolean {
-	if (!message || message.clear_at === "next_user_message" || isPerCallContextMessage(message)) return false;
-	return !(
-		message.role === "system" &&
-		typeof message.content !== "string" &&
-		Array.isArray(message.content) &&
-		message.content.length > 0 &&
-		message.content.every(block => block.type === "tool_addition" || block.type === "tool_removal")
-	);
-}
-
-/**
- * Index of the last anchorable wire message before a rewritten region too deep
- * for the tail breakpoint's lookback to bridge, or -1 when no such region
- * exists. `applyPromptCaching` ranks it right after the most recent trailing
- * message.
- *
- * An in-place history rewrite (advisor stale-result eviction, tool-output
- * pruning) changes every prefix hash from the first rewritten message on.
- * The tail breakpoint then has to walk back past the whole rewritten region
- * to find a still-valid entry. Anthropic checks at most 20 positions behind a
- * breakpoint (a run of consecutive `tool_use` blocks counts as one position,
- * and so does a run of consecutive `tool_result` blocks); once the region is
- * longer than that the walk finds nothing, the check falls back to the
- * previous explicit breakpoint (up to 15 user turns earlier), and the entire
- * span in between is re-billed at the cacheWrite premium. An extra breakpoint
- * on the last message BEFORE the rewritten region has its own 20-position
- * lookback, which limits the re-bill to the bytes after the entry it finds —
- * but only when a still-live cache entry sits within those 20 positions behind
- * it: one an earlier request wrote there (its tail or decimation anchor while
- * the conversation was at that point), or the head anchors when the region starts
- * near the top. The previous request's tail lies past the rewrite, so it never
- * qualifies. An entry lives for the TTL `getCacheControl` picks: 5 minutes by
- * default on API keys, 1 hour by default on OAuth when the model supports long
- * retention, and whatever an explicit `cacheRetention` or `PI_CACHE_RETENTION`
- * selects. With no such entry the boundary only writes a fresh one and the
- * prefix behind it is re-billed as before.
- *
- * Gated on length: a region within `ANTHROPIC_REWRITE_BOUNDARY_POSITIONS`
- * (a few under the 20-position limit, since the next request appends a turn
- * or two on top of the region measured here) stays inside the tail's own
- * lookback and keeps the default trailing/decimation layout.
- *
- * Only the newest rewrite batch matters: everything an older pass touched was
- * already re-billed by the request that followed it. The marks this reads are
- * stamped by `convertAnthropicMessages` only while no assistant turn
- * postdates the rewrite (see `hasUnbilledRewrite`), so the anchor disappears
- * once a later request has paid for the rewrite.
- *
- * The anchor spends a message breakpoint, and the message budget is 4 minus
- * the head breakpoints. When the head already spends 3 (OAuth identity block,
- * the stable-system anchor in front of a `<memories>` recall suffix, and the
- * tool anchor), the single remaining breakpoint goes to the trailing message
- * and the anchor is dropped.
- */
-export function findRewriteBoundary(messages: readonly MessageParam[], messageEnd: number): number {
-	let latestRewriteAt: number | undefined;
-	for (let index = 0; index <= messageEnd; index++) {
-		const rewriteAt = rewriteAtOf(messages[index]);
-		if (rewriteAt !== undefined && (latestRewriteAt === undefined || rewriteAt > latestRewriteAt)) {
-			latestRewriteAt = rewriteAt;
-		}
+export function rewriteBoundaryBreakpoints(
+	messages: readonly (MessageParam & UnbilledRewriteCarrier)[],
+	tail: number | undefined,
+	model: Model,
+	isAnchorable: (message: MessageParam) => boolean,
+	acceptsCacheControl: AcceptsCacheControl,
+	decimationCheckpoints: Iterable<number>,
+): number[] {
+	if (tail === undefined) return [];
+	let regionStart = 0;
+	while (regionStart <= tail && messages[regionStart]?.[kUnbilledRewrite] !== true) regionStart++;
+	if (regionStart > tail) return [];
+	let boundary = regionStart - 1;
+	for (; boundary >= 0; boundary--) {
+		const message = messages[boundary];
+		if (message && isAnchorable(message)) break;
 	}
-	if (latestRewriteAt === undefined) return -1;
-	for (let index = 0; index <= messageEnd; index++) {
-		if (rewriteAtOf(messages[index]) !== latestRewriteAt) continue;
-		if (countLookbackPositions(messages, index, messageEnd) <= ANTHROPIC_REWRITE_BOUNDARY_POSITIONS) return -1;
-		for (let boundary = index - 1; boundary >= 0; boundary--) {
-			if (isAnchorable(messages[boundary])) return boundary;
-		}
-		return -1;
+	if (boundary < 0) return [];
+	const lookback = resolvePromptCacheLookback(model);
+	if (lookback === undefined || countLookbackPositions(messages, boundary - 1, tail, acceptsCacheControl) < lookback)
+		return [];
+	for (const checkpoint of decimationCheckpoints) {
+		if (checkpoint >= regionStart) continue;
+		return countLookbackPositions(messages, checkpoint, boundary, acceptsCacheControl) < lookback
+			? [boundary]
+			: [checkpoint, boundary];
 	}
-	return -1;
-}
-
-/**
- * Whether the newest history rewrite among `messages` has not yet been sent.
- *
- * A rewrite is re-billed by the first request sent after it; the tail
- * breakpoint that request writes then sits within the lookback of every later
- * tail. So `convertAnthropicMessages` stamps pruned tool_result wire messages
- * with their `prunedAt` (read back by `findRewriteBoundary`) only while no
- * assistant turn after the rewritten region postdates it — afterwards the
- * layout stays exactly the pre-rewrite one.
- */
-export function hasUnbilledRewrite(messages: readonly Message[]): boolean {
-	let latestRewriteAt: number | undefined;
-	let firstRewriteIndex = -1;
-	for (let i = 0; i < messages.length; i++) {
-		const msg = messages[i];
-		if (msg.role !== "toolResult" || msg.prunedAt === undefined) continue;
-		if (latestRewriteAt === undefined || msg.prunedAt > latestRewriteAt) {
-			latestRewriteAt = msg.prunedAt;
-			firstRewriteIndex = i;
-		}
-	}
-	const rewriteAt = latestRewriteAt;
-	return (
-		rewriteAt !== undefined &&
-		!messages.some((msg, index) => index > firstRewriteIndex && msg.role === "assistant" && msg.timestamp > rewriteAt)
-	);
+	return [boundary];
 }

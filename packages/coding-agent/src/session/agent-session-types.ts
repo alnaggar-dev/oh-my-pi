@@ -22,7 +22,6 @@ import type {
 import type { postmortem } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import type { AsyncJob, AsyncJobDeliveryState, AsyncJobManager } from "../async";
-import type { AutoThinkingActivityFrame } from "../auto-thinking/activity-events";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type { AgentDefinition } from "../task/types";
 import type { SessionAccountPoolScope } from "../config/account-pools";
@@ -206,8 +205,6 @@ export interface AgentSessionConfig {
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); every later change, including retry-fallback recovery, is re-clamped to it. */
 	thinkingLevelCeiling?: Effort;
-	/** Auto-thinking classifier start/finish (sdk publishes it on the tree's subagent bus). */
-	onAutoThinkingActivity?: (frame: AutoThinkingActivityFrame) => void;
 	/** Retry chain ownership when startup selected one of its fallback entries. */
 	initialRetryFallback?: InitialRetryFallbackState;
 	/** Skip retry.fallbackChains validation at construction; the host calls `validateRetryFallbackChains()` later. */
