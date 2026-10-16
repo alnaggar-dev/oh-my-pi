@@ -223,7 +223,7 @@ does what I wanted".
   region when it lies beyond the boundary's lookback; the rewrite boundary; decimation
   anchors newest first; the newest message at or before the first per-call or
   turn-scoped mark; second trailing message.
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/ai/src/providers/anthropic.ts`, `packages/catalog/src/compat/prompt-cache-lookback.ts`, `packages/catalog/src/compat/rules/classes/anthropic.kdl`, `packages/agent/src/compaction/pruning.ts`
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/ai/src/providers/anthropic.ts`, `packages/ai/src/providers/anthropic-gzip.ts`, `packages/ai/src/utils/request-body.ts`, `packages/catalog/src/compat/prompt-cache-lookback.ts`, `packages/catalog/src/compat/rules/classes/anthropic.kdl`, `packages/agent/src/compaction/pruning.ts`
 - **Must still be true:**
   - A rewrite whose region reaches back at least the catalog lookback from the
     trailing breakpoint gets a breakpoint before it plus the usual trailing one, and
