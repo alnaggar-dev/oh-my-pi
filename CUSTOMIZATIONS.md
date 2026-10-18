@@ -223,7 +223,7 @@ does what I wanted".
   region when it lies beyond the boundary's lookback; the rewrite boundary; decimation
   anchors newest first; the newest message at or before the first per-call or
   turn-scoped mark; second trailing message.
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/ai/src/providers/anthropic.ts`, `packages/ai/src/providers/anthropic-gzip.ts`, `packages/ai/src/utils/request-body.ts`, `packages/catalog/src/compat/prompt-cache-lookback.ts`, `packages/catalog/src/compat/rules/classes/anthropic.kdl`, `packages/agent/src/compaction/pruning.ts`
+- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/ai/src/providers/anthropic.ts`, `packages/ai/src/utils/request-compression.ts`, `packages/ai/src/utils/request-body.ts`, `packages/catalog/src/compat/prompt-cache-lookback.ts`, `packages/catalog/src/compat/rules/classes/anthropic.kdl`, `packages/agent/src/compaction/pruning.ts`
 - **Must still be true:**
   - A rewrite whose region reaches back at least the catalog lookback from the
     trailing breakpoint gets a breakpoint before it plus the usual trailing one, and
@@ -439,45 +439,6 @@ does what I wanted".
   - A tab the user detached (not relay-initiated) is banned and retracted until its URL
     changes; if upstream re-attaches it on its own, the bullet's warning is stale.
 - **Check:** `bun test packages/coding-agent/test/tools/browser-relay-bridge.test.ts packages/coding-agent/test/tools/browser-relay-server.test.ts`
-
-### Crashed tab workers
-
-- **What it does:** After init, the supervisor watches each tab's worker: when it
-  exits on its own (uncaught error, unhandled rejection), the host tool calls its
-  pending runs started are aborted (their replies could only reach the dead worker)
-  and the tab is force-killed; when the required `run` send throws `InvalidStateError`
-  (`safeSend` stays log-only), the tab is force-killed. Either way pending runs fail at
-  once, the tab leaves `browser.tabs()`, and the next call says
-  `Tab "x" was killed: … Reopen it.`
-  The worker's last error is logged at warn level.
-- **Why:** A tab whose worker had died stayed listed as open and failed every call with
-  "Worker has been terminated" until it was closed and reopened by hand.
-- **Files:** `packages/coding-agent/src/tools/browser/tab-supervisor.ts`
-  (`WorkerHandle.onExit`, the `terminated` flag and `close` listener in `wrapBunWorker`,
-  the no-op `onExit` of the inline worker, `attachTabWorker` (with the tool-call abort
-  in its `onExit` handler) at the acquire site and in
-  the recycle's `publish` helper (both recycle attempts), and the `InvalidStateError`
-  branch around the `run` send).
-- **Depends on upstream:** Bun Workers firing `error` then `close` on an uncaught error
-  or unhandled rejection and `postMessage` throwing `InvalidStateError` afterwards
-  (checked on Bun 1.3.14); `installBrowserWorkerRejectionGuard` in
-  `packages/coding-agent/src/tools/run-scope.ts` rethrowing unowned rejections, which is
-  what kills a worker; `forceKillTab` joining an in-flight release (`releaseInflight`)
-  first and publishing its own teardown there before its first await, which is what
-  keeps a second kill from releasing the browser hold twice; `recoverWorkerTab` killing
-  only a tab that is still alive; `killedTabs` and the "was killed" message in
-  `runInTabWithSnapshot`; `safeSend` staying log-only, because an aborted run's own
-  error must win over a kill; `PendingRun.toolCalls` holding each in-flight host tool
-  call's `AbortController` (`dispatchToolCall`), and `forceKillTab` not aborting them
-  itself.
-- **Tripwire paths:** `packages/coding-agent/src/tools/browser/tab-supervisor.ts`, `packages/coding-agent/src/tools/browser/tab-worker.ts`, `packages/coding-agent/src/tools/browser/tab-worker-entry.ts`, `packages/coding-agent/src/tools/run-scope.ts`, `package.json`
-- **Must still be true:**
-  - A worker that dies after init kills its tab: the next run rejects with the
-    "was killed … Reopen it." error, not "Worker has been terminated", and the tab is
-    gone from the tab list.
-  - A worker that dies after init aborts the host tool calls its runs left in flight.
-  - Release, recycle and force-kill terminations are never reported as crashes.
-- **Check:** `bun test packages/coding-agent/test/tools/browser-worker-exit.test.ts packages/coding-agent/test/tools/browser-tab-worker-startup.test.ts packages/coding-agent/test/tools/browser-freeze-settle.test.ts`
 
 ## Titles and labels
 
