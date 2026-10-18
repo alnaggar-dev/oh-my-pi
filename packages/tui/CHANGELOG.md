@@ -63,6 +63,7 @@
 ### Removed
 
 - Removed the auto marker on an auto-resolved thinking level in the status line model segment; it again shows the level the way a pinned one looks (`◒ high`)
+- Removed the `advisor` status line segment (advisor count, busiest advisor context and advisor cache-hit rate) and the optional `StatusLineSession.getAdvisorUsageSummary()` it read; `/advisor status` still shows each advisor's status, context and spend
 
 ## [18.12.1] - 2026-10-17
 

@@ -112,7 +112,7 @@ import { writeArchive } from "@oh-my-pi/pi-utils/ar";
 import { frameDataBytesBudget, readerIncludesThinking } from "@oh-my-pi/snapcompact";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import { formatUsageResetWindow } from "@oh-my-pi/pi-tui/overlays/usage-display";
-import { type AdvisorPromptUsage, loadAdvisorTranscriptCosts } from "../advisor";
+import { loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
 import { classifyAutoPrewalk } from "../auto-prewalk/classifier";
 import { reset as resetCapabilities } from "../capability";
@@ -425,7 +425,6 @@ import {
 	type AdvisorCatchupOptions,
 	type AdvisorStats,
 	type AdvisorStatusOverviewEntry,
-	type AdvisorUsageSummary,
 	SessionAdvisors,
 	type SessionAdvisorsHost,
 } from "./session-advisors";
@@ -470,7 +469,7 @@ import { YieldQueue } from "./yield-queue";
 
 export * from "./agent-session-events";
 export * from "./agent-session-types";
-export type { AdvisorStats, AdvisorStatusOverviewEntry, AdvisorUsageSummary, PerAdvisorStat } from "./session-advisors";
+export type { AdvisorStats, AdvisorStatusOverviewEntry, PerAdvisorStat } from "./session-advisors";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
 /** Assistant thinking+reply words a deferred auto-title waits for before retitling from context. */
@@ -12193,9 +12192,8 @@ export class AgentSession implements SettingsScope {
 			// of restarting at zero.
 			if (switchingToDifferentSession) {
 				const providersBySlug = new Map<string, Set<string>>();
-				const promptUsageBySlug = new Map<string, AdvisorPromptUsage>();
-				const costs = await loadAdvisorTranscriptCosts(this.sessionFile, { providersBySlug, promptUsageBySlug });
-				this.#advisors.restoreCost(costs, providersBySlug, promptUsageBySlug);
+				const costs = await loadAdvisorTranscriptCosts(this.sessionFile, { providersBySlug });
+				this.#advisors.restoreCost(costs, providersBySlug);
 			}
 			this.#bash.finishSessionTransition(bashTransition, true);
 			// Keep the old reservations during rollback; the target is committed now,
@@ -14162,11 +14160,6 @@ export class AgentSession implements SettingsScope {
 		return this.#advisors.getAdvisorCost();
 	}
 
-	/** Busiest live advisor's context percent plus session-total advisor cache split, for the status line. */
-	getAdvisorUsageSummary(): AdvisorUsageSummary | undefined {
-		return this.#advisors.getAdvisorUsageSummary();
-	}
-
 	/**
 	 * Begin backfilling advisor spend recorded before this resume, off the
 	 * critical path. A large transcript would otherwise block startup while
@@ -14180,23 +14173,15 @@ export class AgentSession implements SettingsScope {
 		});
 		const snapshot = this.#advisors.beginCostRestoreSnapshot();
 		const providersBySlug = new Map<string, Set<string>>();
-		const promptUsageBySlug = new Map<string, AdvisorPromptUsage>();
 		this.#advisorCostRestore = loadAdvisorTranscriptCosts(this.sessionFile, {
 			beforeSnapshot: snapshot.ready,
 			onSnapshot: snapshot.release,
 			shouldContinue: () => !stale && !this.isDisposed,
 			providersBySlug,
-			promptUsageBySlug,
 		})
 			.then(costs => {
 				if (stale || this.isDisposed) return;
-				this.restoreInitialAdvisorCosts(
-					costs,
-					snapshot.costsAtSnapshot,
-					providersBySlug,
-					promptUsageBySlug,
-					snapshot.promptUsageAtSnapshot,
-				);
+				this.restoreInitialAdvisorCosts(costs, snapshot.costsAtSnapshot, providersBySlug);
 				this.#emit({ type: "advisor_cost_changed" });
 			})
 			.catch(err => logger.debug("advisor cost restore failed", { err: String(err) }))
@@ -14212,25 +14197,17 @@ export class AgentSession implements SettingsScope {
 	}
 
 	/**
-	 * Restore persisted advisor spend and prompt usage plus the process-local
-	 * delta recorded after the snapshot baselines. The recorder barrier fixes every
-	 * transcript's byte length after capturing them, so a turn completed while the
-	 * scan runs is added exactly once.
+	 * Restore persisted advisor spend plus the process-local delta billed after
+	 * `costsAtSnapshot`. The recorder barrier fixes every transcript's byte length
+	 * after capturing that baseline, so a turn completed while the scan runs is added
+	 * exactly once.
 	 */
 	restoreInitialAdvisorCosts(
 		costs: ReadonlyMap<string, number>,
 		costsAtSnapshot: ReadonlyMap<string, number> = new Map(),
 		providersBySlug?: ReadonlyMap<string, ReadonlySet<string>>,
-		promptUsageBySlug?: ReadonlyMap<string, AdvisorPromptUsage>,
-		promptUsageAtSnapshot?: ReadonlyMap<string, AdvisorPromptUsage>,
 	): void {
-		this.#advisors.restoreInitialCost(
-			costs,
-			costsAtSnapshot,
-			providersBySlug,
-			promptUsageBySlug,
-			promptUsageAtSnapshot,
-		);
+		this.#advisors.restoreInitialCost(costs, costsAtSnapshot, providersBySlug);
 	}
 	/** Return whether any active or configured advisor is running on an OAuth/subscription model. */
 	isAdvisorUsingSubscription(): boolean {
