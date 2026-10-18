@@ -68,57 +68,6 @@ does what I wanted".
 
 ## Status line and TUI
 
-### Auto-thinking: auto marker on the resolved level and a notice on repeated classifier fallback
-
-- **What it does:** With thinking set to `auto`, the status line's model segment keeps
-  the auto marker on the resolved level (`⟳ high`; `[~] high` under `ascii`, the nerd
-  glyph under `nerd`) so it reads apart from a pinned `high`; pending stays `⟳ auto`.
-  Both the ANSI render and the native `describe` path show it; the composer effort chip
-  keeps the bare level (its glyph and meter are keyed on it). When the auto-thinking
-  classifier fails three turns in a row, the session emits one `warning` notice (source
-  `auto-thinking`) naming the cause (`timed out after 4 s`, or the sanitized, truncated
-  error message) and the fallback level applied; a successful classification resets the
-  streak and re-arms the notice. The streak is per session: `/new` or a session switch
-  starts a fresh one.
-- **Why:** Upstream issues #5951 (auto-resolved and pinned levels looked identical) and
-  #7820 (classifier fallbacks were only logged at debug). Replaces the fork's earlier
-  hook-status readout rolled up over the subagent bus, which touched six upstream files.
-- **Files:** `packages/coding-agent/src/auto-thinking/fallback-notice.ts`
-  (`AUTO_THINKING_NOTICE_SOURCE`, `describeClassifierFailure`,
-  `AutoThinkingFallbackStreak`), `packages/coding-agent/src/session/model-controls.ts`
-  (one import, the `#fallbackStreak` field, and in `applyAutoThinkingLevel` the
-  `classified`/`failure` locals, the `describeClassifierFailure` call in the classifier
-  `catch`, and the `record` (keyed by `sessionManager.getSessionId()`) + `emitNotice`
-  after the fallback level is clamped).
-- **Depends on upstream:** `ModelControls.applyAutoThinkingLevel` as the only caller of
-  `classifyDifficulty`, its `AbortController` aborted only by the 4 s
-  `#AUTO_THINKING_TIMEOUT_MS` timer (so `signal.aborted` means timeout), the
-  `promptGeneration() !== generation || !#autoThinking` early return ahead of the
-  fallback clamp (superseded turns return before the streak is touched), and the
-  `ultrathink` branch that skips the classifier. `ModelControlsHost.emitNotice` →
-  `AgentSession.emitNotice` → `notice` `AgentSessionEvent`, rendered by
-  `EventController.#handleNotice` as `showWarning` and forwarded by RPC and JSON print
-  mode; ACP and text print mode drop non-credential notices, so the warning does not
-  show there. `AgentSession.newSession()`/`switchSession()` reusing one `ModelControls`
-  while changing the session id. `sanitizeText` (`pi-utils`),
-  `truncateToWidth` (`pi-tui`), `theme.thinking.autoPending` in every symbol preset,
-  `leadingGlyph` (compact mode keeps only the marker), `thinkingLevelWord` feeding the
-  native segment and the composer chip. Fork code it relies on in files other entries
-  own: `modelThinkingDisplay` (the auto branch) and the auto-marker span in the model
-  segment's `describe` in `packages/tui/src/status-line/segments.ts` (advisor-segment
-  entry).
-- **Tripwire paths:** `packages/coding-agent/src/session/model-controls.ts`, `packages/coding-agent/src/auto-thinking/classifier.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/tui/src/status-line/segments.ts`, `packages/tui/src/theme/symbols.ts`, `packages/tui/src/prompt/custom-editor.ts`
-- **Must still be true:**
-  - Auto pending renders `⟳ auto`, auto resolved `⟳ <level>`, pinned `<level>` without
-    the marker, in the ANSI and native model segment, under unicode, nerd and ascii.
-  - The composer effort chip still receives a bare level word from `thinkingLevelWord`.
-  - The notice fires exactly once, on the 3rd consecutive non-superseded classifier
-    failure, with the cause and the fallback level; not again until a success.
-  - Superseded classifications and the `ultrathink` bypass neither count nor reset.
-  - The streak starts fresh when the session id changes: failures from a previous
-    session neither count toward nor suppress the next session's notice.
-- **Check:** `bun test packages/tui/test/status-line-auto-thinking.test.ts packages/coding-agent/test/auto-thinking-fallback-notice.test.ts`
-
 ### Advisor status line segment (count, busiest context, cache-hit rate)
 
 - **What it does:** A new `advisor` status line segment, in the `full` preset, shows the
