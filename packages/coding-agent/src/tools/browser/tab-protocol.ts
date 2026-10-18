@@ -100,7 +100,6 @@ export type WorkerInitPayload =
 			 * previously force-killed the tab). Never set for first-time Electron attach.
 			 */
 			recover?: boolean;
-
 			/**
 			 * The user drives this browser (connected, relay): downloads keep its one browser-wide folder and real file
 			 * names, since the user's own downloads land there too. Unset means an OMP-launched browser.
