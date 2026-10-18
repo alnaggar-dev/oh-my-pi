@@ -197,6 +197,7 @@
 - Removed the `advisor.includeThinking` and `advisor.projectContext` settings; advisors again always receive the main agent's reasoning and the project context files
 - Removed the advisor's repeat-call de-duplication; a repeated identical investigation call again returns its full output
 - Removed the auto-thinking classifier fallback warning; a classifier that keeps failing again shows nothing and is only logged at debug level
+- Removed `--no-title` / `PI_NO_TITLE` turning off subagent task labels; subagents get their one-line labels again, also in RPC and ACP modes
 
 ## [18.12.1] - 2026-10-17
 
