@@ -44,12 +44,6 @@ export interface AdvisorRuntimeHost {
 	/** Redact primary transcript bytes before they reach the advisor model. */
 	obfuscator?: SecretObfuscator;
 	/**
-	 * Whether primary reasoning blocks are rendered into advisor deltas
-	 * (`advisor.includeThinking`). Defaults to `true`. Resolved at build time:
-	 * the host rebuilds its runtimes when the setting changes.
-	 */
-	includeThinking?: boolean;
-	/**
 	 * Pre-prompt context maintenance for the advisor's own append-only context.
 	 * Promotes the advisor model to a larger sibling when its context nears the
 	 * window (mirroring the primary's promote-first policy) and resolves `true`
