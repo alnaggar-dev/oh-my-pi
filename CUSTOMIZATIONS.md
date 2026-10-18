@@ -22,60 +22,6 @@ does what I wanted".
 
 ## Advisor
 
-### Advisor spend controls
-
-- **What it does:** Two settings trim what each advisor review sends.
-  `advisor.includeThinking` (send the main agent's reasoning or not) and
-  `advisor.projectContext` (repeat the `<project-context>` block — the discovered project
-  context files such as AGENTS.md, verbatim — in the advisor's system prompt or not).
-  Both carry `protocolDefault: ["rpc", "acp"]` like every other `advisor.*` setting. That
-  pin is soft: RPC/ACP start at the default only while no config layer sets the value, so
-  a `false` saved in `config.yml` still applies there.
-- **Why:** Reasoning and the project-context block are a large, repeated share of every
-  advisor request; a review averages ~$0.11.
-- **Files:** `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorIncludeThinking`,
-  `cfgAdvisorProjectContext`, `cfgAdvisorMaxRequestsPerUpdate`; the cap's behavior is
-  the request-cap entry's),
-  `packages/coding-agent/src/advisor/runtime.ts` (the `includeThinking` host flag that
-  seeds `#includeThinking`),
-  `packages/coding-agent/src/advisor/config.ts` (only the `filterAdvisorTools` comment,
-  kept accurate about which legacy tool aliases exist),
-  `docs/advisor-watchdog.md` (its "Controlling token spend" section and the
-  `advisors[].tools` legacy-alias sentence; the runaway-review bullet and the request-cap
-  sentence are named under the request-cap entry's (`### Per-review request cap for
-  advisors`) **Depends on upstream**, the repeat-call paragraph under the dedupe entry's),
-  `docs/settings.md` (the three `advisor.*` rows `advisor.includeThinking`,
-  `advisor.projectContext` and `advisor.maxRequestsPerUpdate`, and the `advisor` segment
-  paragraph, named under the advisor-segment entry).
-- **Depends on upstream:** the settings registry (`register`, handle `.get`/`.set` in
-  `packages/coding-agent/src/config/registry.ts`, domains listed in
-  `packages/coding-agent/src/config/all-settings.ts`) with its `protocolDefault` handling
-  and its `ui.condition: "advisorEnabled"` gate; the `cfgAdvisorRuntimeInputs` listener in `agent-session.ts`
-  that rebuilds a running advisor when an input changes (the fork adds
-  `includeThinking` and `projectContext` to it) and the runtime signature in
-  `session-advisors.ts`, which includes both build-time content settings;
-  `formatSessionHistoryMarkdown`'s `includeThinking` option; the advisor system-prompt
-  assembly, `#advisorContextPrompt` and `setContextPrompt`.
-  Fork code it relies on in files other entries own: the two build-time settings
-  (passed to the runtime as `includeThinking`, and gating the `<project-context>`
-  block), their two runtime-signature fields and the `setContextPrompt` skip (only
-  while the live runtimes match the current config) in
-  `packages/coding-agent/src/session/session-advisors.ts` (dedupe entry); the two
-  `cfgAdvisorRuntimeInputs` fields in `packages/coding-agent/src/session/agent-session.ts`
-  (advisor-segment entry).
-- **Tripwire paths:** `packages/coding-agent/src/config/registry.ts`, `packages/coding-agent/src/config/all-settings.ts`, `packages/coding-agent/src/config/settings-ui.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/coding-agent/src/advisor/config.ts`, `packages/coding-agent/src/session/session-history-format.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/delta-split.ts`, `packages/coding-agent/src/advisor/runtime.ts`
-- **Must still be true:**
-  - `includeThinking: false` keeps reasoning text out of the advisor's delta;
-    `projectContext: false` keeps the `<project-context>` block out of its prompt.
-  - Both settings keep `protocolDefault: ["rpc", "acp"]`, like the other `advisor.*`
-    settings.
-  - Changing `includeThinking` or `projectContext` mid-session rebuilds the advisors.
-  - With `projectContext: false`, a context-file change does not rebuild advisors that
-    were built with the setting off, and turning the setting on later uses the latest
-    context prompt — even when the setting was flipped off without the settings
-    listener's rebuild.
-- **Check:** `bun test packages/coding-agent/test/advisor-live-settings.test.ts packages/coding-agent/test/advisor/advisor.test.ts`
-
 ### Advisor repeat-call de-duplication
 
 - **What it does:** Inside a review, a call identical to an earlier call from the same
@@ -99,8 +45,8 @@ does what I wanted".
   advisor `afterToolCall` hook; the request-cap wiring — the `AdvisorRequestCap` import,
   its construction, the `recordTurn` call guarded by `advisorLoopGuardStopped` and its
   two `reset` calls — named under the request-cap entry's **Depends on upstream**; the
-  file's other fork hunks are named under the spend-controls and advisor-segment
-  entries' **Depends on upstream**).
+  file's other fork hunks are named under the advisor-segment entry's **Depends on
+  upstream**).
 - **Depends on upstream:** `prunedAt` on `ToolResultMessage` — a result upstream's
   `evictStaleToolResults` (`packages/coding-agent/src/advisor/tool-result-eviction.ts`)
   or any other prune blanked carries it and reads as a miss; `latestReviewStart` in the
@@ -124,7 +70,7 @@ does what I wanted".
   first line for the dedupe branch, so an upstream rewrite of that line conflicts
   instead of silently dropping dedupe.
   Fork code it relies on in files other entries own: the repeat-call paragraph in
-  `docs/advisor-watchdog.md` (spend-controls entry).
+  `docs/advisor-watchdog.md` (request-cap entry).
   **Open upstream risk — PR #12516** (open): it moves the advisor onto the shared
   compaction code, whose per-turn prune follows `compaction.supersedeReads` and
   `compaction.dropUseless` (both on by default). On the advisor's history, a newer
@@ -267,7 +213,13 @@ does what I wanted".
   trip a repeat counter (one ran 1,093 requests with 1,069 distinct calls). A cap of 50
   would have saved about $919 against about $154 for the tally.
 - **Files:** `packages/coding-agent/src/advisor/request-cap.ts` (`AdvisorRequestCap`),
-  `packages/coding-agent/src/prompts/advisor/request-cap-reached.md` (the corrective).
+  `packages/coding-agent/src/prompts/advisor/request-cap-reached.md` (the corrective),
+  `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorMaxRequestsPerUpdate`),
+  `docs/advisor-watchdog.md` (the request-cap paragraph after the
+  `model.toolCallLoopGuard.*` paragraph; the repeat-call paragraph is named under the
+  dedupe entry's **Depends on upstream**),
+  `docs/settings.md` (the `advisor.maxRequestsPerUpdate` row; the `advisor` segment
+  paragraph is named under the advisor-segment entry's **Depends on upstream**).
 - **Depends on upstream:** `AdvisorLoopGuard` in
   `packages/coding-agent/src/advisor/loop-guard.ts` staying upstream's, its
   `AdvisorLoopGuardHost` interface (reused as the cap's host) and its reset points
@@ -275,13 +227,10 @@ does what I wanted".
   feeds `recordTurn`, and `advisorLoopGuardStopped` clearing the abort error; #13132's
   advise-only turn ending the review. Upstream PRs #10117 and #7964 propose the same
   kind of cap — if one lands, drop this entry for it.
-  Fork code it relies on in files other entries own: `cfgAdvisorMaxRequestsPerUpdate`
-  in `packages/coding-agent/src/advisor/settings.ts` (spend-controls entry); the
-  `AdvisorRequestCap` import, construction, `recordTurn` call (skipped once
-  `advisorLoopGuardStopped` is set) and two `reset` calls in
-  `packages/coding-agent/src/session/session-advisors.ts` (dedupe entry); the
-  runaway-review bullet and request-cap sentence in `docs/advisor-watchdog.md` and the
-  `advisor.maxRequestsPerUpdate` row in `docs/settings.md` (spend-controls entry).
+  Fork code it relies on in files other entries own: the `AdvisorRequestCap` import,
+  construction, `recordTurn` call (skipped once `advisorLoopGuardStopped` is set) and
+  two `reset` calls in `packages/coding-agent/src/session/session-advisors.ts` (dedupe
+  entry).
 - **Tripwire paths:** `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/agent/src/agent-loop.ts`, `packages/agent/src/types.ts`
 - **Must still be true:**
   - The corrective is injected on exactly the cap-th completed request of a review,
@@ -375,8 +324,7 @@ does what I wanted".
   `packages/coding-agent/src/cli/gallery-fixtures/segments.ts` (the `advisor` variants),
   `packages/coding-agent/src/session/agent-session.ts` (`getAdvisorUsageSummary`, the
   `AdvisorUsageSummary` re-export and the `promptUsageBySlug` plumbing on both restore
-  paths; its two `cfgAdvisorRuntimeInputs` fields and their imports are named under the
-  spend-controls entry's **Depends on upstream**).
+  paths).
 - **Depends on upstream:** the status line keeping its segment list by hand in
   `schema.ts`, `SEGMENTS` and the presets, plus the gallery's `variantsFor` switch — a
   new upstream segment conflicts in all of them; `getAdvisorStatusOverview` and its
@@ -396,7 +344,7 @@ does what I wanted".
   and the `contextPercentCache`
   memo (keyed on the message array, its length and tail and the model, cleared after an
   eviction, and computed with `#estimateAdvisorContextTokens`); the `advisor` segment
-  paragraph in `docs/settings.md` (spend-controls entry).
+  paragraph in `docs/settings.md` (request-cap entry).
 - **Tripwire paths:** `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/chrome/context-thresholds.ts`, `packages/tui/src/theme/symbols.ts`, `packages/coding-agent/src/advisor/transcript-recorder.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`
 - **Must still be true:**
   - With every advisor running the count is the bare total; otherwise it is
