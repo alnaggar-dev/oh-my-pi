@@ -60,6 +60,10 @@
 - Fixed a streaming table bouncing everything below it up and down while its last cell was still being written ([#16116](https://github.com/can1357/oh-my-pi/pull/16116) by [@galtamam-cmyk](https://github.com/galtamam-cmyk))
 - Fixed inline images in iTerm2 being sized for the wrong cell shape, which left charts smeared or offset ([#16118](https://github.com/can1357/oh-my-pi/pull/16118) by [@galtamam-cmyk](https://github.com/galtamam-cmyk))
 
+### Removed
+
+- Removed the auto marker on an auto-resolved thinking level in the status line model segment; it again shows the level the way a pinned one looks (`◒ high`)
+
 ## [18.12.1] - 2026-10-17
 
 ### Breaking Changes

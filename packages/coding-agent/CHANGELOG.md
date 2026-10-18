@@ -196,6 +196,7 @@
 ### Removed
 - Removed the `advisor.includeThinking` and `advisor.projectContext` settings; advisors again always receive the main agent's reasoning and the project context files
 - Removed the advisor's repeat-call de-duplication; a repeated identical investigation call again returns its full output
+- Removed the auto-thinking classifier fallback warning; a classifier that keeps failing again shows nothing and is only logged at debug level
 
 ## [18.12.1] - 2026-10-17
 

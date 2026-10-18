@@ -16,11 +16,6 @@ import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
-import {
-	AUTO_THINKING_NOTICE_SOURCE,
-	AutoThinkingFallbackStreak,
-	describeClassifierFailure,
-} from "../auto-thinking/fallback-notice";
 import { classifyDifficulty } from "../auto-thinking/classifier";
 import type { ModelRegistry } from "../config/model-registry";
 import {
@@ -52,6 +47,7 @@ import type { ModelCycleResult, ResolvedRoleModel, RoleModelCycle, RoleModelCycl
 import { formatRoleModelValue, resolveRoleModelFull } from "./role-models";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
 import type { SessionManager } from "./session-manager";
+
 import {
 	cfgDefaultThinkingLevel,
 	cfgProvidersFireworksTier,
@@ -624,7 +620,6 @@ export class ModelControls {
 
 	/** Timeout (ms) for per-turn auto-thinking classification before falling back. */
 	static readonly #AUTO_THINKING_TIMEOUT_MS = 4000;
-	readonly #fallbackStreak = new AutoThinkingFallbackStreak();
 
 	/**
 	 * Classify the current user turn and set the effective thinking level for it.
@@ -643,9 +638,6 @@ export class ModelControls {
 		if (getSupportedEfforts(model).length === 0) return;
 
 		let resolved: Effort | undefined;
-		// Set only when the classifier ran (not the ultrathink bypass); `failure` is its cause.
-		let classified = false;
-		let failure: string | undefined;
 		if (this.#host.magicKeywordEnabled("ultrathink") && containsMagicKeyword(promptText, "ultrathink")) {
 			// The user explicitly asked for maximum thinking; bypass the classifier
 			// (and the `providers.autoThinkingMaxEffort` ceiling) and jump straight
@@ -679,14 +671,8 @@ export class ModelControls {
 				logger.debug("auto-thinking: classification failed; using fallback level", {
 					error: error instanceof Error ? error.message : String(error),
 				});
-				failure = describeClassifierFailure(
-					error,
-					controller.signal.aborted,
-					ModelControls.#AUTO_THINKING_TIMEOUT_MS,
-				);
 			} finally {
 				clearTimeout(timer);
-				classified = true;
 			}
 		}
 
@@ -699,10 +685,6 @@ export class ModelControls {
 			this.#thinkingLevelCeiling,
 		);
 		if (effort === undefined) return;
-		const notice = classified
-			? this.#fallbackStreak.record(this.#host.sessionManager.getSessionId(), failure, effort)
-			: undefined;
-		if (notice) this.#host.emitNotice("warning", notice, AUTO_THINKING_NOTICE_SOURCE);
 		const shouldPersistResolution = this.#thinkingLevel !== effort;
 		this.#autoResolvedLevel = effort;
 		this.#thinkingLevel = effort;

@@ -310,9 +310,12 @@ function modelThinkingDisplay(ctx: SegmentContext): string {
 	const opts = ctx.options.model ?? {};
 	if (opts.showThinkingLevel === false || !state.model?.thinking) return "";
 	if (ctx.session.isAutoThinking) {
-		// The auto marker stays on the resolved level (`⟳ high`) so it reads
-		// apart from a pinned level; pending shows `⟳ auto`.
-		return `${theme.thinking.autoPending} ${ctx.session.autoResolvedThinkingLevel() ?? "auto"}`;
+		// Pending (no turn classified yet / classifying) shows a symbol-theme
+		// question-box marker; once resolved it shows `<level>`.
+		const resolved = ctx.session.autoResolvedThinkingLevel();
+		return resolved
+			? (theme.thinking[resolved as keyof Theme["thinking"]] ?? resolved)
+			: `${theme.thinking.autoPending} auto`;
 	}
 	const level = state.thinkingLevel ?? ThinkingLevel.Off;
 	return level === ThinkingLevel.Off
@@ -387,11 +390,7 @@ const modelSegment: StatusLineSegment = {
 		if (advisor) spans.push(span(` ${advisor.icon}`, advisor.color));
 		if (ctx.session.isFastModeActive() && theme.icon.fast) spans.push(span(` ${theme.icon.fast}`, token));
 		const level = ctx.options.model?.showThinkingLevel === false ? undefined : thinkingLevelWord(ctx.session);
-		if (level !== undefined) {
-			spans.push(span(" · ", "dim"));
-			if (ctx.session.isAutoThinking) spans.push(span(`${theme.thinking.autoPending} `, thinkingLevelToken(level)));
-			spans.push(span(level, thinkingLevelToken(level)));
-		}
+		if (level !== undefined) spans.push(span(" · ", "dim"), span(level, thinkingLevelToken(level)));
 		const slowModeLabel = ctx.session.getAnthropicSlowModeLabel?.();
 		if (slowModeLabel) spans.push(span(`${theme.sep.dot}${slowModeLabel}`, "warning"));
 		return segView(spans, "model", slowModeLabel ? "warning" : undefined);
