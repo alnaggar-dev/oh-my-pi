@@ -191,38 +191,6 @@ function variantsFor(id: StatusLineSegmentId): readonly SegmentVariantSpec[] {
 					session: { cost: 0, premiumRequests: 2, advisorCost: 0 },
 				},
 			];
-		case "advisor":
-			return [
-				{ label: "two running", session: { advisorStatuses: ["running", "running"] } },
-				{ label: "one of two errored", session: { advisorStatuses: ["running", "error"] } },
-				{
-					label: "context warning",
-					session: {
-						advisorStatuses: ["running", "quota_exhausted"],
-						advisorUsage: {
-							contextPercent: 72,
-							contextWindow: GALLERY_CONTEXT_WINDOW,
-							cacheRead: 44_200,
-							cacheWrite: 2_800,
-							input: 3_000,
-						},
-					},
-				},
-				{
-					label: "no cache data yet",
-					session: {
-						advisorStatuses: ["running"],
-						advisorUsage: {
-							contextPercent: 3,
-							contextWindow: GALLERY_CONTEXT_WINDOW,
-							cacheRead: 0,
-							cacheWrite: 1_500,
-							input: 800,
-						},
-					},
-				},
-				{ label: "not configured" },
-			];
 		case "context_pct":
 			return [
 				{ label: "normal", context: { contextPercent: 22, contextTokens: 44_000 } },
