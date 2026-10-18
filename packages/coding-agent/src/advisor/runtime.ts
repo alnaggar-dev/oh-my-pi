@@ -44,12 +44,6 @@ export interface AdvisorRuntimeHost {
 	/** Redact primary transcript bytes before they reach the advisor model. */
 	obfuscator?: SecretObfuscator;
 	/**
-	 * Whether primary reasoning blocks are rendered into advisor deltas
-	 * (`advisor.includeThinking`). Defaults to `true`. Resolved at build time:
-	 * the host rebuilds its runtimes when the setting changes.
-	 */
-	includeThinking?: boolean;
-	/**
 	 * Pre-prompt context maintenance for the advisor's own append-only context.
 	 * Promotes the advisor model to a larger sibling when its context nears the
 	 * window (mirroring the primary's promote-first policy) and resolves `true`
@@ -316,13 +310,8 @@ export class AdvisorRuntime {
 	 * terminal turn ends the cascade, or on reset, so a later refusal starts fresh.
 	 */
 	readonly #refusalModelsTried = new Set<string>();
-	/**
-	 * Whether primary reasoning is included in advisor deltas for the current
-	 * model. Seeded from `host.includeThinking` (the `advisor.includeThinking`
-	 * setting) and forced off for the rest of a model's life by a classifier
-	 * refusal; never re-enabled above the host's setting.
-	 */
-	#includeThinking: boolean;
+	/** Whether primary reasoning is included in advisor deltas for the current model. */
+	#includeThinking = true;
 	#modelIdentity: string | undefined;
 	/** Completed 3-failure backlog-drop cycles since the last success/reset. */
 	#droppedBacklogs = 0;
@@ -365,9 +354,7 @@ export class AdvisorRuntime {
 		private readonly agent: AdvisorAgent,
 		private readonly host: AdvisorRuntimeHost,
 		private readonly retryDelayMs = 1000,
-	) {
-		this.#includeThinking = host.includeThinking ?? true;
-	}
+	) {}
 
 	get backlog(): number {
 		return this.#backlog;
@@ -767,9 +754,7 @@ export class AdvisorRuntime {
 		const identity = this.host.getModelIdentity?.();
 		if (identity === undefined || identity === this.#modelIdentity) return;
 		this.#modelIdentity = identity;
-		// A new model gets a fresh reasoning attempt — but never above the
-		// `advisor.includeThinking` setting the host resolved.
-		this.#includeThinking = this.host.includeThinking ?? true;
+		this.#includeThinking = true;
 	}
 
 	// Candidate 4 (multi-message split): render the Session update as MULTIPLE

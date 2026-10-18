@@ -127,9 +127,7 @@ import {
 	cfgAdvisorContinueSeverity,
 	cfgAdvisorEvictStaleResults,
 	cfgAdvisorImmuneTurns,
-	cfgAdvisorIncludeThinking,
 	cfgAdvisorMaxNotesPerUpdate,
-	cfgAdvisorProjectContext,
 	cfgAdvisorReviewInterval,
 	cfgAdvisorReviewMode,
 	cfgAdvisorSyncBacklog,
@@ -1295,8 +1293,6 @@ export class SessionAdvisors {
 			instructions,
 			budget,
 			tier,
-			cfgAdvisorIncludeThinking.get(this.#host.settings),
-			cfgAdvisorProjectContext.get(this.#host.settings),
 		].join("\u001f");
 	}
 
@@ -1354,11 +1350,6 @@ export class SessionAdvisors {
 				? this.#host.effectiveServiceTier(model)
 				: resolveModelServiceTier(advisorTierMap, model);
 
-		// Build-time cost controls: both are baked into the runtimes below, so the
-		// session's advisor-settings listener rebuilds advisors when either changes.
-		const includeThinking = cfgAdvisorIncludeThinking.get(this.#host.settings);
-		const includeProjectContext = cfgAdvisorProjectContext.get(this.#host.settings);
-
 		for (const descriptor of descriptors) {
 			const {
 				config,
@@ -1386,10 +1377,7 @@ export class SessionAdvisors {
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
 			const systemPrompt = [prompt.render(advisorSystemPrompt, { max_notes_per_update: budgetPerUpdate })];
-			// `advisor.projectContext: false` drops the <project-context> block,
-			// the discovered context files (AGENTS.md and the like) verbatim, from
-			// every advisor request; the advisor can still read those files with its tools.
-			if (includeProjectContext && this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
+			if (this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
 			if (this.#advisorMemoryPrompt) systemPrompt.push(this.#advisorMemoryPrompt);
 			if (this.#advisorWatchdogPrompt) systemPrompt.push(this.#advisorWatchdogPrompt);
 			if (this.#advisorSharedInstructions) systemPrompt.push(this.#advisorSharedInstructions);
@@ -1663,7 +1651,6 @@ export class SessionAdvisors {
 				snapshotMessages: () => this.#host.agent.state.messages,
 				maintainContext: (incoming, signal) => this.#maintainAdvisorContext(advisorRef, incoming, signal),
 				obfuscator: this.#host.obfuscator(),
-				includeThinking,
 				getModelIdentity: () => formatModelString(advisorRef.agent.state.model),
 				beginAdvisorUpdate: inProgress => {
 					advisorRef.recorder.beginTurn();
@@ -2870,12 +2857,6 @@ export class SessionAdvisors {
 		if (contextPrompt === this.#advisorContextPrompt) return;
 		this.#advisorContextPrompt = contextPrompt;
 		if (!this.#advisorEnabled || this.#advisors.length === 0) return;
-		// Stored above so a later `advisor.projectContext: true` rebuild picks it
-		// up; with it off, the prompt never reaches the advisor, so no rebuild —
-		// unless the live runtimes predate the setting change (flipped without the
-		// settings listener's rebuild): they still carry the old prompt, and a later
-		// rebuild check would find them current.
-		if (!cfgAdvisorProjectContext.get(this.#host.settings) && this.#advisorRuntimeMatchesCurrentConfig()) return;
 		this.#rebuildAdvisorRuntime();
 	}
 

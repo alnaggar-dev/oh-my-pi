@@ -242,6 +242,8 @@ Advisor failures do not permanently stall the primary. The host first attempts i
 
 The advisor also uses `model.toolCallLoopGuard.*` to bound repeated identical tool calls. One detected loop injects a corrective; if the same bound trips again during that review, the review is aborted without treating the stop as a provider failure or starting fallback recovery. The detector resets at the next review/context boundary.
 
+Each review is also capped at `advisor.maxRequestsPerUpdate` model requests (default `50`, `0` = no cap), which stops runaway reviews whose calls are all different. On the request that reaches the cap, an advisor still calling tools other than `advise` is told to call `advise` now or end the review; if its next turn still calls any tool other than `advise`, the review is aborted without counting as a provider failure. The count resets each review.
+
 Unsafe Advisor output follows a separate quarantine path rather than that
 three-attempt request-retry policy. Calls to tools not granted to the advisor receive `Tool <name> not found`
 results so the model can correct itself; they do not quarantine a turn.
@@ -257,73 +259,6 @@ the latest pending context. A second consecutive quarantine emits one
 deduplicated host warning, drops the affected batch, and resets the Advisor
 context to break the loop. Any successful Advisor turn resets the quarantine
 counter.
-
-## Controlling token spend
-
-### What drives the bill
-
-- **One review per primary agent-loop step, not one per user turn.** A 15-step primary turn can trigger up to 15 advisor reviews.
-- **Each review re-sends the advisor's append-only history.** Advisor requests carry a prompt-cache key and the delta is split per source message, so the unchanged prefix can hit the provider cache — but cache reads are still billed, just discounted.
-- **Each review can add provider rounds of its own.** The advisor's `read`/`grep`/`glob` investigation and its `advise` calls are separate requests inside the same review.
-- **A runaway advisor review is bounded by `advisor.maxRequestsPerUpdate`** (default `50`, `0` = no cap) on top of `model.toolCallLoopGuard.*`, which only catches consecutive identical calls. At the cap the advisor is told to call `advise` now or end the review; if its next turn still calls any tool other than `advise`, the review is aborted without counting as a provider failure. The count resets each review.
-- **A turn whose only tool calls are `advise` ends the review.** The advisor is not re-invoked over its whole prefix just to emit a closing message; a turn that advises and keeps investigating continues.
-- **A `WATCHDOG.yml` roster multiplies everything by N.** Each enabled entry is a separate agent with its own context reviewing the same delta.
-- **Every advisor reset replays the whole bounded primary transcript** (compaction, session switch, branch, context-maintenance re-prime — see [What the advisor sees](#what-the-advisor-sees)).
-
-Measured over 825 persisted advisor transcripts (58,059 provider requests): 96.8% of input tokens were cache reads, and cache reads were 63.6% of the dollars. A median review sent ~1k fresh tokens on a ~49k cached prefix and cost ~$0.04; a review averaged 2.1 requests. On that traffic, halving review frequency would have saved ~46% of advisor spend, dropping the `<project-context>` block ~12%, and excluding thinking ~6%. Only ~4% of inter-request gaps exceeded five minutes at half cadence, so cache expiry does not cancel the saving.
-
-Measured over 895 advisor transcripts (29,046 reviews, $3,316; synthetic fixture sessions excluded): cache reads were 64% of the dollars, but a cache *write* costs ~17x a cache read per token, so a lever that shrinks the carried prefix by rewriting it can cost more than it saves. Spend is heavy-tailed (median review $0.045, p99 $0.875; the top 1,000 reviews were 41% of the total), 58% of spend went to reviews that produced no note, and 13% of investigation calls were byte-identical repeats within one advisor session. Those measurements drove the shipped changes: ending the review on an advise-only turn, stale-result eviction with call de-duplication (see [Cost and context behavior](#cost-and-context-behavior)), and no advisor re-prime on the primary's per-turn prune. A tight per-review request cap was measured (cap 8 ≈ 19% of spend, but it drops ~4% of notes) and not shipped; a loose one, `advisor.maxRequestsPerUpdate` (default 50), bounds only runaway reviews: over 54,864 reviews it would have saved about $919, where a whole-review repeated-call tally caught only 22 of the 90 reviews that ran past 50 requests.
-
-### Cadence and delta knobs
-
-| Key                        | Type    | Default | Effect                                                                                                                      |
-| -------------------------- | ------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `advisor.includeThinking`  | boolean | `true`  | Include the primary's assistant reasoning in the rendered delta.                                                            |
-| `advisor.projectContext`   | boolean | `true`  | Include the `<project-context>` block — the discovered project context files (`AGENTS.md` and the like), verbatim — in the advisor system prompt. |
-
-`advisor.includeThinking` and `advisor.projectContext` are read when an advisor runtime is built, so changing them from `/settings` rebuilds the advisors and the new value applies from the next review.
-
-What you give up:
-
-- `advisor.includeThinking: false` drops assistant reasoning from the delta, so the advisor can no longer catch a wrong plan the primary stated only in reasoning and never in visible text or tool calls.
-- `advisor.projectContext: false` means the advisor does not know the project's standing instructions. Because the omitted block is also what tells the advisor those instructions are binding on the primary, it can advise something the project forbids. Put review-relevant rules in [`WATCHDOG.md`](#watchdogmd) instead.
-
-### Existing levers
-
-- **`modelRoles.advisor`** — the largest single lever. The advisor bills at its own model's rates; a pricier advisor model can nearly double advisor spend on identical traffic.
-- **`tier.advisor`** — discounted tiers where the advisor model's provider family supports them (see [Enabling the advisor](#enabling-the-advisor)).
-- **Per-entry `model`** — pin a cheap model on one roster entry without changing the `advisor` role.
-- **`tools: []`** — no investigative tools, so a review is one request plus any `advise` call (see [Tools and isolation](#tools-and-isolation)).
-- **Roster size one** — N enabled entries review the same delta independently.
-- **`advisor.maxNotesPerUpdate` / `advisor.immuneTurns`** — admission gates applied after the advisor was already billed for the review (see [Emission guard](#emission-guard)). They cut primary-side noise, not advisor input cost.
-- **`/advisor off` and `--advisor`** — session-scoped on/off; not running is the only free configuration.
-- **`advisor.syncBacklog`** — throughput and lag control, not cost: it changes when the primary waits, not how many reviews run.
-
-### A cheap configuration
-
-```yaml
-modelRoles:
-  advisor: x-ai/grok-code-fast
-
-advisor:
-  enabled: true
-  reviewInterval: 2
-  includeThinking: false
-```
-
-With a single-advisor roster:
-
-```yaml
-advisors:
-  - name: Watchdog
-    tools: [read, grep, glob]
-```
-
-Diffs inside an advisor delta are bounded to 8 KiB / 300 lines; other expanded tool output keeps its 8 KiB / 80-line per-tool budget.
-
-### Reading actual spend
-
-`/advisor status` shows each advisor's model, context usage, token counts, and cost. The live token counters are derived from the advisor agent's in-memory messages, so they reset on every re-prime. The durable record is the persisted `__advisor[.<slug>].jsonl` transcript plus the per-slug cost map behind status, neither of which a re-prime rewinds — see [Cost and context behavior](#cost-and-context-behavior) and [Transcript persistence and observability](#transcript-persistence-and-observability).
 
 ## WATCHDOG.md
 
@@ -431,7 +366,7 @@ Fields:
 - `advisors[].name`: human label; slugified for the session id and its `__advisor.<slug>.jsonl` filename. Duplicate slugs across files are resolved by the same specificity rule as `WATCHDOG.md` discovery (project leaf > project ancestor > user).
 - `advisors[].enabled`: optional per-advisor switch, default `true`. `false` leaves the advisor visible as paused in status/configuration.
 - `advisors[].model`: optional model selector with optional `:level` thinking suffix (e.g. `x-ai/grok-code-fast:high`). Omitted → the advisor uses `modelRoles.advisor`.
-- `advisors[].tools`: optional list of built-in tool names to grant. Omitted → `read`/`grep`/`glob`, plus `recall` when the active memory backend provides it; explicit `[]` → no investigative tools. Any name in [`BUILTIN_TOOL_NAMES`](../packages/coding-agent/src/tools/builtin-names.ts) is accepted, including mutating tools. The legacy `search`→`grep` alias is normalized. Unknown names are dropped with a warning; if that leaves a nonempty input with no valid names, the implementation currently treats the result as omitted and uses the default subset.
+- `advisors[].tools`: optional list of built-in tool names to grant. Omitted → `read`/`grep`/`glob`, plus `recall` when the active memory backend provides it; explicit `[]` → no investigative tools. Any name in [`BUILTIN_TOOL_NAMES`](../packages/coding-agent/src/tools/builtin-names.ts) is accepted, including mutating tools. Legacy aliases (`search`→`grep`, `find`→`glob`) are normalized. Unknown names are dropped with a warning; if that leaves a nonempty input with no valid names, the implementation currently treats the result as omitted and uses the default subset.
 - `advisors[].reviewMode`: optional cadence mode. `turn` (default) reviews every primary turn — every tool-call round, including `willContinue: true` tool-loop continuations; `agent-end` reviews only final yields where `willContinue` is not true, i.e. once per run.
 - `advisors[].reviewInterval`: optional positive safe integer (at most `9007199254740991`), default `1`. Reviews every Nth eligible update; skipped updates accumulate and are sent in the next scheduled review. For a review every Nth completed run, combine `reviewMode: agent-end` with this field. Deferred advice still becomes eligible for delivery at final boundaries even when cadence skips that review.
 - `advisors[].syncBacklog`: optional `off`, `1`, `3`, `5`, or `strict`. Numeric thresholds may be unquoted YAML numbers. Omitted → inherit the current global `advisor.syncBacklog`; explicit `off` always disables waiting for this advisor. The editor shows the effective policy and offers `inherit` to remove an override.
