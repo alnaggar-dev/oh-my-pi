@@ -882,7 +882,6 @@
 - Fixed the advisor's repeat-call de-duplication answering a repeat from an earlier review with the "unchanged" stub; stale-result eviction could then blank the original, leaving the advisor with neither copy. A cross-review repeat now gets the full output
 - Fixed the `advisor.projectContext` description, which claimed the omitted block held repo rules and the environment; it holds only the discovered project context files (AGENTS.md and the like)
 - Fixed `/rename` with no argument, title cards and plan-save filename suggestions failing under `--no-title` and in every RPC/ACP session; the switch again stops only automatic session titles, plus subagent task labels
-- Fixed host tool calls started by a browser `run` continuing after that tab's worker crashed; they are now aborted along with the run
 - Fixed `grep` and `ast_grep` returning no matches for a `path` glob that names directories, such as `src/{api,web}` or `src/we?`; matched directories are now searched recursively like a plain directory path, so `src/*` also searches files in `src`'s subdirectories ([#15760](https://github.com/can1357/oh-my-pi/issues/15760))
 - Fixed a structured `display()` value in an Eval cell appearing twice in the TUI and collab view, as text in the cell box and again as the JSON tree; it now shows once, as the tree, while the model still sees the text ([#10778](https://github.com/can1357/oh-my-pi/issues/10778), [#12730](https://github.com/can1357/oh-my-pi/pull/12730) by [@F0Rextasy](https://github.com/F0Rextasy))
 - `omp auth-gateway serve` now bounds its broker-backed session cache instead of growing with every distinct client session ([#15841](https://github.com/can1357/oh-my-pi/issues/15841)).
@@ -2002,7 +2001,6 @@ Older entries are archived in [packages/coding-agent/CHANGELOG.md@5041889e64d3](
 - Fixed the alt+p / `/switch` model picker taking seconds to appear: it rebuilt the whole model catalog on every open before painting, and now re-reads it only when startup discovery is still landing or models.yml changed
 - Fixed `tool_call` `additionalContext` being delivered more than once when several extension or hook handlers on the same call returned identical text ([#13633](https://github.com/can1357/oh-my-pi/pull/13633) by [@andrebrait](https://github.com/andrebrait))
 - Fixed hosted OpenAI web search on hosts that accept only string tool_choice values, such as Command Code ([#13666](https://github.com/can1357/oh-my-pi/pull/13666) by [@riicodespretty](https://github.com/riicodespretty))
-- Fixed a browser tab whose worker crashed staying listed as open and failing every call with "Worker has been terminated"; the tab is now closed and the next call says to reopen it
 
 ### Removed
 
