@@ -2,7 +2,7 @@
 
 What this fork changes, why, and what must still be true after an upstream sync.
 
-**Structure.** One `##` per area (`Advisor`, `Status line and TUI`, `Browser`), one
+**Structure.** One `##` per area (`Advisor`, `Browser`), one
 `###` per feature under it, seven fields per feature: **What it does**, **Why**, **Files**
 (the files the feature *owns* — every changed file is in exactly one entry's **Files**;
 an entry whose code sits in a file another entry owns names that file and its symbols
@@ -41,8 +41,10 @@ does what I wanted".
   `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorMaxRequestsPerUpdate`),
   `docs/advisor-watchdog.md` (the request-cap paragraph after the
   `model.toolCallLoopGuard.*` paragraph),
-  `docs/settings.md` (the `advisor.maxRequestsPerUpdate` row; the `advisor` segment
-  paragraph is named under the advisor-segment entry's **Depends on upstream**).
+  `docs/settings.md` (the `advisor.maxRequestsPerUpdate` row),
+  `packages/coding-agent/src/session/session-advisors.ts` (the `AdvisorRequestCap`
+  import, its construction, the `recordTurn` call skipped once
+  `advisorLoopGuardStopped` is set, and its two `reset` calls).
 - **Depends on upstream:** `AdvisorLoopGuard` in
   `packages/coding-agent/src/advisor/loop-guard.ts` staying upstream's, its
   `AdvisorLoopGuardHost` interface (reused as the cap's host) and its reset points
@@ -50,10 +52,6 @@ does what I wanted".
   feeds `recordTurn`, and `advisorLoopGuardStopped` clearing the abort error; #13132's
   advise-only turn ending the review. Upstream PRs #10117 and #7964 propose the same
   kind of cap — if one lands, drop this entry for it.
-  Fork code it relies on in files other entries own: the `AdvisorRequestCap` import,
-  construction, `recordTurn` call (skipped once `advisorLoopGuardStopped` is set) and
-  two `reset` calls in `packages/coding-agent/src/session/session-advisors.ts`
-  (advisor-segment entry).
 - **Tripwire paths:** `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/agent/src/agent-loop.ts`, `packages/agent/src/types.ts`
 - **Must still be true:**
   - The corrective is injected on exactly the cap-th completed request of a review,
@@ -65,76 +63,6 @@ does what I wanted".
   - The count restarts at every `AdvisorLoopGuard.reset()` site.
   - `packages/coding-agent/src/advisor/loop-guard.ts` equals upstream's.
 - **Check:** `bun test packages/coding-agent/test/advisor/request-cap.test.ts packages/coding-agent/test/advisor-tool-call-loop-guard.test.ts`
-
-## Status line and TUI
-
-### Advisor status line segment (count, busiest context, cache-hit rate)
-
-- **What it does:** A new `advisor` status line segment, in the `full` preset, shows the
-  advisor eye (colored by the worst status in the roster) with the advisor count (`2`,
-  or `1/2` when some are not running), the busiest live advisor's context percent in the
-  `context_pct` warning colors (the same percent and token thresholds, measured against
-  that advisor's own context window), and the session-total advisor cache-hit rate. It is
-  hidden when no advisor is configured. `statusLine.segmentOptions.advisor.showCount`,
-  `showContext` and `showCacheHit` turn parts off. The cache split is counted on every
-  advisor `message_end` and restored on resume from the same transcript scan as spend.
-- **Why:** With several advisors there was no way to see at a glance how many were
-  running, which one was close to compaction, or whether the advisors were hitting
-  cache; the model segment's eye badge only shows status.
-- **Files:** `packages/tui/src/status-line/segments.ts` (`advisorSegment` with its ANSI
-  `render` and native `describe`, `advisorBadgeColor`, which upstream's
-  `modelAdvisorBadge` now also calls, and the
-  `advisor` row in `SEGMENTS`), `packages/tui/src/status-line/schema.ts` (the `advisor`
-  id), `packages/tui/src/status-line/presets.ts` (`advisor` in the `full` preset),
-  `packages/tui/src/status-line/types.ts` (`StatusLineSegmentOptions.advisor`),
-  `packages/tui/src/status-line/host.ts` (optional
-  `StatusLineSession.getAdvisorUsageSummary`),
-  `packages/coding-agent/src/advisor/transcript-recorder.ts` (`AdvisorPromptUsage` and
-  the `promptUsageBySlug` option of `loadAdvisorTranscriptCosts`),
-  `packages/coding-agent/src/cli/gallery-fixtures/preview-session.ts`
-  (`advisorStatuses`, `advisorUsage`, the fake `getAdvisorUsageSummary`),
-  `packages/coding-agent/src/cli/gallery-fixtures/segments.ts` (the `advisor` variants),
-  `packages/coding-agent/src/session/agent-session.ts` (`getAdvisorUsageSummary`, the
-  `AdvisorUsageSummary` re-export and the `promptUsageBySlug` plumbing on both restore
-  paths),
-  `packages/coding-agent/src/session/session-advisors.ts` (`#advisorPromptUsage`,
-  `#recordAdvisorPromptUsage` in the recorder feed, its clears and restores in
-  `clearCost`, `restoreCost`, `beginCostRestoreSnapshot`, `restoreInitialCost` and the
-  re-prime path, `AdvisorUsageSummary` (including the busiest advisor's
-  `contextWindow`), `getAdvisorUsageSummary`, `#advisorContextPercent` and the
-  `contextPercentCache` memo (keyed on the message array, its length and tail and the
-  model, cleared after an eviction, and computed with `#estimateAdvisorContextTokens`);
-  the request-cap wiring is named under the request-cap entry's **Depends on
-  upstream**).
-- **Depends on upstream:** the status line keeping its segment list by hand in
-  `schema.ts`, `SEGMENTS` and the presets, plus the gallery's `variantsFor` switch — a
-  new upstream segment conflicts in all of them; `getAdvisorStatusOverview` and its
-  status strings (`running`, `error`, `quota_exhausted`, `paused`);
-  `getContextUsageLevel` and `getContextUsageThemeColor` in
-  `packages/tui/src/chrome/context-thresholds.ts`; `theme.icon.advisor`,
-  `theme.icon.context`, `theme.icon.cache` and `withIcon`; the
-  `cache_hit` segment's prompt-token denominator (`cacheRead + cacheWrite + input`),
-  which this copies; `loadAdvisorTranscriptCosts`' single pass over advisor
-  transcripts and the cost-restore snapshot barrier; `AssistantMessage.usage`.
-  Fork code it relies on in files other entries own: the `advisor` segment paragraph in
-  `docs/settings.md` (request-cap entry).
-- **Tripwire paths:** `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/chrome/context-thresholds.ts`, `packages/tui/src/theme/symbols.ts`, `packages/coding-agent/src/advisor/transcript-recorder.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`
-- **Must still be true:**
-  - With every advisor running the count is the bare total; otherwise it is
-    `running/total`.
-  - The segment is hidden when no advisor is configured.
-  - Advisor compaction replacing the transcript keeps the cache totals and lowers the
-    context percent.
-  - Resuming or switching to a session restores the cache totals from its advisor
-    transcripts; a turn recorded while the restore scan runs is counted exactly once.
-  - The status line never walks advisor transcripts on a render frame whose inputs did
-    not change.
-  - The model segment's eye badge colors are unchanged in both the ANSI render and the
-    native describe: error, then warning, then success, else dim.
-  - The advisor context percent gets the same warning level `context_pct` would give
-    for that percent and window, in both the ANSI render and the native describe: a
-    1M-window advisor past 150k tokens is already a warning.
-- **Check:** `bun test packages/tui/test/status-line-advisor.test.ts packages/coding-agent/test/advisor-toggle.test.ts`
 
 ## Browser
 
