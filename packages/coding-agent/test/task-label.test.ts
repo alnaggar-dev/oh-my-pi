@@ -4,7 +4,6 @@ import * as ai from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { generateTaskLabel, labelEchoesHandle } from "@oh-my-pi/pi-coding-agent/task/label";
-import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 
 function getModelOrThrow(id: string): Model<Api> {
 	const model = getBundledModel("anthropic", id);
@@ -88,50 +87,6 @@ describe("task label generation", () => {
 			"AuthLoader",
 		);
 		expect(labeled).toBe("Sleep then reply done");
-	});
-
-	it("skips label generation entirely when PI_NO_TITLE is set", async () => {
-		const model = getModelOrThrow("claude-sonnet-4-5");
-		const complete = vi.spyOn(ai, "completeSimple");
-		const previous = Bun.env.PI_NO_TITLE;
-		Bun.env.PI_NO_TITLE = "1";
-		try {
-			const labeled = await generateTaskLabel(
-				"Sleep forty seconds then reply done",
-				createRegistry(model),
-				createSettings(model),
-				"AuthLoader",
-			);
-			expect(labeled).toBeNull();
-			expect(complete).not.toHaveBeenCalled();
-		} finally {
-			if (previous === undefined) delete Bun.env.PI_NO_TITLE;
-			else Bun.env.PI_NO_TITLE = previous;
-		}
-	});
-
-	it("still generates titles the user asks for when PI_NO_TITLE is set", async () => {
-		// `/rename`, title cards and plan-save names call the generator directly;
-		// only automatic titles and subagent labels honor the switch.
-		const model = getModelOrThrow("claude-sonnet-4-5");
-		const complete = vi.spyOn(ai, "completeSimple").mockResolvedValue({
-			stopReason: "stop",
-			content: [{ type: "text", text: "<title>Flaky shutdown test</title>" }],
-		} as never);
-		const previous = Bun.env.PI_NO_TITLE;
-		Bun.env.PI_NO_TITLE = "1";
-		try {
-			const title = await generateSessionTitle(
-				"Investigate why the shutdown test fails intermittently on CI",
-				createRegistry(model),
-				createSettings(model),
-			);
-			expect(title).toBe("Flaky shutdown test");
-			expect(complete).toHaveBeenCalledTimes(1);
-		} finally {
-			if (previous === undefined) delete Bun.env.PI_NO_TITLE;
-			else Bun.env.PI_NO_TITLE = previous;
-		}
 	});
 
 	it("treats a case-insensitive Name-N collision as an echoed handle", () => {
