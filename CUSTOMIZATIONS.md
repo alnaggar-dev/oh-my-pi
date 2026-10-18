@@ -22,81 +22,6 @@ does what I wanted".
 
 ## Advisor
 
-### Advisor repeat-call de-duplication
-
-- **What it does:** Inside a review, a call identical to an earlier call from the same
-  review whose result is still in context returns
-  `[Unchanged since your earlier identical call]`. This covers
-  every advisor tool except `advise`: by default `read`/`grep`/`glob` (plus `recall`
-  when the memory backend provides it), and any built-in granted through a
-  `WATCHDOG.yml` `tools:` list. For `read`, the comparison ignores the repeat hint
-  upstream `read` appends from the 3rd identical read, but only at the exact spot
-  `read` puts it and only when it names this call's `path`. Calls are identical when
-  their `toolCallSignature` matches: tool name plus arguments with key order and the
-  agent-authored intent fields (`i`, `__intent`) ignored, values compared verbatim.
-- **Why:** 13% of advisor investigation calls were byte-identical repeats, each one
-  re-inflating the context that upstream's stale-result eviction trims.
-- **Files:** `packages/coding-agent/src/advisor/tool-result-dedupe.ts`
-  (`AdvisorToolResultDedupe`, `toolCallSignature`),
-  `packages/coding-agent/src/advisor/tool-result-eviction.ts` (only the `export` on
-  `latestReviewStart`),
-  `packages/coding-agent/src/session/session-advisors.ts` (the `AdvisorToolResultDedupe`
-  import, the per-runtime `toolResultDedupe` instance, and the dedupe branch in the
-  advisor `afterToolCall` hook; the request-cap wiring — the `AdvisorRequestCap` import,
-  its construction, the `recordTurn` call guarded by `advisorLoopGuardStopped` and its
-  two `reset` calls — named under the request-cap entry's **Depends on upstream**; the
-  file's other fork hunks are named under the advisor-segment entry's **Depends on
-  upstream**).
-- **Depends on upstream:** `prunedAt` on `ToolResultMessage` — a result upstream's
-  `evictStaleToolResults` (`packages/coding-agent/src/advisor/tool-result-eviction.ts`)
-  or any other prune blanked carries it and reads as a miss; `latestReviewStart` in the
-  same file staying the exact boundary `evictStaleToolResults` protects from (the
-  latest non-synthetic user message), since dedupe only points at originals at or
-  after it; `appendRepeatReadHint` in
-  `packages/coding-agent/src/tools/read.ts` — its exact hint text, that it goes at the
-  end of the first text block, and that it quotes the call's `path` argument verbatim
-  (matched by `stripRepeatReadHint` in
-  `packages/coding-agent/src/advisor/tool-result-dedupe.ts`; the advisors' shared tool
-  session pools its count across advisors); the meta-notice wrapper appending
-  `formatOutputNotice(details.meta)` to the last text block after the tool returns
-  (`appendOutputNotice` in `packages/coding-agent/src/tools/output-meta.ts`,
-  `formatOutputNotice` in `packages/tui/src/tools/output-meta.ts`) and the agent loop
-  keeping `details` on the `ToolResultMessage`; the `AfterToolCallResult` shape
-  including `useless`; `INTENT_FIELD` in `packages/wire/src/index.ts` and
-  `stableStringifyJson` in `packages/utils/src/json.ts` (sorted keys), which
-  `toolCallSignature` builds on.
-  Upstream's advisor `afterToolCall` hook in `session-advisors.ts` (added by #13132: a
-  turn whose only tool calls are `advise` ends the review). The fork only swaps its
-  first line for the dedupe branch, so an upstream rewrite of that line conflicts
-  instead of silently dropping dedupe.
-  Fork code it relies on in files other entries own: the repeat-call paragraph in
-  `docs/advisor-watchdog.md` (request-cap entry).
-  **Open upstream risk — PR #12516** (open): it moves the advisor onto the shared
-  compaction code, whose per-turn prune follows `compaction.supersedeReads` and
-  `compaction.dropUseless` (both on by default). On the advisor's history, a newer
-  identical `read` whose result is the dedupe stub could supersede the original that
-  stub points to and blank it, leaving the advisor neither copy. (`dropUseless`
-  eliding the stubs themselves is expected: they are flagged `useless` for that.) If
-  it lands, re-check dedupe against the shared prune.
-- **Tripwire paths:** `packages/ai/src/types.ts`, `packages/agent/src/types.ts`, `packages/agent/src/agent-loop.ts`, `packages/coding-agent/src/advisor/tool-result-eviction.ts`, `packages/coding-agent/src/tools/read.ts`, `packages/coding-agent/src/tools/output-meta.ts`, `packages/tui/src/tools/output-meta.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/wire/src/index.ts`, `packages/utils/src/json.ts`
-- **Must still be true:**
-  - A repeated identical investigation call returns the "unchanged" stub, but the full
-    output is served again if the earlier result was evicted, rolled back, errored,
-    held an image, or the file changed.
-  - A repeat whose original sits in an earlier review (before the latest non-synthetic
-    user message) is served in full and becomes the new tracked original, so eviction
-    blanking the old copy never leaves the advisor holding only a stub.
-  - Identical calls differing only in intent text or argument key order still dedupe;
-    a different argument value does not.
-  - The 3rd and later identical `read` calls still return the "unchanged" stub even
-    though upstream `read` appends a repeat hint with a rising count, including when an
-    output notice such as `[Showing lines …]` follows the hint.
-  - A `read` whose content changed is served in full even when the change is
-    hint-shaped text: a hint naming another path, or one not where `read` appends it.
-  - Dedupe runs only for successful non-`advise` tool calls; the `advise` branch of the
-    `afterToolCall` hook stays upstream's, unchanged.
-- **Check:** `bun test packages/coding-agent/test/advisor/tool-result-dedupe.test.ts packages/coding-agent/test/advisor-tool-result-eviction.test.ts packages/coding-agent/test/advisor-advise-terminal.test.ts`
-
 ### Cache breakpoint in front of a rewritten region (Anthropic)
 
 - **What it does:** When history was rewritten in place before a request and the
@@ -216,8 +141,7 @@ does what I wanted".
   `packages/coding-agent/src/prompts/advisor/request-cap-reached.md` (the corrective),
   `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorMaxRequestsPerUpdate`),
   `docs/advisor-watchdog.md` (the request-cap paragraph after the
-  `model.toolCallLoopGuard.*` paragraph; the repeat-call paragraph is named under the
-  dedupe entry's **Depends on upstream**),
+  `model.toolCallLoopGuard.*` paragraph),
   `docs/settings.md` (the `advisor.maxRequestsPerUpdate` row; the `advisor` segment
   paragraph is named under the advisor-segment entry's **Depends on upstream**).
 - **Depends on upstream:** `AdvisorLoopGuard` in
@@ -229,8 +153,8 @@ does what I wanted".
   kind of cap — if one lands, drop this entry for it.
   Fork code it relies on in files other entries own: the `AdvisorRequestCap` import,
   construction, `recordTurn` call (skipped once `advisorLoopGuardStopped` is set) and
-  two `reset` calls in `packages/coding-agent/src/session/session-advisors.ts` (dedupe
-  entry).
+  two `reset` calls in `packages/coding-agent/src/session/session-advisors.ts`
+  (advisor-segment entry).
 - **Tripwire paths:** `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/agent/src/agent-loop.ts`, `packages/agent/src/types.ts`
 - **Must still be true:**
   - The corrective is injected on exactly the cap-th completed request of a review,
@@ -324,7 +248,16 @@ does what I wanted".
   `packages/coding-agent/src/cli/gallery-fixtures/segments.ts` (the `advisor` variants),
   `packages/coding-agent/src/session/agent-session.ts` (`getAdvisorUsageSummary`, the
   `AdvisorUsageSummary` re-export and the `promptUsageBySlug` plumbing on both restore
-  paths).
+  paths),
+  `packages/coding-agent/src/session/session-advisors.ts` (`#advisorPromptUsage`,
+  `#recordAdvisorPromptUsage` in the recorder feed, its clears and restores in
+  `clearCost`, `restoreCost`, `beginCostRestoreSnapshot`, `restoreInitialCost` and the
+  re-prime path, `AdvisorUsageSummary` (including the busiest advisor's
+  `contextWindow`), `getAdvisorUsageSummary`, `#advisorContextPercent` and the
+  `contextPercentCache` memo (keyed on the message array, its length and tail and the
+  model, cleared after an eviction, and computed with `#estimateAdvisorContextTokens`);
+  the request-cap wiring is named under the request-cap entry's **Depends on
+  upstream**).
 - **Depends on upstream:** the status line keeping its segment list by hand in
   `schema.ts`, `SEGMENTS` and the presets, plus the gallery's `variantsFor` switch — a
   new upstream segment conflicts in all of them; `getAdvisorStatusOverview` and its
@@ -335,16 +268,8 @@ does what I wanted".
   `cache_hit` segment's prompt-token denominator (`cacheRead + cacheWrite + input`),
   which this copies; `loadAdvisorTranscriptCosts`' single pass over advisor
   transcripts and the cost-restore snapshot barrier; `AssistantMessage.usage`.
-  Fork code it relies on in files other entries own: in
-  `packages/coding-agent/src/session/session-advisors.ts` (dedupe entry)
-  `#advisorPromptUsage`, `#recordAdvisorPromptUsage` in the recorder feed, its clears
-  and restores in `clearCost`, `restoreCost`, `beginCostRestoreSnapshot`,
-  `restoreInitialCost` and the re-prime path, `AdvisorUsageSummary` (including the
-  busiest advisor's `contextWindow`), `getAdvisorUsageSummary`, `#advisorContextPercent`
-  and the `contextPercentCache`
-  memo (keyed on the message array, its length and tail and the model, cleared after an
-  eviction, and computed with `#estimateAdvisorContextTokens`); the `advisor` segment
-  paragraph in `docs/settings.md` (request-cap entry).
+  Fork code it relies on in files other entries own: the `advisor` segment paragraph in
+  `docs/settings.md` (request-cap entry).
 - **Tripwire paths:** `packages/tui/src/status-line/segments.ts`, `packages/tui/src/status-line/schema.ts`, `packages/tui/src/status-line/presets.ts`, `packages/tui/src/status-line/types.ts`, `packages/tui/src/status-line/host.ts`, `packages/tui/src/chrome/context-thresholds.ts`, `packages/tui/src/theme/symbols.ts`, `packages/coding-agent/src/advisor/transcript-recorder.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/cli/gallery-fixtures/segments.ts`
 - **Must still be true:**
   - With every advisor running the count is the bare total; otherwise it is

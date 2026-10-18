@@ -75,7 +75,6 @@ import {
 	slugifyAdvisorName,
 } from "../advisor";
 import { AdvisorRequestCap } from "../advisor/request-cap";
-import { AdvisorToolResultDedupe } from "../advisor/tool-result-dedupe";
 import { evictStaleToolResults } from "../advisor/tool-result-eviction";
 import type { ModelRegistry } from "../config/model-registry";
 import {
@@ -1392,10 +1391,6 @@ export class SessionAdvisors {
 				(note, severity, turn) => this.#routeAdvice(advisorRef, note, severity, turn),
 				emissionGuard,
 			);
-			// 13.2% of advisor investigation calls repeat a byte-identical earlier
-			// call within one advisor session; the repeat result is replaced by a
-			// pointer at the still-live original.
-			const toolResultDedupe = new AdvisorToolResultDedupe();
 
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
@@ -1542,9 +1537,6 @@ export class SessionAdvisors {
 						buildAdvisorQuarantineSourceText(currentAdvisorInput, advisorAgent.state.messages),
 					);
 				},
-				// An investigation result identical to one the advisor already
-				// carries becomes a pointer at that copy (see dedupe above).
-				//
 				// A turn whose only tool calls are `advise` has nothing left to do:
 				// without this the model is re-invoked over the whole prefix just to
 				// say "done" (measured at ~6% of advisor spend, zero notes). Stop the
@@ -1555,10 +1547,7 @@ export class SessionAdvisors {
 				// records in index order and a not-yet-started sibling would see the
 				// aborted signal and become a skipped placeholder — a lost note.
 				afterToolCall: ctx => {
-					if (ctx.toolCall.name !== adviseTool.name) {
-						if (ctx.isError) return undefined;
-						return toolResultDedupe.check(ctx.toolCall, ctx.result, advisorAgent.state.messages);
-					}
+					if (ctx.toolCall.name !== adviseTool.name) return undefined;
 					if (ctx.isError) return undefined;
 					let lastAdviseId: string | undefined;
 					for (const block of ctx.assistantMessage.content) {
