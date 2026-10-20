@@ -66,9 +66,6 @@
 
 - Fixed Muse Code usage going stale whenever its 5-hour window sits idle: the idle window now reports as unused, and weekly usage carries over from the last active window until its reset ([#16193](https://github.com/can1357/oh-my-pi/pull/16193) by [@eggpeat](https://github.com/eggpeat))
 - Fixed DeepSeek tool calls never running when the model writes them as chat-template tokens with `_` in place of `▁`, a missing `｜`, or no per-call close (e.g. `<｜tool_calls_begin｜>…<｜tool_calls_end｜>`): they now run as tool calls, and any that still cannot be parsed are removed from history and reported to the model as a failed call ([#16216](https://github.com/can1357/oh-my-pi/pull/16216) by [@H4vC](https://github.com/H4vC))
-### Removed
-
-- Removed the extra Anthropic cache breakpoint in front of a long in-place history rewrite; requests again use upstream's trailing and decimation breakpoints only
 
 ## [18.12.1] - 2026-10-17
 
@@ -156,8 +153,6 @@
 - Fixed malformed image-generation inputs being forwarded to providers or reported as credential/upstream errors ([#15765](https://github.com/can1357/oh-my-pi/pull/15765) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
 - Fixed broker-backed auth-gateway processes retaining a cache entry for every distinct client session indefinitely under sustained traffic ([#15841](https://github.com/can1357/oh-my-pi/issues/15841)).
 - Fixed turns ending on a pinned error when a provider reports "temporarily unavailable" or finishes with an `unknown`, `other` or `unspecified` finish reason: these now retry automatically ([#15424](https://github.com/can1357/oh-my-pi/pull/15424) by [@lockwo](https://github.com/lockwo))
-- Fixed Anthropic prompt caching missing the deeper region when two history rewrites happened before one request: the extra breakpoint now sits before the earliest rewrite no request has sent yet
-- Fixed Anthropic prompt caching dropping a long session's decimation breakpoint for a rewrite breakpoint whose lookback cannot reach it; that anchor now keeps its slot, and the rewrite breakpoint reads the lookback from the model catalog instead of a hard-coded limit, so models without a catalog lookback no longer get one
 
 ## [18.11.0] - 2026-10-14
 
@@ -695,7 +690,6 @@
 
 - Updated API response cost reporting to use aggregate usage totals.
 - Model list responses now optionally include a model kind.
-- Anthropic prompt caching now adds a breakpoint on the last cacheable message before a long in-place history rewrite (pruned or evicted tool results), so the re-billed region stops at the rewrite instead of falling back to the previous checkpoint up to 15 user turns earlier. Short tail rewrites keep the existing breakpoint layout.
 
 ### Fixed
 
