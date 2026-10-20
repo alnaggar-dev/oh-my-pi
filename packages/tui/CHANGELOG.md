@@ -187,11 +187,6 @@
 - Fixed a streaming table bouncing everything below it up and down while its last cell was still being written ([#16116](https://github.com/can1357/oh-my-pi/pull/16116) by [@galtamam-cmyk](https://github.com/galtamam-cmyk))
 - Fixed inline images in iTerm2 being sized for the wrong cell shape, which left charts smeared or offset ([#16118](https://github.com/can1357/oh-my-pi/pull/16118) by [@galtamam-cmyk](https://github.com/galtamam-cmyk))
 
-### Removed
-
-- Removed the auto marker on an auto-resolved thinking level in the status line model segment; it again shows the level the way a pinned one looks (`◒ high`)
-- Removed the `advisor` status line segment (advisor count, busiest advisor context and advisor cache-hit rate) and the optional `StatusLineSession.getAdvisorUsageSummary()` it read; `/advisor status` still shows each advisor's status, context and spend
-
 ## [18.12.1] - 2026-10-17
 
 ### Breaking Changes
@@ -274,9 +269,6 @@
 ### Added
 
 - Added a tree layout to the background jobs sheet: subagents' jobs nest under the task job that runs them, busiest branches first, and Cancel appears only on the viewing agent's own jobs ([#15854](https://github.com/can1357/oh-my-pi/pull/15854) by [@H4vC](https://github.com/H4vC))
-### Changed
-
-- With thinking on `auto`, the status line model segment shows the resolved level with the auto marker (`⟳ high`) so it reads apart from a pinned level ([#5951](https://github.com/can1357/oh-my-pi/issues/5951))
 
 ### Fixed
 
@@ -290,7 +282,6 @@
 - Fixed a streaming Edit preview with long wrapped lines growing past its row cap, because its tail was budgeted without the diff gutter its continuation rows hang under ([#15679](https://github.com/can1357/oh-my-pi/pull/15679))
 - Fixed malformed base64 padding being accepted for chat image attachments before native image decoding ([#15765](https://github.com/can1357/oh-my-pi/pull/15765) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
 - Fixed Shift+Enter submitting and Ctrl+Enter inserting a newline in Windows Terminal 1.25–1.27 after closing any fullscreen view such as `/settings`; the terminal dropped omp's keyboard mode on leaving the alternate screen ([microsoft/terminal#20763](https://github.com/microsoft/terminal/issues/20763)), so omp now re-applies it ([#15868](https://github.com/can1357/oh-my-pi/pull/15868) by [@H4vC](https://github.com/H4vC)).
-- Fixed the `advisor` status line segment coloring a large-window advisor's context by percent alone; it now applies the same token thresholds as `context_pct`, so a 1M-token advisor turns yellow at 150k tokens instead of 500k
 - Long lines in native (Tern) `read`, `write`, and code-cell source now wrap instead of scrolling each block sideways ([#15823](https://github.com/can1357/oh-my-pi/issues/15823)).
 - Fixed long text pastes taking seconds to land in terminals that deliver a paste one key at a time, such as JetBrains' terminal on Windows; omp no longer writes to the terminal for every pasted key ([#15757](https://github.com/can1357/oh-my-pi/issues/15757))
 - Fixed Shift+Enter submitting the prompt and Ctrl+Enter inserting a newline in WSL under Windows Terminal 1.24 and earlier, conhost, and other ConPTY hosts without kitty keyboard support; Shift+Enter now inserts a newline and Ctrl+Enter sends a follow-up, as on native Windows.
@@ -988,8 +979,6 @@
 ### Changed
 
 - Updated the settings selector so clearing an input field fully unsets the corresponding setting.
-- Added push-to-talk dictation to `Input`, including live transcription text and `cursorOverride` support.
-- Added the `advisor` status line segment and the optional `StatusLineSession.getAdvisorUsageSummary()` it reads.
 
 ### Fixed
 
