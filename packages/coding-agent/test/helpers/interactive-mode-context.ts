@@ -119,6 +119,7 @@ export function createSessionStub(
 		getApprovalGrants: () => ({ present: () => new Set<string>() }),
 		hasBuiltInTool: () => true,
 		getLastAssistantMessage: () => undefined,
+		isAdvisorAnswerHoldActive: () => false,
 		agent: {
 			state: { streamMessage: null },
 			getPendingToolResults: () => [],
