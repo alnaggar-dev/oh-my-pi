@@ -117,7 +117,10 @@ does what I wanted".
   (`packages/coding-agent/src/main.ts`) and cleared for subagents
   (`packages/coding-agent/src/sdk.ts`). The same change is prepared for upstream on
   branch `pr/advisor-hold-final-answer`; upstream PR #15025 (`advisor.reviewFinalAnswer`)
-  and issue #7098 target the same problem. If either PR lands, drop this entry for it.
+  and issue #7098 target the same problem. If either PR lands, do not drop this entry
+  until every **Must still be true** item below holds on the synced upstream code
+  without the fork's changes; #15025 holds the answer in the agent core and adds its
+  own review timeout, so its merge alone does not prove that.
 - **Tripwire paths:** `packages/agent/src/agent-loop.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/modes/controllers/input-controller.ts`, `packages/coding-agent/src/modes/utils/ui-helpers.ts`, `packages/tui/src/chat/assistant-message.ts`, `packages/tui/src/chat/chat-transcript-builder.ts`, `packages/coding-agent/src/modes/rpc/wire/events.ts`, `packages/coding-agent/src/tts/vocalizer.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`
 - **Must still be true:**
   - With the setting off, or in a session not shown in the interactive TUI (RPC, ACP,
