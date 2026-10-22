@@ -914,7 +914,8 @@ export interface CreateAgentSessionOptions {
 	settingsApproval?: boolean;
 	/**
 	 * Replies render in omp's own TUI transcript, which draws Mermaid, ```svg
-	 * figures and table charts; only then does the system prompt mention them.
+	 * figures and table charts (only then does the system prompt mention them)
+	 * and can hide a draft answer under `advisor.holdFinalAnswer`.
 	 * Print, RPC, ACP and subagent sessions read replies as text. Default: false.
 	 */
 	tuiTranscript?: boolean;
@@ -5018,6 +5019,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorMcpResources: cursorMcpResources,
 			titleSystemPrompt: options.titleSystemPrompt,
 			autoTitle: options.autoTitle === true && !isSubagentSession,
+			tuiTranscript,
 		});
 		hasSession = true;
 		credentialNoticeSession = session;

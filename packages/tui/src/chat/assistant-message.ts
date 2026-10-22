@@ -15,6 +15,7 @@ import {
 } from "../components/markdown";
 import { Spacer } from "../components/spacer";
 import { Text } from "../components/text";
+import { TruncatedText } from "../components/truncated-text";
 import { formatDuration, formatNumber, logger } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
@@ -54,6 +55,53 @@ const MAX_TRANSCRIPT_ERROR_ROWS = 8;
 const EMPTY_STABLE_RENDER: readonly string[] = [];
 /** Text renderers that threw once; each failure is logged once per renderer, not per frame. */
 const failedTextRenderers = new WeakSet<AssistantTextRenderer>();
+
+/** The one line a held final answer collapses to once an advisor review steered its rewrite. */
+export const REVISED_HELD_ANSWER_LABEL = "Draft answer replaced after advisor review";
+
+/**
+ * Display state of an `advisor.holdFinalAnswer` review: `held` hides the
+ * answer text, `revised` collapses the block to {@link REVISED_HELD_ANSWER_LABEL}.
+ */
+type AnswerReviewState = "none" | "held" | "revised";
+
+/** The answer's text blocks blanked in place, so content indices stay aligned with the unheld message. */
+function withoutAnswerText(message: AssistantMessage): AssistantMessage {
+	if (!message.content.some(content => content.type === "text" && content.text.length > 0)) return message;
+	return {
+		...message,
+		content: message.content.map(content =>
+			content.type === "text" && content.text.length > 0 ? { ...content, text: "" } : content,
+		),
+	};
+}
+
+/** Content index of the tail thinking block when the tail visible block is thinking and no tool call started. */
+function liveThinkingTail(message: AssistantMessage): number | undefined {
+	let tail: "text" | "thinking" | undefined;
+	let tailIndex = -1;
+	for (let index = 0; index < message.content.length; index++) {
+		const content = message.content[index]!;
+		if (content.type === "toolCall") return undefined;
+		if (content.type === "text" && canonicalizeMessage(content.text)) {
+			tail = "text";
+			tailIndex = index;
+		} else if (content.type === "thinking" && canonicalizeMessage(content.thinking)) {
+			tail = "thinking";
+			tailIndex = index;
+		}
+	}
+	return tail === "thinking" ? tailIndex : undefined;
+}
+
+/** The answer's text blocks, trimmed and a blank line apart. */
+function answerTextOf(message: AssistantMessage): string {
+	const blocks: string[] = [];
+	for (const content of message.content) {
+		if (content.type === "text" && canonicalizeMessage(content.text)) blocks.push(content.text.trim());
+	}
+	return blocks.join("\n\n");
+}
 
 /** The native head of a finished thinking block: "Thought for 12s", or "Thought" when it was never seen streaming. */
 function thoughtLabel(clock: { start: number; end?: number } | undefined): string {
@@ -317,9 +365,10 @@ export class AssistantMessageComponent extends Container {
 	#errorPinned = false;
 	/**
 	 * Whether the inline turn-ending error block renders its full body instead of
-	 * the {@link MAX_TRANSCRIPT_ERROR_ROWS}-capped preview. Toggled by
-	 * {@link setExpanded} so Ctrl+O (tool-output expansion) reveals a long
-	 * provider error whose tail would otherwise be unreachable in the live TUI.
+	 * the {@link MAX_TRANSCRIPT_ERROR_ROWS}-capped preview, and a revised held
+	 * answer shows its draft. Toggled by {@link setExpanded} so Ctrl+O
+	 * (tool-output expansion) reveals a long provider error whose tail would
+	 * otherwise be unreachable in the live TUI.
 	 */
 	#errorExpanded = false;
 	/** The deduplicated message the native error frame shows (its "Copy error" copies it). */
@@ -328,6 +377,10 @@ export class AssistantMessageComponent extends Container {
 	#rewound = false;
 	/** The turn's totals when this answer ends it; a TSP terminal shows them under the answer. */
 	#turnUsage: TurnUsageSummary | undefined;
+	/** `advisor.holdFinalAnswer` display state; see {@link setAnswerHeld} and {@link markRevisedHeldAnswer}. */
+	#answerReview: AnswerReviewState = "none";
+	/** While held: the live thinking tail of the unheld message (its blanked text no longer marks the tail). */
+	#heldThinkingTail: number | undefined;
 	/**
 	 * True when the current {@link updateContent} message carries a truncatable
 	 * inline provider error (the `#appendErrorBlock` path) — set whether or not
@@ -749,24 +802,13 @@ export class AssistantMessageComponent extends Container {
 	/**
 	 * Content index of the thinking block the model is producing right now:
 	 * the block is still streaming (not finalized), no tool call has started,
-	 * and the tail visible block is thinking. Undefined otherwise.
+	 * and the tail visible block is thinking. Undefined otherwise. A held answer
+	 * reads the tail of its unheld message, recorded by {@link updateContent}.
 	 */
 	#thinkingTailIndex(message: AssistantMessage): number | undefined {
-		if (this.#transcriptBlockFinalized) return undefined;
-		let tail: "text" | "thinking" | undefined;
-		let tailIndex = -1;
-		for (let index = 0; index < message.content.length; index++) {
-			const content = message.content[index]!;
-			if (content.type === "toolCall") return undefined;
-			if (content.type === "text" && canonicalizeMessage(content.text)) {
-				tail = "text";
-				tailIndex = index;
-			} else if (content.type === "thinking" && canonicalizeMessage(content.thinking)) {
-				tail = "thinking";
-				tailIndex = index;
-			}
-		}
-		return tail === "thinking" ? tailIndex : undefined;
+		if (this.#transcriptBlockFinalized || this.#answerReview === "revised") return undefined;
+		if (this.#answerReview === "held") return this.#heldThinkingTail;
+		return liveThinkingTail(message);
 	}
 
 	#thinkingDotsLabel(): string {
@@ -851,18 +893,60 @@ export class AssistantMessageComponent extends Container {
 
 	/**
 	 * Expand or collapse the inline turn-ending error block so Ctrl+O
-	 * (tool-output expansion) can reveal a long provider error's hidden tail.
-	 * Only re-renders when the current message carries a truncatable error, so
-	 * toggling expansion across the transcript skips ordinary turns. Works even
-	 * while the error is pinned in the banner: the inline block is drawn (in full)
-	 * when expanded so the complete body is reachable without sending a message.
+	 * (tool-output expansion) can reveal a long provider error's hidden tail,
+	 * and a revised held answer's draft under its one-line label.
+	 * Only re-renders when the current message carries a truncatable error or
+	 * a revised draft, so toggling expansion across the transcript skips
+	 * ordinary turns. Works even while the error is pinned in the banner: the
+	 * inline block is drawn (in full) when expanded so the complete body is
+	 * reachable without sending a message.
 	 */
 	setExpanded(expanded: boolean): void {
 		if (this.#errorExpanded === expanded) return;
 		this.#errorExpanded = expanded;
-		if (this.#hasTruncatableError && this.#lastMessage) {
+		if ((this.#hasTruncatableError || this.#answerReview === "revised") && this.#lastMessage) {
 			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
+	}
+
+	/**
+	 * Hold this answer's text off screen while advisors review it
+	 * (`advisor.holdFinalAnswer`); thinking stays visible. A held block
+	 * publishes no stable rows, and the transcript commits no row of an
+	 * unfinalized block otherwise, so nothing of the answer reaches native
+	 * scrollback before release. Releasing re-renders the latest content
+	 * exactly as an unheld answer. No-op once revised.
+	 */
+	setAnswerHeld(held: boolean): void {
+		if (this.#answerReview === "revised") return;
+		const next: AnswerReviewState = held ? "held" : "none";
+		if (this.#answerReview === next) return;
+		this.#answerReview = next;
+		this.#rerenderForAnswerReview();
+	}
+
+	/** Whether {@link setAnswerHeld} currently hides this answer's text. */
+	isAnswerHeld(): boolean {
+		return this.#answerReview === "held";
+	}
+
+	/**
+	 * Collapse this answer to one dim {@link REVISED_HELD_ANSWER_LABEL} line:
+	 * an advisor review steered a replacement. With {@link setExpanded} on,
+	 * the draft shows dimmed below the line.
+	 */
+	markRevisedHeldAnswer(): void {
+		if (this.#answerReview === "revised") return;
+		this.#answerReview = "revised";
+		this.#rerenderForAnswerReview();
+	}
+
+	#rerenderForAnswerReview(): void {
+		this.#fastPathKey = undefined;
+		this.#fastPathItems = undefined;
+		this.#heldThinkingTail = undefined;
+		this.#nativeViewVersion++;
+		if (this.#lastMessage) this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 	}
 
 	isTranscriptBlockFinalized(): boolean {
@@ -962,7 +1046,9 @@ export class AssistantMessageComponent extends Container {
 		};
 		const children: NativeChild[] = [];
 		let answered = false;
-		if (message) {
+		if (message && this.#answerReview === "revised") {
+			children.push(...this.#describeRevisedHeldAnswer(message));
+		} else if (message) {
 			const live = !this.#transcriptBlockFinalized && this.#lastUpdateTransient;
 			// Which block streams, and whether there is an answer to copy, follow the reply as written:
 			// text renderers change only how it is drawn (one may hide all of it).
@@ -1223,18 +1309,49 @@ export class AssistantMessageComponent extends Container {
 		else if (act === "switch-model") runTranscriptAction({ act: "switch-model" });
 		else if (act === "copy-error" && this.#errorText) runTranscriptAction({ act: "copy", text: this.#errorText });
 		else if (act === "copy-answer") {
-			const text = this.#answerText();
+			const text = this.#answerMessage ? answerTextOf(this.#answerMessage) : "";
 			if (text) runTranscriptAction({ act: "copy", text });
 		}
 	}
 
-	/** The answer as the transcript shows it: its text blocks' markdown, a blank line apart, without thinking or tool calls. */
-	#answerText(): string {
-		const blocks: string[] = [];
-		for (const content of this.#answerMessage?.content ?? []) {
-			if (content.type === "text" && canonicalizeMessage(content.text)) blocks.push(content.text.trim());
-		}
-		return blocks.join("\n\n");
+	/** Native form of {@link markRevisedHeldAnswer}: the one-line label, then the draft when expanded. */
+	#describeRevisedHeldAnswer(message: AssistantMessage): NativeChild[] {
+		const children: NativeChild[] = [
+			node(
+				"text",
+				{ spans: [span(REVISED_HELD_ANSWER_LABEL, "dim")], wrap: "none", truncate: "end", lines: 1 },
+				undefined,
+				"revised",
+			),
+		];
+		const draft = this.#errorExpanded ? answerTextOf(message) : "";
+		if (draft) children.push(node("md", { text: draft }, undefined, "draft"));
+		return children;
+	}
+
+	/** ANSI form of {@link markRevisedHeldAnswer}: one dim line, then the dimmed draft when expanded. */
+	#renderRevisedHeldAnswer(message: AssistantMessage): void {
+		this.#stopThinkingAnimation();
+		this.#lastTokenCount = undefined;
+		this.#thinkingTokens = 0;
+		this.#thinkingRateLive = false;
+		this.#fastPathKey = undefined;
+		this.#fastPathItems = undefined;
+		this.#contentContainer.clear();
+		this.#kittyDisplayed = new Map();
+		this.#thinkingExtensions.clear();
+		this.#emergencyText = undefined;
+		this.#thinkingDots = undefined;
+		this.#hasTruncatableError = false;
+		for (const block of this.#figureBlocks.values()) block.dispose();
+		this.#figureBlocks = new Map();
+		this.#contentContainer.addChild(new TruncatedText(theme.fg("dim", REVISED_HELD_ANSWER_LABEL), 1, 0));
+		const draft = this.#errorExpanded ? answerTextOf(message) : "";
+		if (!draft) return;
+		this.#contentContainer.addChild(new Spacer(1));
+		this.#contentContainer.addChild(
+			new Markdown(draft, 1, 0, getMarkdownTheme(), { color: (value: string) => theme.fg("dim", value) }),
+		);
 	}
 
 	/** Width-independent stable identities for the streamed leading thinking run. */
@@ -1325,11 +1442,12 @@ export class AssistantMessageComponent extends Container {
 	 * Width-independent parts eligible for publication right now: the leading
 	 * run of finished blocks, ending inside the streaming block at Markdown's
 	 * frozen boundary. Undefined whenever any prefix byte could still change
-	 * (finalized or non-transient renders, marker rows, extension components,
-	 * hidden thinking, or no frozen prefix yet).
+	 * (finalized or non-transient renders, a held or revised answer, marker
+	 * rows, extension components, hidden thinking, or no frozen prefix yet).
 	 */
 	#currentStableSnapshot(): readonly StablePart[] | undefined {
 		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return undefined;
+		if (this.#answerReview !== "none") return undefined;
 		if (this.#markerSlot.children.length > 0) return undefined;
 		const items = this.#fastPathItems;
 		if (!items || items.length === 0) return undefined;
@@ -1918,6 +2036,18 @@ export class AssistantMessageComponent extends Container {
 		// verbatim message so re-renders re-derive the reaction deterministically.
 		// Narration the provider returned as thinking renders as answer text.
 		message = this.#displayMessage(presentNarrationAsAnswer(message), this.#lastUpdateTransient);
+		if (this.#answerReview === "revised") {
+			this.#answerMessage = message;
+			this.#displayedMessage = message;
+			this.#renderRevisedHeldAnswer(message);
+			return;
+		}
+		if (this.#answerReview === "held") {
+			// Only an in-flight render has a live thinking tail; the held block
+			// stays unfinalized after message_end, where the pulse must stop.
+			this.#heldThinkingTail = this.#lastUpdateTransient ? liveThinkingTail(message) : undefined;
+			message = withoutAnswerText(message);
+		}
 		this.#answerMessage = message;
 		// A sealed block (closed at a tool call) keeps receiving transient updates; its text is final.
 		// Thinking state below reads `answer`: renderers transform display only, so one that hides the

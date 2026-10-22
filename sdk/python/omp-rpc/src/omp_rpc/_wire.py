@@ -1176,6 +1176,13 @@ class AdvisorYieldedEvent:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class AdvisorAnswerReviewEvent:
+    """`advisor.holdFinalAnswer` review of the final answer: waiting advisors started, finished without changes, or steered a rewrite. Emitted only by sessions shown in the interactive TUI; RPC sessions never emit it."""
+    type: Literal["advisor_answer_review"] = "advisor_answer_review"
+    state: Literal["reviewing", "released", "revised"]
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class TtsrTriggeredEvent:
     """Rule injection: a TTSR rule matched the stream and its text was injected. Each rule carries at least `name`, `path`, and `content`."""
     type: Literal["ttsr_triggered"] = "ttsr_triggered"
@@ -1683,7 +1690,7 @@ UsageLimitState: TypeAlias = UsageLimitLowPriority | UsageLimitWrapUp
 """Provider-neutral state of an account past its usage limit, discriminated by `stage`."""
 
 
-RpcAgentEvent: TypeAlias = AgentStartEvent | AgentEndEvent | TurnStartEvent | TurnEndEvent | MessageStartEvent | MessageUpdateEvent | MessageEndEvent | ToolExecutionStartEvent | ToolExecutionUpdateEvent | ToolStreamUpdateEvent | ToolExecutionEndEvent | AutoCompactionStartEvent | AutoCompactionEndEvent | ManualCompactionStartEvent | ManualCompactionEndEvent | AutoRetryStartEvent | AutoRetryEndEvent | CacheWarmingStartEvent | CacheWarmingEndEvent | RetryFallbackAppliedEvent | RetryFallbackSucceededEvent | ModelChangedEvent | ConfigWarningsChangedEvent | AdvisorCostChangedEvent | AdvisorYieldedEvent | TtsrTriggeredEvent | TodoReminderEvent | TodoAutoClearEvent | IrcMessageEvent | NoticeEvent | ThinkingLevelChangedEvent | GoalUpdatedEvent | QueueUpdateEvent
+RpcAgentEvent: TypeAlias = AgentStartEvent | AgentEndEvent | TurnStartEvent | TurnEndEvent | MessageStartEvent | MessageUpdateEvent | MessageEndEvent | ToolExecutionStartEvent | ToolExecutionUpdateEvent | ToolStreamUpdateEvent | ToolExecutionEndEvent | AutoCompactionStartEvent | AutoCompactionEndEvent | ManualCompactionStartEvent | ManualCompactionEndEvent | AutoRetryStartEvent | AutoRetryEndEvent | CacheWarmingStartEvent | CacheWarmingEndEvent | RetryFallbackAppliedEvent | RetryFallbackSucceededEvent | ModelChangedEvent | ConfigWarningsChangedEvent | AdvisorCostChangedEvent | AdvisorYieldedEvent | AdvisorAnswerReviewEvent | TtsrTriggeredEvent | TodoReminderEvent | TodoAutoClearEvent | IrcMessageEvent | NoticeEvent | ThinkingLevelChangedEvent | GoalUpdatedEvent | QueueUpdateEvent
 """A session event, discriminated by `type`; `set_event_filter` selects which are sent."""
 
 
@@ -2597,6 +2604,14 @@ def parse_advisor_yielded_event(value: object, path: str = "AdvisorYieldedEvent"
     )
 
 
+def parse_advisor_answer_review_event(value: object, path: str = "AdvisorAnswerReviewEvent") -> AdvisorAnswerReviewEvent:
+    payload = expect_object(value, path)
+    required(payload, "type", cast('Decoder[Literal["advisor_answer_review"]]', literal(frozenset({"advisor_answer_review"}))), path)
+    return AdvisorAnswerReviewEvent(
+        state=required(payload, "state", cast('Decoder[Literal["reviewing", "released", "revised"]]', literal(frozenset({"reviewing", "released", "revised"}))), path),
+    )
+
+
 def parse_ttsr_triggered_event(value: object, path: str = "TtsrTriggeredEvent") -> TtsrTriggeredEvent:
     payload = expect_object(value, path)
     required(payload, "type", cast('Decoder[Literal["ttsr_triggered"]]', literal(frozenset({"ttsr_triggered"}))), path)
@@ -3206,6 +3221,7 @@ _RPC_AGENT_EVENT_CASES: Final[dict[str, Decoder[RpcAgentEvent]]] = {
         "config_warnings_changed": parse_config_warnings_changed_event,
         "advisor_cost_changed": parse_advisor_cost_changed_event,
         "advisor_yielded": parse_advisor_yielded_event,
+        "advisor_answer_review": parse_advisor_answer_review_event,
         "ttsr_triggered": parse_ttsr_triggered_event,
         "todo_reminder": parse_todo_reminder_event,
         "todo_auto_clear": parse_todo_auto_clear_event,
@@ -3265,6 +3281,7 @@ _RPC_NOTIFICATION_CASES: Final[dict[str, Decoder[RpcNotification]]] = {
         "config_warnings_changed": parse_rpc_agent_event,
         "advisor_cost_changed": parse_rpc_agent_event,
         "advisor_yielded": parse_rpc_agent_event,
+        "advisor_answer_review": parse_rpc_agent_event,
         "ttsr_triggered": parse_rpc_agent_event,
         "todo_reminder": parse_rpc_agent_event,
         "todo_auto_clear": parse_rpc_agent_event,
@@ -3915,6 +3932,10 @@ class WireClient:
         """Subscribe to `advisor_yielded` frames."""
         return self._listen("advisor_yielded", listener)
 
+    def on_advisor_answer_review(self, listener: Callable[[AdvisorAnswerReviewEvent], None]) -> Callable[[], None]:
+        """Subscribe to `advisor_answer_review`: `advisor.holdFinalAnswer` review of the final answer: waiting advisors started, finished without changes, or steered a rewrite. Emitted only by sessions shown in the interactive TUI; RPC sessions never emit it."""
+        return self._listen("advisor_answer_review", listener)
+
     def on_ttsr_triggered(self, listener: Callable[[TtsrTriggeredEvent], None]) -> Callable[[], None]:
         """Subscribe to `ttsr_triggered`: Rule injection: a TTSR rule matched the stream and its text was injected. Each rule carries at least `name`, `path`, and `content`."""
         return self._listen("ttsr_triggered", listener)
@@ -3950,6 +3971,7 @@ class WireClient:
 
 __all__ = [
     "AbortAndRestoreQueueResult",
+    "AdvisorAnswerReviewEvent",
     "AdvisorCostChangedEvent",
     "AdvisorYieldedEvent",
     "AgentEndEvent",
@@ -4150,6 +4172,7 @@ __all__ = [
     "UserMessage",
     "WidgetPlacement",
     "parse_abort_and_restore_queue_result",
+    "parse_advisor_answer_review_event",
     "parse_advisor_cost_changed_event",
     "parse_advisor_yielded_event",
     "parse_agent_end_event",

@@ -109,6 +109,8 @@ export class ChatTranscriptBuilder {
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
 	#expanded = false;
 	#entryComponents = new Map<string, Component[]>();
+	/** The last final answer an advisor card may still report as revised (`advisor.holdFinalAnswer`). */
+	#revisableAnswer: AssistantMessageComponent | undefined;
 
 	readonly #deps: ChatTranscriptBuilderDeps;
 
@@ -182,6 +184,7 @@ export class ChatTranscriptBuilder {
 		this.#todoSnapshot = null;
 		this.#expandables = [];
 		this.#entryComponents.clear();
+		this.#revisableAnswer = undefined;
 		this.container.dispose();
 		this.container.clear();
 	}
@@ -291,6 +294,17 @@ export class ChatTranscriptBuilder {
 	}
 
 	#appendChatMessage(message: AgentMessage): void {
+		// `advisor.holdFinalAnswer`: the card that steered a rewrite of the held
+		// answer above it collapses that answer; only advisor cards sit between them.
+		const revisable = this.#revisableAnswer;
+		this.#revisableAnswer = undefined;
+		if (message.role === "custom" && message.customType === "advisor") {
+			if ((message as CustomMessage<AdvisorMessageDetails>).details?.revisedHeldAnswer === true) {
+				revisable?.markRevisedHeldAnswer();
+			} else {
+				this.#revisableAnswer = revisable;
+			}
+		}
 		if (message.role !== "toolResult") this.#flushPendingUsage();
 		if (message.role !== "assistant" && message.role !== "toolResult") {
 			this.#readGroup?.seal();
@@ -429,6 +443,9 @@ export class ChatTranscriptBuilder {
 		);
 		assistantComponent.pickReactionTarget(this.container.children);
 		this.#mountProse(assistantComponent);
+		if (message.stopReason !== "aborted" && message.stopReason !== "error" && !timeline.hasToolCalls) {
+			this.#revisableAnswer = assistantComponent;
+		}
 		let lastAssistantComponent = assistantComponent;
 
 		if (displayPreferences.cacheMissMarker) {

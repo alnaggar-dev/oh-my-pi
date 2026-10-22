@@ -128,6 +128,7 @@
 ### Fixed
 
 - Fixed the `/agents` and `/models` hubs in Tern squeezing the left sidebar as long lines (such as a streaming new-agent draft) widen the body pane
+- `AssistantMessageComponent.setAnswerHeld()` hides an answer's text (thinking stays) without publishing stable rows, and `markRevisedHeldAnswer()` collapses it to one dim `Draft answer replaced after advisor review` line (the draft shows dimmed when expanded); `ChatTranscriptBuilder` collapses an answer whose following advisor card carries `revisedHeldAnswer`
 
 ## [18.12.4] - 2026-10-20
 

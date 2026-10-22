@@ -421,6 +421,13 @@ export interface AgentSessionConfig {
 	 * RPC, ACP, SDK and subagent sessions stay unnamed. Default: false.
 	 */
 	autoTitle?: boolean;
+	/**
+	 * Replies render in omp's interactive TUI transcript, the only presenter that
+	 * hides a draft answer, so `advisor.holdFinalAnswer` applies only then. Print,
+	 * RPC, ACP, SDK and subagent sessions stream every answer as it is written.
+	 * Default: false.
+	 */
+	tuiTranscript?: boolean;
 }
 
 /** Options for AgentSession.prompt(). */

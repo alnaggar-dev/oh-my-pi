@@ -85,6 +85,10 @@ export type AgentSessionEvent =
 	| { type: "config_warnings_changed" }
 	| { type: "advisor_cost_changed" }
 	| { type: "advisor_yielded" }
+	// `advisor.holdFinalAnswer`: terminal-boundary review of a held final answer.
+	// `reviewing` when waiting advisors start; `released` (show it unchanged) or
+	// `revised` (a review steered a replacement answer) closes every boundary.
+	| { type: "advisor_answer_review"; state: "reviewing" | "released" | "revised" }
 	| { type: "ttsr_triggered"; rules: Rule[] }
 	| { type: "todo_reminder"; todos: TodoItem[]; attempt: number; maxAttempts: number }
 	| { type: "todo_auto_clear" }

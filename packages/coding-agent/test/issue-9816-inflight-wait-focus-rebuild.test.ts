@@ -243,6 +243,7 @@ function makeSession(
 		activeToolExecutionUpdates: () => [...activeToolUpdates.values()],
 		getAsyncJobSnapshot: () => ({ running: runningJobIds.map(id => ({ id })) }),
 		hasBuiltInTool: () => true,
+		isAdvisorAnswerHoldActive: () => false,
 		sessionManager: {
 			getCwd: () => process.cwd(),
 			getEntries: () => messages,
