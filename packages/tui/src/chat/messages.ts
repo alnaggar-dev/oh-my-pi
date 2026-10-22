@@ -306,6 +306,8 @@ export interface AdvisorNote {
 /** Details payload on the batched `advisor` custom message rendered in the transcript. */
 export interface AdvisorMessageDetails {
 	notes: AdvisorNote[];
+	/** Set when this delivery steered a rewrite of a final answer held by `advisor.holdFinalAnswer`. */
+	revisedHeldAnswer?: boolean;
 }
 
 /** Custom message type for supervised process completions. */

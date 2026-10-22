@@ -106,6 +106,26 @@ const IDLE_RECAP_MAX_SECONDS = 3600;
  * compaction request (not a one-token warm replay) reads the still-warm prefix.
  */
 const IDLE_COMPACTION_CACHE_LEAD_MS = 5_000;
+/** Working-row text while a held final answer awaits its advisor review (`advisor.holdFinalAnswer`). */
+const ADVISOR_REVIEW_STATUS = "Advisors reviewing answer…";
+
+/**
+ * Answer text withheld from the vocalizer while its assistant message is held
+ * for advisor review (`advisor.holdFinalAnswer`): spoken once when the hold
+ * releases, dropped when the review replaces the answer.
+ */
+interface HeldAnswerSpeech {
+	text: string;
+	/** The hold ended: the rest of the stream speaks live. */
+	settled: boolean;
+}
+
+/**
+ * How a released hold hands its withheld text to the vocalizer: `stream`
+ * continues a still-streaming message (its `message_end` flushes), `speak`
+ * speaks an ended one, `drop` discards it (abort, revised answer).
+ */
+type HeldAnswerSpeechRelease = "stream" | "speak" | "drop";
 
 const RAW_PARTIAL_JSON_RENDERERS: Record<string, true> = { bash: true, edit: true, apply_patch: true };
 
@@ -294,6 +314,25 @@ export class EventController {
 	// Most recent TTSR notification block. A new ttsr_triggered event merges its
 	// rules into this block while it is still the (live-region) transcript tail.
 	#lastTtsrNotification: TtsrNotificationComponent | undefined = undefined;
+	// `advisor.holdFinalAnswer`: the assistant answer whose text stays hidden
+	// until the terminal-boundary advisor review ends. It stays unfinalized
+	// while held, so the transcript commits nothing of it — nor anything below
+	// it — to native scrollback before the review decides how it shows.
+	#heldAnswer: AssistantMessageComponent | undefined = undefined;
+	// A review outcome that arrived while the held answer still streamed;
+	// applied at its `message_end`.
+	#heldAnswerDecision: "released" | "revised" | undefined = undefined;
+	// Speech owed by `#heldAnswer`; see HeldAnswerSpeech.
+	#heldAnswerSpeech: HeldAnswerSpeech | undefined = undefined;
+	// Hold decision per assistant `message_start`, taken when the event ARRIVES:
+	// deltas are vocalized at arrival, ahead of the serialized handlers, so the
+	// speech side must know a stream is held before its handler runs. `null`
+	// marks a stream that is not held.
+	#answerSpeechByStart = new WeakMap<object, HeldAnswerSpeech | null>();
+	// The held speech the arriving deltas belong to (latest assistant stream).
+	#streamAnswerSpeech: HeldAnswerSpeech | undefined = undefined;
+	// The working row shows ADVISOR_REVIEW_STATUS; restored when the hold ends.
+	#answerReviewStatusShown = false;
 	#streamingReveal: StreamingRevealController;
 	#toolArgsReveal: ToolArgsRevealController;
 	#prevHideThinking = false;
@@ -414,6 +453,7 @@ export class EventController {
 				this.ctx.statusLine.invalidate();
 				this.ctx.ui.requestRender();
 			},
+			advisor_answer_review: async e => this.#handleAdvisorAnswerReview(e),
 			thinking_level_changed: async () => {
 				this.ctx.statusLine.invalidate();
 				this.ctx.updateEditorBorderColor();
@@ -812,6 +852,7 @@ export class EventController {
 			this.#enqueueMessageUpdate(event);
 			return;
 		}
+		if (event.type === "message_start" && event.message.role === "assistant") this.#openAnswerSpeech(event);
 		await this.#runSerialized(async () => {
 			await this.#flushPendingMessageUpdate();
 			await this.handleEvent(event);
@@ -980,6 +1021,16 @@ export class EventController {
 		this.#displaceablePollComponent = undefined;
 		this.#displaceableTodoComponent = undefined;
 		this.#lastTtsrNotification = undefined;
+		// The transcript is about to be rebuilt or discarded: forget the hold
+		// without revealing the outgoing draft. A rebuild re-adopts a still-held
+		// answer from the session (`adoptHeldAnswer`).
+		this.#heldAnswer = undefined;
+		this.#heldAnswerDecision = undefined;
+		// Its withheld speech goes with it; a stream still arriving keeps
+		// withholding (and dropping) its text until the next message starts.
+		this.#heldAnswerSpeech = undefined;
+		if (this.#streamAnswerSpeech) this.#streamAnswerSpeech.text = "";
+		this.#clearAnswerReviewStatus();
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
 		this.#seedHeldCompletionsFromPendingResults();
@@ -1262,6 +1313,10 @@ export class EventController {
 			this.ctx.addMessageToChat(event.message);
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "assistant") {
+			// A new reply ends any hold the previous answer still has: its
+			// review never reported back.
+			this.#endAnswerHold("released", "speak");
+			this.#heldAnswerDecision = undefined;
 			// A streaming component left over from an attempt that never saw its
 			// message_end (a mid-stream throw the loop could not pair) must not stay
 			// live: one unfinalized block at the transcript frontier blocks history
@@ -1277,12 +1332,119 @@ export class EventController {
 			this.#streamedToolCallIdByIndex.clear();
 			this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
 			this.ctx.streamingMessage = event.message;
+			// Hold before the first render so no answer text ever paints. The
+			// decision was taken when this message_start arrived, together with
+			// its speech.
+			const heldSpeech = this.#openAnswerSpeech(event);
+			if (heldSpeech) {
+				this.ctx.streamingComponent.setAnswerHeld(true);
+				this.#heldAnswer = this.ctx.streamingComponent;
+				this.#heldAnswerSpeech = heldSpeech;
+			}
 			this.ctx.streamingComponent.pickReactionTarget(this.ctx.chatContainer.children);
 			this.ctx.chatContainer.addChild(this.ctx.streamingComponent);
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
 			this.#streamingReveal.begin(this.ctx.streamingComponent, timeline.beforeTools, timeline.hasToolCalls);
 			this.ctx.ui.requestRender();
 		}
+	}
+
+	/** Show a held answer now (user abort): its review outcome no longer matters. */
+	releaseHeldAnswer(): void {
+		// A still-streaming draft is about to be cut by the abort: never speak its partial.
+		this.#endAnswerHold("released", this.#heldAnswer === this.ctx.streamingComponent ? "drop" : "speak");
+	}
+
+	/**
+	 * Open the speech side of an assistant stream once per `message_start`:
+	 * held when the session holds final answers for review.
+	 */
+	#openAnswerSpeech(event: Extract<AgentSessionEvent, { type: "message_start" }>): HeldAnswerSpeech | undefined {
+		const opened = this.#answerSpeechByStart.get(event);
+		if (opened !== undefined) return opened ?? undefined;
+		const speech = this.ctx.viewSession.isAdvisorAnswerHoldActive() ? { text: "", settled: false } : undefined;
+		this.#answerSpeechByStart.set(event, speech ?? null);
+		this.#streamAnswerSpeech = speech;
+		return speech;
+	}
+
+	/**
+	 * A transcript rebuild re-rendered the answer the session still holds for
+	 * review: route its review outcome to `component` from now on. The rebuilt
+	 * draft owes its whole text to speech; it replaces any speech this hold
+	 * already owed, so the answer is still spoken once.
+	 */
+	adoptHeldAnswer(component: AssistantMessageComponent, message: AssistantMessage): void {
+		if (this.#heldAnswerSpeech) {
+			this.#heldAnswerSpeech.settled = true;
+			this.#heldAnswerSpeech.text = "";
+		}
+		this.#heldAnswer = component;
+		this.#heldAnswerSpeech = { text: extractTextContent(message), settled: false };
+		this.#heldAnswerDecision = undefined;
+		this.#showAnswerReviewStatus();
+	}
+
+	async #handleAdvisorAnswerReview(
+		event: Extract<AgentSessionEvent, { type: "advisor_answer_review" }>,
+	): Promise<void> {
+		const held = this.#heldAnswer;
+		if (!held) return;
+		const streaming = held === this.ctx.streamingComponent;
+		if (event.state === "reviewing") {
+			if (!streaming) this.#showAnswerReviewStatus();
+			return;
+		}
+		// The review closed before the held answer's message_end: apply it there.
+		if (streaming) {
+			this.#heldAnswerDecision = event.state;
+			return;
+		}
+		this.#endAnswerHold(event.state, "speak");
+	}
+
+	/**
+	 * End the hold: `released` shows the answer as written and speaks its
+	 * withheld text per `speech`, `revised` collapses it to one dim line and
+	 * drops the text. A block whose message already ended finalizes now; a
+	 * still-streaming one finalizes at its own `message_end`.
+	 */
+	#endAnswerHold(outcome: "released" | "revised", speech: HeldAnswerSpeechRelease): void {
+		const component = this.#heldAnswer;
+		const owed = this.#heldAnswerSpeech;
+		this.#heldAnswer = undefined;
+		this.#heldAnswerSpeech = undefined;
+		this.#heldAnswerDecision = undefined;
+		this.#clearAnswerReviewStatus();
+		if (owed) this.#releaseAnswerSpeech(owed, outcome === "revised" ? "drop" : speech);
+		if (!component) return;
+		if (outcome === "revised") component.markRevisedHeldAnswer();
+		else component.setAnswerHeld(false);
+		if (component !== this.ctx.streamingComponent) component.markTranscriptBlockFinalized();
+		this.ctx.ui.requestRender();
+	}
+
+	#releaseAnswerSpeech(owed: HeldAnswerSpeech, release: HeldAnswerSpeechRelease): void {
+		const text = owed.text;
+		owed.text = "";
+		owed.settled = true;
+		if (release === "drop" || !text || !cfgSpeechEnabled.get(settings)) return;
+		if (release === "speak") vocalizer.speak(text);
+		else vocalizer.pushDelta(text);
+	}
+
+	#showAnswerReviewStatus(): void {
+		if (this.#answerReviewStatusShown) return;
+		this.#answerReviewStatusShown = true;
+		this.ctx.setWorkingMessage(ADVISOR_REVIEW_STATUS);
+	}
+
+	#clearAnswerReviewStatus(): void {
+		if (!this.#answerReviewStatusShown) return;
+		this.#answerReviewStatusShown = false;
+		// Let the next intent repaint the row even when it repeats the last one.
+		this.#lastIntent = undefined;
+		this.ctx.setWorkingMessage();
 	}
 
 	async #handleIrcMessage(event: Extract<AgentSessionEvent, { type: "irc_message" }>): Promise<void> {
@@ -1459,14 +1621,17 @@ export class EventController {
 	 * Speak streamed assistant output as a side effect of the turn. The mode
 	 * decides which deltas feed the vocalizer (the vocalizer re-checks enabled):
 	 * assistant|all speak text; all also speaks thinking; yield speaks nothing
-	 * live (the final message is spoken at turn end).
+	 * live (the final message is spoken at turn end). Answer text of a stream
+	 * held for advisor review is withheld until the hold ends.
 	 */
 	#vocalizeDelta(event: Extract<AgentSessionEvent, { type: "message_update" }>): void {
 		if (!cfgSpeechEnabled.get(settings)) return;
 		const mode = cfgSpeechMode.get(settings);
 		const delta = event.assistantMessageEvent;
 		if (delta.type === "text_delta" && (mode === "assistant" || mode === "all")) {
-			vocalizer.pushDelta(delta.delta);
+			const held = this.#streamAnswerSpeech;
+			if (held && !held.settled) held.text += delta.delta;
+			else vocalizer.pushDelta(delta.delta);
 		} else if (delta.type === "thinking_delta" && mode === "all") {
 			vocalizer.pushDelta(delta.delta);
 		}
@@ -1475,7 +1640,8 @@ export class EventController {
 	/**
 	 * End-of-turn vocalization: yield mode speaks the final assistant message in
 	 * one shot here (the only mode that is post-hoc); every other mode just makes
-	 * sure the live buffer's trailing partial gets flushed.
+	 * sure the live buffer's trailing partial gets flushed. A final answer still
+	 * held for advisor review is spoken when the hold releases instead.
 	 */
 	#handleTurnEnd(event: Extract<AgentSessionEvent, { type: "turn_end" }>): void {
 		if (!cfgSpeechEnabled.get(settings)) return;
@@ -1486,7 +1652,9 @@ export class EventController {
 		if (event.message.role !== "assistant") return;
 		if (event.message.stopReason === "aborted") return; // interrupted: never speak the aborted partial
 		const text = extractTextContent(event.message);
-		if (text) vocalizer.speak(text);
+		if (!text) return;
+		if (this.#heldAnswerSpeech) this.#heldAnswerSpeech.text = text;
+		else vocalizer.speak(text);
 	}
 
 	async #handleMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): Promise<void> {
@@ -1501,6 +1669,13 @@ export class EventController {
 				this.#streamingReveal.resyncVisibility();
 			}
 			this.ctx.streamingMessage = event.message;
+			// A tool call makes this a working message, not the final answer.
+			if (
+				this.#heldAnswer === this.ctx.streamingComponent &&
+				this.ctx.streamingMessage.content.some(content => content.type === "toolCall")
+			) {
+				this.#endAnswerHold("released", "stream");
+			}
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
 			this.#streamingReveal.setTarget(timeline.beforeTools, timeline.hasToolCalls);
 
@@ -1719,6 +1894,18 @@ export class EventController {
 			this.ctx.streamingMessage = event.message;
 			this.#streamingReveal.stop();
 			this.#toolArgsReveal.flushAll();
+			// A held reply stays held only as a finished final answer; an abort,
+			// error or tool call shows it as written.
+			const heldStreaming = this.#heldAnswer !== undefined && this.#heldAnswer === this.ctx.streamingComponent;
+			const keepsHold =
+				heldStreaming &&
+				event.message.stopReason !== "aborted" &&
+				event.message.stopReason !== "error" &&
+				!event.message.content.some(content => content.type === "toolCall");
+			if (heldStreaming && !keepsHold) {
+				// The message ended: speak its withheld text, unless an abort cut it.
+				this.#endAnswerHold("released", event.message.stopReason === "aborted" ? "drop" : "speak");
+			}
 			let errorMessage: string | undefined;
 			const aborted = this.ctx.streamingMessage.stopReason === "aborted";
 			const silentlyAborted = aborted && isSilentAbort(this.ctx.streamingMessage);
@@ -1812,7 +1999,8 @@ export class EventController {
 				this.ctx.lastAssistantUsage = usage;
 			}
 			this.ctx.streamingComponent.setServedModelMismatch(this.ctx.servedModelTracker.check(event.message));
-			this.ctx.streamingComponent.markTranscriptBlockFinalized();
+			// A held answer stays unfinalized — uncommittable — until its review ends.
+			if (!keepsHold) this.ctx.streamingComponent.markTranscriptBlockFinalized();
 			let lastPostToolAssistantComponent: AssistantMessageComponent | undefined;
 			for (const [toolCallId, segment] of displayTimeline.afterToolCalls) {
 				const component = this.#upsertPostToolAssistantSegment(
@@ -1860,6 +2048,11 @@ export class EventController {
 			}
 			this.ctx.streamingComponent = undefined;
 			this.ctx.streamingMessage = undefined;
+			if (keepsHold) {
+				const decision = this.#heldAnswerDecision;
+				if (decision) this.#endAnswerHold(decision, "speak");
+				else this.#showAnswerReviewStatus();
+			}
 			// Pin a turn-ending provider error above the editor so it survives
 			// transcript scroll and suppress its duplicate inline row. Empty-output
 			// errors are known intermediate attempts: hide them entirely while
@@ -2291,6 +2484,8 @@ export class EventController {
 			this.#syncComposerActivity();
 			return;
 		}
+		// The run settled: no review outcome is coming for a still-held answer.
+		this.#endAnswerHold("released", "speak");
 		// A non-terminal settle (`isTerminal: false`) is a scheduling pause, not the
 		// end of the run: the agent's own continuation (reminder, retry, queued
 		// steer/follow-up, IRC wake) follows, or background work may re-wake it.

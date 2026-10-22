@@ -4188,6 +4188,53 @@ func (v AdvisorYieldedEvent) MarshalJSON() ([]byte, error) {
 	return encodeObject(plain(v), `"type":"advisor_yielded"`, nil)
 }
 
+// `advisor.holdFinalAnswer` review of the final answer: waiting advisors started, finished without changes, or steered a rewrite. Emitted only by sessions shown in the interactive TUI; RPC sessions never emit it.
+type AdvisorAnswerReviewEvent struct {
+	State AdvisorAnswerReviewEventState `json:"state"`
+}
+
+func (v *AdvisorAnswerReviewEvent) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AdvisorAnswerReviewEvent", v.decodeFrom)
+}
+
+func (v *AdvisorAnswerReviewEvent) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AdvisorAnswerReviewEvent
+	d := fieldDecoder{raw: raw, owner: "AdvisorAnswerReviewEvent"}
+	d.constant("type", "advisor_answer_review")
+	d.required("state", &out.State)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v AdvisorAnswerReviewEvent) MarshalJSON() ([]byte, error) {
+	type plain AdvisorAnswerReviewEvent
+	return encodeObject(plain(v), `"type":"advisor_answer_review"`, nil)
+}
+
+type AdvisorAnswerReviewEventState string
+
+const (
+	AdvisorAnswerReviewEventStateReviewing AdvisorAnswerReviewEventState = "reviewing"
+	AdvisorAnswerReviewEventStateReleased  AdvisorAnswerReviewEventState = "released"
+	AdvisorAnswerReviewEventStateRevised   AdvisorAnswerReviewEventState = "revised"
+)
+
+func (v *AdvisorAnswerReviewEventState) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "AdvisorAnswerReviewEventState")
+	if err != nil {
+		return err
+	}
+	switch value := AdvisorAnswerReviewEventState(s); value {
+	case AdvisorAnswerReviewEventStateReviewing, AdvisorAnswerReviewEventStateReleased, AdvisorAnswerReviewEventStateRevised:
+		*v = value
+		return nil
+	}
+	return unknownValue("AdvisorAnswerReviewEventState", s)
+}
+
 type TtsrTriggeredEvent struct {
 	Rules []map[string]json.RawMessage `json:"rules"`
 }
@@ -4444,6 +4491,7 @@ func (ModelChangedEvent) isRpcAgentEvent()           {}
 func (ConfigWarningsChangedEvent) isRpcAgentEvent()  {}
 func (AdvisorCostChangedEvent) isRpcAgentEvent()     {}
 func (AdvisorYieldedEvent) isRpcAgentEvent()         {}
+func (AdvisorAnswerReviewEvent) isRpcAgentEvent()    {}
 func (TtsrTriggeredEvent) isRpcAgentEvent()          {}
 func (TodoReminderEvent) isRpcAgentEvent()           {}
 func (TodoAutoClearEvent) isRpcAgentEvent()          {}
@@ -4519,6 +4567,8 @@ func (v *RpcAgentEvent) decodeFrom(raw map[string]json.RawMessage) error {
 		value, err = decodeVariant[AdvisorCostChangedEvent](raw)
 	case "advisor_yielded":
 		value, err = decodeVariant[AdvisorYieldedEvent](raw)
+	case "advisor_answer_review":
+		value, err = decodeVariant[AdvisorAnswerReviewEvent](raw)
 	case "ttsr_triggered":
 		value, err = decodeVariant[TtsrTriggeredEvent](raw)
 	case "todo_reminder":
@@ -6480,6 +6530,7 @@ func (ModelChangedEvent) isRpcNotification()            {}
 func (ConfigWarningsChangedEvent) isRpcNotification()   {}
 func (AdvisorCostChangedEvent) isRpcNotification()      {}
 func (AdvisorYieldedEvent) isRpcNotification()          {}
+func (AdvisorAnswerReviewEvent) isRpcNotification()     {}
 func (TtsrTriggeredEvent) isRpcNotification()           {}
 func (TodoReminderEvent) isRpcNotification()            {}
 func (TodoAutoClearEvent) isRpcNotification()           {}
@@ -6586,6 +6637,8 @@ func (v *RpcNotification) UnmarshalJSON(data []byte) error {
 		value, err = decodeVariant[AdvisorCostChangedEvent](raw)
 	case "advisor_yielded":
 		value, err = decodeVariant[AdvisorYieldedEvent](raw)
+	case "advisor_answer_review":
+		value, err = decodeVariant[AdvisorAnswerReviewEvent](raw)
 	case "ttsr_triggered":
 		value, err = decodeVariant[TtsrTriggeredEvent](raw)
 	case "todo_reminder":
@@ -6670,6 +6723,7 @@ func (ModelChangedEvent) isRpcServerFrame()            {}
 func (ConfigWarningsChangedEvent) isRpcServerFrame()   {}
 func (AdvisorCostChangedEvent) isRpcServerFrame()      {}
 func (AdvisorYieldedEvent) isRpcServerFrame()          {}
+func (AdvisorAnswerReviewEvent) isRpcServerFrame()     {}
 func (TtsrTriggeredEvent) isRpcServerFrame()           {}
 func (TodoReminderEvent) isRpcServerFrame()            {}
 func (TodoAutoClearEvent) isRpcServerFrame()           {}
@@ -6786,6 +6840,8 @@ func (v *RpcServerFrame) UnmarshalJSON(data []byte) error {
 		value, err = decodeVariant[AdvisorCostChangedEvent](raw)
 	case "advisor_yielded":
 		value, err = decodeVariant[AdvisorYieldedEvent](raw)
+	case "advisor_answer_review":
+		value, err = decodeVariant[AdvisorAnswerReviewEvent](raw)
 	case "ttsr_triggered":
 		value, err = decodeVariant[TtsrTriggeredEvent](raw)
 	case "todo_reminder":

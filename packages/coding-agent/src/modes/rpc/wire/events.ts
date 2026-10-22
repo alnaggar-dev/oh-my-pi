@@ -135,6 +135,10 @@ export const eventDefs = {
 	ConfigWarningsChangedEvent: { type: "'config_warnings_changed'" },
 	AdvisorCostChangedEvent: { type: "'advisor_cost_changed'" },
 	AdvisorYieldedEvent: { type: "'advisor_yielded'" },
+	AdvisorAnswerReviewEvent: doc(
+		{ type: "'advisor_answer_review'", state: "'reviewing' | 'released' | 'revised'" },
+		"`advisor.holdFinalAnswer` review of the final answer: waiting advisors started, finished without changes, or steered a rewrite. Emitted only by sessions shown in the interactive TUI; RPC sessions never emit it.",
+	),
 	TtsrTriggeredEvent: { type: "'ttsr_triggered'", rules: `${JSON_OBJECT}[]` },
 	TodoReminderEvent: {
 		type: "'todo_reminder'",
@@ -199,6 +203,7 @@ export const eventDefs = {
 			"ConfigWarningsChangedEvent",
 			"AdvisorCostChangedEvent",
 			"AdvisorYieldedEvent",
+			"AdvisorAnswerReviewEvent",
 			"TtsrTriggeredEvent",
 			"TodoReminderEvent",
 			"TodoAutoClearEvent",

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `advisor.holdFinalAnswer`: the interactive UI holds the agent's final answer until waiting advisors finish reviewing it, and shows only the rewritten answer when a review asks for changes
+
 ## [18.12.5] - 2026-10-21
 
 ### Added

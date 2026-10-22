@@ -422,17 +422,33 @@ export class UiHelpers {
 				break;
 			}
 			case "assistant": {
+				// `advisor.holdFinalAnswer`: a draft the session still holds for review,
+				// or already replaced, never renders in full.
+				const hold = this.ctx.viewSession.getAdvisorAnswerHold?.(message);
 				const cached = options?.reuseSettledComponent
 					? this.ctx.transcriptMessageComponents.get(message)
 					: undefined;
-				const assistantComponent =
-					cached instanceof AssistantMessageComponent
-						? cached
-						: createAssistantMessageComponent(
-								this.ctx,
-								splitAssistantMessageToolTimeline(message).beforeTools,
-								getAssistantMessageLinkTargets(this.ctx),
-							);
+				let assistantComponent: AssistantMessageComponent;
+				if (cached instanceof AssistantMessageComponent && (hold !== "held" || cached.isAnswerHeld())) {
+					assistantComponent = cached;
+				} else if (hold === "held") {
+					// Built unfinalized so no row of the draft commits before its review ends.
+					assistantComponent = createAssistantMessageComponent(
+						this.ctx,
+						undefined,
+						getAssistantMessageLinkTargets(this.ctx),
+					);
+					assistantComponent.setAnswerHeld(true);
+					assistantComponent.updateContent(splitAssistantMessageToolTimeline(message).beforeTools);
+				} else {
+					assistantComponent = createAssistantMessageComponent(
+						this.ctx,
+						splitAssistantMessageToolTimeline(message).beforeTools,
+						getAssistantMessageLinkTargets(this.ctx),
+					);
+				}
+				if (hold === "held") this.ctx.eventController?.adoptHeldAnswer(assistantComponent, message);
+				else if (hold === "revised") assistantComponent.markRevisedHeldAnswer();
 				if (cached !== assistantComponent) {
 					this.ctx.transcriptMessageComponents.set(message, assistantComponent);
 				}
@@ -595,6 +611,9 @@ export class UiHelpers {
 		// (not finalized) so replayed and live frames still route to the card;
 		// the ids are handed back to the controller after the loop (#10447).
 		const backgroundCallIds = new Set<string>();
+		// The last final answer an advisor card may still report as revised
+		// (`advisor.holdFinalAnswer`); only advisor cards may sit between them.
+		let revisableAnswer: AssistantMessageComponent | undefined;
 		const messages = sessionContext.messages;
 		const count = messages.length;
 		for (let i = 0; i < count; i++) {
@@ -614,6 +633,10 @@ export class UiHelpers {
 				this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });
 				const lastChild = this.ctx.chatContainer.children[this.ctx.chatContainer.children.length - 1];
 				const assistantComponent = lastChild instanceof AssistantMessageComponent ? lastChild : undefined;
+				revisableAnswer =
+					message.stopReason !== "aborted" && message.stopReason !== "error" && !timeline.hasToolCalls
+						? assistantComponent
+						: undefined;
 				if (assistantComponent) {
 					const usage = message.usage;
 					const explained = sessionContext.cacheMissExplainedAt?.[i] ?? false;
@@ -767,6 +790,7 @@ export class UiHelpers {
 					? turnElapsedMs(turnStartedAt, message)
 					: undefined;
 			} else if (message.role === "toolResult") {
+				revisableAnswer = undefined;
 				if (options.preservedLiveToolCallIds?.has(message.toolCallId)) continue;
 				const pendingReadComponent = this.ctx.pendingTools.get(message.toolCallId);
 				const isReadGroupResult =
@@ -888,6 +912,16 @@ export class UiHelpers {
 				}
 				if (message.role === "custom" && isUserTurnInitiator(message as CustomMessage)) {
 					turnStartedAt = message.timestamp;
+				}
+				if (message.role === "custom" && message.customType === "advisor") {
+					// The card that steered a rewrite of the held answer above it
+					// collapses that answer to its one-line revised form.
+					if ((message as CustomMessage<AdvisorMessageDetails>).details?.revisedHeldAnswer === true) {
+						revisableAnswer?.markRevisedHeldAnswer();
+						revisableAnswer = undefined;
+					}
+				} else {
+					revisableAnswer = undefined;
 				}
 				// All other messages use standard rendering
 				this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });

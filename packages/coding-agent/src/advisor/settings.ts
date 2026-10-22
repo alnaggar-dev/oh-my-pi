@@ -39,6 +39,20 @@ export const cfgAdvisorSyncBacklog = register({
 	},
 });
 
+export const cfgAdvisorHoldFinalAnswer = register({
+	id: "advisor.holdFinalAnswer",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "model",
+		group: "Advisor",
+		label: "Hold Answer for Review",
+		description:
+			"Interactive mode only. Hide the agent's final answer until advisors that wait (syncBacklog not off) finish reviewing it. If a review asks for changes, the agent rewrites the answer and you see only the rewritten one.",
+		condition: "advisorEnabled",
+	},
+});
+
 export const cfgAdvisorImmuneTurns = register({
 	id: "advisor.immuneTurns",
 	protocolDefault: ["rpc", "acp"],

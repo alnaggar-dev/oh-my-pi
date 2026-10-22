@@ -238,6 +238,7 @@ const unsubscribe = session.subscribe((event) => {
 - `cache_warming_start` / `cache_warming_end`
 - `config_warnings_changed`
 - `advisor_cost_changed` / `advisor_yielded`
+- `advisor_answer_review` (`state`: optional `reviewing`, then `released` or `revised`; `reviewing` is absent when no waiting review runs, e.g. for an advisor-started rewrite or a non-terminal text-only turn; emitted only by a session created with `tuiTranscript: true` while `advisor.holdFinalAnswer` applies)
 
 `agent_end` includes `messages`, optional telemetry fields, and
 `isTerminal?: boolean`. When `isTerminal` is `false`, maintenance or async

@@ -3805,6 +3805,12 @@ pub struct AdvisorCostChangedEvent {}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AdvisorYieldedEvent {}
 
+/// `advisor.holdFinalAnswer` review of the final answer: waiting advisors started, finished without changes, or steered a rewrite. Emitted only by sessions shown in the interactive TUI; RPC sessions never emit it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdvisorAnswerReviewEvent {
+	pub state: AdvisorAnswerReviewEventState,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TtsrTriggeredEvent {
 	pub rules: Vec<Map<String, Value>>,
@@ -3895,6 +3901,8 @@ pub enum RpcAgentEvent {
 	ConfigWarningsChanged(ConfigWarningsChangedEvent),
 	AdvisorCostChanged(AdvisorCostChangedEvent),
 	AdvisorYielded(AdvisorYieldedEvent),
+	/// `advisor.holdFinalAnswer` review of the final answer: waiting advisors started, finished without changes, or steered a rewrite. Emitted only by sessions shown in the interactive TUI; RPC sessions never emit it.
+	AdvisorAnswerReview(AdvisorAnswerReviewEvent),
 	TtsrTriggered(TtsrTriggeredEvent),
 	TodoReminder(TodoReminderEvent),
 	TodoAutoClear(TodoAutoClearEvent),
@@ -3935,6 +3943,7 @@ impl RpcAgentEvent {
 			Some("config_warnings_changed") => |value| serde_json::from_value(value).map(Self::ConfigWarningsChanged),
 			Some("advisor_cost_changed") => |value| serde_json::from_value(value).map(Self::AdvisorCostChanged),
 			Some("advisor_yielded") => |value| serde_json::from_value(value).map(Self::AdvisorYielded),
+			Some("advisor_answer_review") => |value| serde_json::from_value(value).map(Self::AdvisorAnswerReview),
 			Some("ttsr_triggered") => |value| serde_json::from_value(value).map(Self::TtsrTriggered),
 			Some("todo_reminder") => |value| serde_json::from_value(value).map(Self::TodoReminder),
 			Some("todo_auto_clear") => |value| serde_json::from_value(value).map(Self::TodoAutoClear),
@@ -3977,6 +3986,7 @@ impl Serialize for RpcAgentEvent {
 			Self::ConfigWarningsChanged(member) => serialize_tagged(member, &[("type", "config_warnings_changed")], serializer),
 			Self::AdvisorCostChanged(member) => serialize_tagged(member, &[("type", "advisor_cost_changed")], serializer),
 			Self::AdvisorYielded(member) => serialize_tagged(member, &[("type", "advisor_yielded")], serializer),
+			Self::AdvisorAnswerReview(member) => serialize_tagged(member, &[("type", "advisor_answer_review")], serializer),
 			Self::TtsrTriggered(member) => serialize_tagged(member, &[("type", "ttsr_triggered")], serializer),
 			Self::TodoReminder(member) => serialize_tagged(member, &[("type", "todo_reminder")], serializer),
 			Self::TodoAutoClear(member) => serialize_tagged(member, &[("type", "todo_auto_clear")], serializer),
@@ -4950,7 +4960,7 @@ impl RpcNotification {
 			Some("session_info_update") => |value| serde_json::from_value(value).map(Self::SessionInfoUpdate),
 			Some("config_update") => |value| serde_json::from_value(value).map(Self::ConfigUpdate),
 			Some("rpc_frame_error") => |value| serde_json::from_value(value).map(Self::RpcFrameError),
-			Some("agent_start" | "agent_end" | "turn_start" | "turn_end" | "message_start" | "message_update" | "message_end" | "tool_execution_start" | "tool_execution_update" | "tool_stream_update" | "tool_execution_end" | "auto_compaction_start" | "auto_compaction_end" | "auto_retry_start" | "auto_retry_end" | "cache_warming_start" | "cache_warming_end" | "retry_fallback_applied" | "retry_fallback_succeeded" | "model_changed" | "config_warnings_changed" | "advisor_cost_changed" | "advisor_yielded" | "ttsr_triggered" | "todo_reminder" | "todo_auto_clear" | "irc_message" | "notice" | "thinking_level_changed" | "goal_updated" | "queue_update") => |value| serde_json::from_value(value).map(Self::RpcAgentEvent),
+			Some("agent_start" | "agent_end" | "turn_start" | "turn_end" | "message_start" | "message_update" | "message_end" | "tool_execution_start" | "tool_execution_update" | "tool_stream_update" | "tool_execution_end" | "auto_compaction_start" | "auto_compaction_end" | "auto_retry_start" | "auto_retry_end" | "cache_warming_start" | "cache_warming_end" | "retry_fallback_applied" | "retry_fallback_succeeded" | "model_changed" | "config_warnings_changed" | "advisor_cost_changed" | "advisor_yielded" | "advisor_answer_review" | "ttsr_triggered" | "todo_reminder" | "todo_auto_clear" | "irc_message" | "notice" | "thinking_level_changed" | "goal_updated" | "queue_update") => |value| serde_json::from_value(value).map(Self::RpcAgentEvent),
 			_ => |value| Ok(Self::Unknown(value)),
 		};
 		decode(value)
@@ -5010,7 +5020,7 @@ impl RpcServerFrame {
 		let decode: fn(Value) -> Result<Self, serde_json::Error> = match value.get("type").and_then(Value::as_str) {
 			Some("response") => |value| serde_json::from_value(value).map(Self::Response),
 			Some("host_tool_call" | "host_tool_cancel" | "host_uri_request" | "host_uri_cancel") => |value| serde_json::from_value(value).map(Self::RpcHostRequest),
-			Some("ready" | "prompt_result" | "session_settled" | "extension_error" | "extension_ui_request" | "available_commands_update" | "subagent_lifecycle" | "subagent_progress" | "subagent_event" | "live_phase" | "live_levels" | "live_transcript" | "live_end" | "btw_delta" | "btw_record" | "command_output" | "session_info_update" | "config_update" | "rpc_frame_error" | "agent_start" | "agent_end" | "turn_start" | "turn_end" | "message_start" | "message_update" | "message_end" | "tool_execution_start" | "tool_execution_update" | "tool_stream_update" | "tool_execution_end" | "auto_compaction_start" | "auto_compaction_end" | "auto_retry_start" | "auto_retry_end" | "cache_warming_start" | "cache_warming_end" | "retry_fallback_applied" | "retry_fallback_succeeded" | "model_changed" | "config_warnings_changed" | "advisor_cost_changed" | "advisor_yielded" | "ttsr_triggered" | "todo_reminder" | "todo_auto_clear" | "irc_message" | "notice" | "thinking_level_changed" | "goal_updated" | "queue_update") => |value| serde_json::from_value(value).map(Self::RpcNotification),
+			Some("ready" | "prompt_result" | "session_settled" | "extension_error" | "extension_ui_request" | "available_commands_update" | "subagent_lifecycle" | "subagent_progress" | "subagent_event" | "live_phase" | "live_levels" | "live_transcript" | "live_end" | "btw_delta" | "btw_record" | "command_output" | "session_info_update" | "config_update" | "rpc_frame_error" | "agent_start" | "agent_end" | "turn_start" | "turn_end" | "message_start" | "message_update" | "message_end" | "tool_execution_start" | "tool_execution_update" | "tool_stream_update" | "tool_execution_end" | "auto_compaction_start" | "auto_compaction_end" | "auto_retry_start" | "auto_retry_end" | "cache_warming_start" | "cache_warming_end" | "retry_fallback_applied" | "retry_fallback_succeeded" | "model_changed" | "config_warnings_changed" | "advisor_cost_changed" | "advisor_yielded" | "advisor_answer_review" | "ttsr_triggered" | "todo_reminder" | "todo_auto_clear" | "irc_message" | "notice" | "thinking_level_changed" | "goal_updated" | "queue_update") => |value| serde_json::from_value(value).map(Self::RpcNotification),
 			_ => |value| Ok(Self::Unknown(value)),
 		};
 		decode(value)
@@ -5732,6 +5742,27 @@ impl LogoutAccountType {
 		match self {
 			Self::ApiKey => "api_key",
 			Self::Oauth => "oauth",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AdvisorAnswerReviewEventState {
+	#[serde(rename = "reviewing")]
+	Reviewing,
+	#[serde(rename = "released")]
+	Released,
+	#[serde(rename = "revised")]
+	Revised,
+}
+
+impl AdvisorAnswerReviewEventState {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Reviewing => "reviewing",
+			Self::Released => "released",
+			Self::Revised => "revised",
 		}
 	}
 }

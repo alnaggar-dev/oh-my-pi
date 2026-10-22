@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `AssistantMessageComponent.setAnswerHeld()` hides an answer's text (thinking stays) without publishing stable rows, and `markRevisedHeldAnswer()` collapses it to one dim `Draft answer replaced after advisor review` line (the draft shows dimmed when expanded); `ChatTranscriptBuilder` collapses an answer whose following advisor card carries `revisedHeldAnswer`
+
 ## [18.12.4] - 2026-10-20
 
 ### Added

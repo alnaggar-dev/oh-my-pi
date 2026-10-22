@@ -839,6 +839,8 @@ Common event types:
 - `irc_message`, `notice`, `goal_updated`
 - `queue_update`
 
+`advisor_answer_review` is part of the wire event union, but only a session shown in the interactive TUI emits it (`advisor.holdFinalAnswer`), so RPC clients never receive it.
+
 ### `queue_update` event
 
 ```json

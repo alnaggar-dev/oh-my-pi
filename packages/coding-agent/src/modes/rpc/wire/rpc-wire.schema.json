@@ -4017,6 +4017,27 @@
 				"type"
 			]
 		},
+		"AdvisorAnswerReviewEvent": {
+			"type": "object",
+			"properties": {
+				"type": {
+					"const": "advisor_answer_review"
+				},
+				"state": {
+					"enum": [
+						"reviewing",
+						"released",
+						"revised"
+					],
+					"type": "string"
+				}
+			},
+			"required": [
+				"type",
+				"state"
+			],
+			"description": "`advisor.holdFinalAnswer` review of the final answer: waiting advisors started, finished without changes, or steered a rewrite. Emitted only by sessions shown in the interactive TUI; RPC sessions never emit it."
+		},
 		"TtsrTriggeredEvent": {
 			"type": "object",
 			"properties": {
@@ -4261,6 +4282,9 @@
 				},
 				{
 					"$ref": "#/$defs/AdvisorYieldedEvent"
+				},
+				{
+					"$ref": "#/$defs/AdvisorAnswerReviewEvent"
 				},
 				{
 					"$ref": "#/$defs/TtsrTriggeredEvent"

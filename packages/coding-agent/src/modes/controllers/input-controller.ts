@@ -326,6 +326,8 @@ export class InputController {
 	};
 
 	#abortStreamingTurn(): void {
+		// A user abort shows a held final answer now instead of after its review.
+		this.ctx.eventController?.releaseHeldAnswer();
 		void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 	}
 
@@ -980,6 +982,7 @@ export class InputController {
 			// agent-core queue.
 			if (!text && !hasPendingImages && this.ctx.session.isStreaming) {
 				if (this.ctx.session.hasInterruptibleInput) {
+					this.ctx.eventController?.releaseHeldAnswer();
 					const aborting = this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 					await aborting;
 					this.ctx.updatePendingMessagesDisplay();
@@ -1437,6 +1440,7 @@ export class InputController {
 			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
 		if (!text && !images) {
 			if (target.isStreaming && target.hasInterruptibleInput) {
+				this.ctx.eventController?.releaseHeldAnswer();
 				const aborting = target.abort({ reason: USER_INTERRUPT_LABEL });
 				await aborting;
 				this.ctx.updatePendingMessagesDisplay();
@@ -1998,6 +2002,7 @@ export class InputController {
 		];
 		const restored = this.#restoreEntriesToEditor(allQueued, options?.currentText);
 		if (options?.abort) {
+			this.ctx.eventController?.releaseHeldAnswer();
 			void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 		}
 		return restored;
