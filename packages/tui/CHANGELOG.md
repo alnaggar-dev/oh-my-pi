@@ -26,6 +26,8 @@
 - Fixed LSP diagnostics that incorrectly showed “No issues” before a language server had reported; such files are now shown as unverified. ([#17293](https://github.com/can1357/oh-my-pi/pull/17293) by [@JustasMasiulis](https://github.com/JustasMasiulis))
 - Fixed Esc-Esc rewind in Tern selecting interrupted turns with no visible output instead of the last displayed turn.
 - Fixed streamed code blocks losing lines that scrolled off screen before the closing fence arrived; completed lines now remain available in scrollback. ([#17333](https://github.com/can1357/oh-my-pi/pull/17333) by [@gzkGit777](https://github.com/gzkGit777))
+- Fixed the LSP diagnostics view showing "No issues" for files whose language server had not reported yet; they now show as unverified ([#17293](https://github.com/can1357/oh-my-pi/pull/17293) by [@JustasMasiulis](https://github.com/JustasMasiulis))
+- `AssistantMessageComponent.setAnswerHeld()` hides an answer's text (thinking stays) without publishing stable rows, and `markRevisedHeldAnswer()` collapses it to one dim `Draft answer replaced after advisor review` line (the draft shows dimmed when expanded); `ChatTranscriptBuilder` collapses an answer whose following advisor card carries `revisedHeldAnswer`
 
 ## [18.13.3] - 2026-10-28
 
@@ -68,7 +70,6 @@
 
 - Removed the static context usage report (`ContextUsageView`, `renderContextUsage`, `describeContextUsage`), `contextUsageHead()`, and the `glyph` and `color` fields of `ContextBreakdown` categories; use `ContextViewer` ([#16160](https://github.com/can1357/oh-my-pi/pull/16160) by [@C-W-Z](https://github.com/C-W-Z)).
 - Fixed Markdown tables inside list items disappearing from the terminal transcript ([#17165](https://github.com/can1357/oh-my-pi/issues/17165)).
-- `AssistantMessageComponent.setAnswerHeld()` hides an answer's text (thinking stays) without publishing stable rows, and `markRevisedHeldAnswer()` collapses it to one dim `Draft answer replaced after advisor review` line (the draft shows dimmed when expanded); `ChatTranscriptBuilder` collapses an answer whose following advisor card carries `revisedHeldAnswer`
 
 ## [18.13.1] - 2026-10-27
 

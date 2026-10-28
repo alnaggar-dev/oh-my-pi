@@ -121,7 +121,7 @@ does what I wanted".
   until every **Must still be true** item below holds on the synced upstream code
   without the fork's changes; #15025 holds the answer in the agent core and adds its
   own review timeout, so its merge alone does not prove that.
-- **Tripwire paths:** `packages/agent/src/agent-loop.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/modes/controllers/input-controller.ts`, `packages/coding-agent/src/modes/utils/ui-helpers.ts`, `packages/tui/src/chat/assistant-message.ts`, `packages/tui/src/chat/chat-transcript-builder.ts`, `packages/coding-agent/src/modes/rpc/wire/events.ts`, `packages/coding-agent/src/tts/vocalizer.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`
+- **Tripwire paths:** `packages/agent/src/agent-loop.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/idle-maintenance.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/modes/controllers/input-controller.ts`, `packages/coding-agent/src/modes/utils/ui-helpers.ts`, `packages/tui/src/chat/assistant-message.ts`, `packages/tui/src/chat/chat-transcript-builder.ts`, `packages/coding-agent/src/modes/rpc/wire/events.ts`, `packages/coding-agent/src/tts/vocalizer.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`
 - **Must still be true:**
   - With the setting off, or in a session not shown in the interactive TUI (RPC, ACP,
     print, SDK, subagents), no `advisor_answer_review` event is emitted and the late
