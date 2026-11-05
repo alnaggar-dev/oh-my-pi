@@ -125,7 +125,7 @@ does what I wanted".
   until every **Must still be true** item below holds on the synced upstream code
   without the fork's changes; #15025 holds the answer in the agent core and adds its
   own review timeout, so its merge alone does not prove that.
-- **Tripwire paths:** `packages/agent/src/agent-loop.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/idle-maintenance.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/modes/controllers/input-controller.ts`, `packages/coding-agent/src/modes/utils/ui-helpers.ts`, `packages/tui/src/chat/assistant-message.ts`, `packages/tui/src/chat/chat-transcript-builder.ts`, `packages/coding-agent/src/modes/rpc/wire/events.ts`, `packages/coding-agent/src/tts/vocalizer.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/session/agent-session-handle.ts`, `packages/coding-agent/src/thread/remote-agent-session.ts`, `packages/coding-agent/src/modes/types.ts`
+- **Tripwire paths:** `packages/agent/src/agent-loop.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/idle-maintenance.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/modes/controllers/input-controller.ts`, `packages/coding-agent/src/modes/utils/ui-helpers.ts`, `packages/tui/src/chat/assistant-message.ts`, `packages/tui/src/chat/chat-transcript-builder.ts`, `packages/coding-agent/src/modes/rpc/wire/events.ts`, `packages/coding-agent/src/tts/vocalizer.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/session/agent-session-handle.ts`, `packages/coding-agent/src/thread/remote-agent-session.ts`, `packages/coding-agent/src/modes/types.ts`, `packages/coding-agent/src/modes/interactive-mode.ts`, `packages/coding-agent/src/modes/controllers/extension-ui-controller.ts`, `packages/tui/src/chrome/transcript-container.ts`, `packages/tui/src/chat/transcript-presentation.ts`
 - **Must still be true:**
   - With the setting off, or in a session not shown in the interactive TUI (RPC, ACP,
     print, SDK, subagents), no `advisor_answer_review` event is emitted and the late
@@ -141,8 +141,9 @@ does what I wanted".
     draft as replaced.
   - The hold is decided when the answer starts streaming; turning the setting on or off
     mid-answer changes only the next answer.
-  - A transcript rebuild during a review keeps the draft hidden, and after a rewrite it
-    shows the draft collapsed.
+  - A transcript rebuild, presenter refresh or redraw during a review keeps the draft
+    hidden and never commits it to scrollback; after a rewrite it shows the draft
+    collapsed.
   - Text-to-speech never reads a held draft before release, and never reads a replaced
     draft.
   - The RPC wire types and SDKs include `advisor_answer_review`; after a sync that
