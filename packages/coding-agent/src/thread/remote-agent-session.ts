@@ -645,6 +645,11 @@ export class RemoteAgentSession implements AgentViewSession {
 		return this.#view.advisorUsingSubscription;
 	}
 
+	/** Worker-homed sessions are subagents, which never hold an answer (`tuiTranscript` is off for them). */
+	isAdvisorAnswerHoldActive(): boolean {
+		return false;
+	}
+
 	fetchUsageReports(signal?: AbortSignal): Promise<UsageReport[] | null> {
 		return this.#command("fetchUsageReports", signal);
 	}

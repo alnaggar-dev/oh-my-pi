@@ -100,7 +100,11 @@ does what I wanted".
   (`setAnswerHeld`, `markRevisedHeldAnswer`, `REVISED_HELD_ANSWER_LABEL`),
   `packages/tui/src/chat/chat-transcript-builder.ts` (collapsing a revised draft),
   `packages/tui/src/chat/messages.ts` (`AdvisorNote.revisedHeldAnswer`), `docs/rpc.md`
-  (the `advisor_answer_review` paragraph), `docs/sdk.md` (the event bullet).
+  (the `advisor_answer_review` paragraph), `docs/sdk.md` (the event bullet),
+  `packages/coding-agent/src/session/agent-session-handle.ts` (`isAdvisorAnswerHoldActive`
+  and `getAdvisorAnswerHold` on `AgentViewSession`, the type of `ctx.viewSession`),
+  `packages/coding-agent/src/thread/remote-agent-session.ts` (`isAdvisorAnswerHoldActive`
+  returning false for a worker-homed subagent).
 - **Depends on upstream:** Its code also sits in files the request-cap entry owns:
   `packages/coding-agent/src/session/session-advisors.ts` (`isHoldableAnswer`,
   `#answerHoldApplies`, `onPrimaryAssistantMessageStart`, `isAnswerHoldActive`,
@@ -121,7 +125,7 @@ does what I wanted".
   until every **Must still be true** item below holds on the synced upstream code
   without the fork's changes; #15025 holds the answer in the agent core and adds its
   own review timeout, so its merge alone does not prove that.
-- **Tripwire paths:** `packages/agent/src/agent-loop.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/idle-maintenance.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/modes/controllers/input-controller.ts`, `packages/coding-agent/src/modes/utils/ui-helpers.ts`, `packages/tui/src/chat/assistant-message.ts`, `packages/tui/src/chat/chat-transcript-builder.ts`, `packages/coding-agent/src/modes/rpc/wire/events.ts`, `packages/coding-agent/src/tts/vocalizer.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`
+- **Tripwire paths:** `packages/agent/src/agent-loop.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/session/agent-session.ts`, `packages/coding-agent/src/session/idle-maintenance.ts`, `packages/coding-agent/src/modes/controllers/event-controller.ts`, `packages/coding-agent/src/modes/controllers/input-controller.ts`, `packages/coding-agent/src/modes/utils/ui-helpers.ts`, `packages/tui/src/chat/assistant-message.ts`, `packages/tui/src/chat/chat-transcript-builder.ts`, `packages/coding-agent/src/modes/rpc/wire/events.ts`, `packages/coding-agent/src/tts/vocalizer.ts`, `packages/coding-agent/src/sdk.ts`, `packages/coding-agent/src/main.ts`, `packages/coding-agent/src/session/agent-session-handle.ts`, `packages/coding-agent/src/thread/remote-agent-session.ts`, `packages/coding-agent/src/modes/types.ts`
 - **Must still be true:**
   - With the setting off, or in a session not shown in the interactive TUI (RPC, ACP,
     print, SDK, subagents), no `advisor_answer_review` event is emitted and the late
@@ -143,6 +147,8 @@ does what I wanted".
     draft.
   - The RPC wire types and SDKs include `advisor_answer_review`; after a sync that
     changes the event union, `bun run gen:rpc` still produces them.
+  - Every `AgentViewSession` answers `isAdvisorAnswerHoldActive`; a focused subagent
+    homed on a worker thread (`RemoteAgentSession`) reports no hold.
 - **Check:** `bun test packages/coding-agent/test/agent-session-advisor-terminal-unwind.test.ts packages/coding-agent/test/event-controller-held-answer.test.ts packages/coding-agent/test/issue-9816-inflight-wait-focus-rebuild.test.ts`
 
 ## After sync
