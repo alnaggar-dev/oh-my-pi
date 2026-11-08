@@ -2541,7 +2541,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#loopGuards.recordTurn(messages, context);
 			await this.#prewalk.advanceAtTurnEnd(messages, context);
 			if (context?.willContinue) this.#steerAnthropicWrapUp();
-			await this.#advisors.onPrimaryTurnEnd(messages, context?.willContinue, signal);
+			await this.#advisors.onPrimaryTurnEnd(messages, context?.willContinue, signal, context?.message);
 			await this.#maintenance.maintainContextMidRun(messages, signal, context);
 		});
 		this.yieldQueue = new YieldQueue({
@@ -2881,6 +2881,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			planModeState: () => this.#planModeState,
 			clientBridge: () => this.#clientBridge,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
+			emitAfterTurnEnd: (turn, event) => this.#emitAfterTurnEnd(turn, event),
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			sendCustomMessage: (message, options) => this.sendCustomMessage(message, options),
 			extractQueuedAdvisorCards: () => this.#extractQueuedAdvisorCards(),
@@ -2926,6 +2927,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			createTransformProviderContext:
 				config.createAdvisorTransformProviderContext ??
 				(sharedTransformProviderContext ? () => sharedTransformProviderContext : undefined),
+			tuiTranscript: config.tuiTranscript,
 		});
 
 		const maintenanceHost: SessionMaintenanceHost = {
@@ -4128,6 +4130,43 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	#inFlightAgentEndMaintenance = new Set<Promise<void>>();
 
+	/** Message of the last `turn_end` delivered to session listeners; see {@link #emitAfterTurnEnd}. */
+	#deliveredTurnEnd: AgentMessage | undefined;
+	/** Events waiting for their turn's `turn_end` to reach session listeners, in emission order. */
+	#eventsAwaitingTurnEnd: Array<{ turn: AgentMessage; event: AgentSessionEvent }> = [];
+
+	/**
+	 * Emit `event` once the agent delivered `turn`'s `turn_end` to session
+	 * listeners. agent-core runs its `onTurnEnd` hook right after pushing
+	 * `turn_end` into the run's event stream, while the stream consumer may not
+	 * have delivered that turn's `message_end`/`turn_end` yet; a direct emit from
+	 * the hook could overtake them. Never blocks: events park until
+	 * {@link #flushEventsAwaitingTurnEnd} runs at delivery.
+	 */
+	#emitAfterTurnEnd(turn: AgentMessage | undefined, event: AgentSessionEvent): void {
+		if (turn !== undefined && this.#deliveredTurnEnd !== turn) {
+			this.#eventsAwaitingTurnEnd.push({ turn, event });
+			return;
+		}
+		this.#flushEventsAwaitingTurnEnd(undefined);
+		void this.#emitSessionEvent(event, { detachExtensions: true });
+	}
+
+	/**
+	 * Emit parked events up to and including the last one waiting on `turn`
+	 * (earlier turns' `turn_end` already passed: the stream is ordered).
+	 * `undefined` flushes everything — at `agent_start`, a parked event's
+	 * stream was abandoned and its `turn_end` will never be delivered.
+	 */
+	#flushEventsAwaitingTurnEnd(turn: AgentMessage | undefined): void {
+		const pending = this.#eventsAwaitingTurnEnd;
+		const end = turn === undefined ? pending.length : pending.findLastIndex(entry => entry.turn === turn) + 1;
+		if (end === 0) return;
+		for (const { event } of pending.splice(0, end)) {
+			void this.#emitSessionEvent(event, { detachExtensions: true });
+		}
+	}
+
 	/**
 	 * Subscriber entry point. Delegates to {@link #dispatchAgentEvent} and
 	 * records the dispatch in {@link #inFlightEventHandlers} until it settles so
@@ -4210,7 +4249,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 		if (event.type === "agent_end") this.#agentEndRunEpochs.set(event, this.#runEpoch);
 		if (event.type !== "agent_end") {
+			if (event.type === "agent_start") this.#flushEventsAwaitingTurnEnd(undefined);
+			// `#processAgentEvent` reaches `#emit` before its first await, so this
+			// turn's `turn_end` (and its earlier `message_end`) are already with
+			// listeners when the parked events follow.
 			const processing = this.#processAgentEvent(event);
+			if (event.type === "turn_end") {
+				this.#deliveredTurnEnd = event.message;
+				this.#flushEventsAwaitingTurnEnd(event.message);
+			}
 			if ((event.type === "message_start" || event.type === "message_end") && isAdvisorCard(event.message)) {
 				this.#advisors.trackCardEvent(processing);
 			}
@@ -4837,6 +4884,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// the main session's reading survives focus round-trips.
 		if (event.type === "message_start" && event.message.role === "assistant") {
 			this.tokenRate.begin(event.message.timestamp);
+			// Before fan-out: listeners read this decision for the message now starting.
+			this.#advisors.onPrimaryAssistantMessageStart();
 		} else if (event.type === "message_update" && event.message.role === "assistant") {
 			const delta = event.assistantMessageEvent;
 			if (delta.type === "text_delta" || delta.type === "thinking_delta" || delta.type === "toolcall_delta") {
@@ -16319,6 +16368,39 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	isAdvisorActive(): boolean {
 		return this.#advisors.isAdvisorActive();
+	}
+
+	/**
+	 * Whether `advisor.holdFinalAnswer` holds the current assistant message: the
+	 * decision captured at its `message_start`, before listeners received it,
+	 * from the session rendering in the interactive TUI transcript
+	 * ({@link AgentSessionConfig.tuiTranscript}), the setting, and a live
+	 * advisor's catch-up policy waiting at boundaries. The interactive UI reads
+	 * it for a started assistant message; the boundary review uses the same
+	 * decision, so a held answer stays hidden until the `advisor_answer_review`
+	 * event closes its boundary. Changes apply from the next assistant message.
+	 */
+	isAdvisorAnswerHoldActive(): boolean {
+		return this.#advisors.isAnswerHoldActive();
+	}
+
+	/**
+	 * Review state of `message` when it is the most recent `advisor.holdFinalAnswer`
+	 * draft: `held` while its review runs, `revised` once the review sent it
+	 * back for a rewrite. `undefined` once released or for any other message.
+	 * Transcript rebuilds read it so a held draft never renders, and treat a
+	 * `revised` one like a draft whose rewrite request card follows it.
+	 */
+	getAdvisorAnswerHold(message: AgentMessage): "held" | "revised" | undefined {
+		const hold = this.#advisors.answerHold;
+		if (!hold || hold.state === "released" || message.role !== "assistant") return undefined;
+		// The loop hands the advisors its live turn message but emits and persists
+		// a snapshot of it (and display may deobfuscate a further copy): every copy
+		// keeps the stream's start timestamp and model.
+		const held = hold.message;
+		return held.role === "assistant" && held.timestamp === message.timestamp && held.model === message.model
+			? hold.state
+			: undefined;
 	}
 
 	/**

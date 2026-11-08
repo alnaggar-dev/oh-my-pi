@@ -16,6 +16,7 @@ import { settings } from "../../config/settings";
 import { continuesConversation } from "./conversation-position";
 import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { HeldAnswerRebuild } from "@oh-my-pi/pi-tui/chat/held-answer";
 import { readMediaPath } from "@oh-my-pi/pi-tui/native/blobs";
 import { createBackgroundTanDispatchBlock } from "@oh-my-pi/pi-tui/chat/background-tan-message";
 import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
@@ -462,17 +463,34 @@ export class UiHelpers {
 				break;
 			}
 			case "assistant": {
+				// `advisor.holdFinalAnswer`: a draft the session still holds for review
+				// never renders its text. Whether a draft sent back stays collapsed is
+				// decided by the transcript rebuild, from the messages after it.
+				const held = this.ctx.viewSession.getAdvisorAnswerHold(message) === "held";
 				const cached = options?.reuseSettledComponent
 					? this.ctx.transcriptMessageComponents.get(message)
 					: undefined;
-				const assistantComponent =
-					cached instanceof AssistantMessageComponent
-						? cached
-						: createAssistantMessageComponent(
-								this.ctx,
-								splitAssistantMessageToolTimeline(message).beforeTools,
-								getAssistantMessageLinkTargets(this.ctx),
-							);
+				let assistantComponent: AssistantMessageComponent;
+				if (cached instanceof AssistantMessageComponent && (!held || cached.answerReview === "held")) {
+					assistantComponent = cached;
+					if (!held) assistantComponent.setAnswerReview("none");
+				} else if (held) {
+					// Built unfinalized so no row of the draft commits before its review ends.
+					assistantComponent = createAssistantMessageComponent(
+						this.ctx,
+						undefined,
+						getAssistantMessageLinkTargets(this.ctx),
+					);
+					assistantComponent.setAnswerReview("held");
+					assistantComponent.updateContent(splitAssistantMessageToolTimeline(message).beforeTools);
+				} else {
+					assistantComponent = createAssistantMessageComponent(
+						this.ctx,
+						splitAssistantMessageToolTimeline(message).beforeTools,
+						getAssistantMessageLinkTargets(this.ctx),
+					);
+				}
+				if (held) this.ctx.eventController?.heldAnswers.adopt(assistantComponent, message);
 				if (cached !== assistantComponent) {
 					this.ctx.transcriptMessageComponents.set(message, assistantComponent);
 				}
@@ -635,6 +653,8 @@ export class UiHelpers {
 		// (not finalized) so replayed and live frames still route to the card;
 		// the ids are handed back to the controller after the loop (#10447).
 		const backgroundCallIds = new Set<string>();
+		// `advisor.holdFinalAnswer`: collapses drafts whose rewrite answered.
+		const heldAnswers = new HeldAnswerRebuild();
 		const messages = sessionContext.messages;
 		const count = messages.length;
 		for (let i = 0; i < count; i++) {
@@ -654,6 +674,11 @@ export class UiHelpers {
 				this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });
 				const lastChild = this.ctx.chatContainer.children[this.ctx.chatContainer.children.length - 1];
 				const assistantComponent = lastChild instanceof AssistantMessageComponent ? lastChild : undefined;
+				heldAnswers.assistant(message, assistantComponent);
+				// The session sent this draft back before its rewrite request card reached the transcript.
+				if (assistantComponent && this.ctx.viewSession.getAdvisorAnswerHold(message) === "revised") {
+					heldAnswers.sentBack(assistantComponent, message);
+				}
 				if (assistantComponent) {
 					const usage = message.usage;
 					const explained = sessionContext.cacheMissExplainedAt?.[i] ?? false;
@@ -806,6 +831,7 @@ export class UiHelpers {
 					? turnElapsedMs(turnStartedAt, message)
 					: undefined;
 			} else if (message.role === "toolResult") {
+				heldAnswers.other(message);
 				if (options.preservedLiveToolCallIds?.has(message.toolCallId)) continue;
 				const pendingReadComponent = this.ctx.pendingTools.get(message.toolCallId);
 				// Mirror the call side: resolve the wire toolName through the registry
@@ -935,11 +961,16 @@ export class UiHelpers {
 				if (message.role === "custom" && isUserTurnInitiator(message as CustomMessage)) {
 					turnStartedAt = message.timestamp;
 				}
+				heldAnswers.other(message);
 				// All other messages use standard rendering
 				this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });
 			}
 		}
 		flushPendingUsage();
+		// A draft whose rewrite still runs stays collapsed; the controller shows
+		// it again if that rewrite ends without an answer.
+		const rewriting = heldAnswers.finish(this.ctx.viewSession.isStreaming);
+		if (rewriting) this.ctx.eventController?.heldAnswers.adoptRewrite(rewriting.component, rewriting.message);
 
 		// The trailing read run has no following break to close it; seal so the
 		// rebuilt group can retire as history even with a never-persisted result.

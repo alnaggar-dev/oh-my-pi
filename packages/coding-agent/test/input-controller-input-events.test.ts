@@ -62,6 +62,7 @@ async function createHarness(factory: ExtensionFactory) {
 		promptCustomMessage: vi.fn(async () => true),
 		abort: vi.fn(async () => {}),
 		prewarmModelConnection: vi.fn(),
+		getAdvisorAnswerHold: () => undefined,
 	};
 	const ctx = {
 		editor,

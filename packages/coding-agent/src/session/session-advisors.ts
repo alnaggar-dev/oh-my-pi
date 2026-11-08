@@ -90,8 +90,10 @@ import type { Settings } from "../config/settings";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "../cursor";
 import { bridgeToolMap } from "../cursor-bridge-tools";
 import { estimateContextToolSchemaTokens } from "@oh-my-pi/pi-tui/status-line/context-usage";
+import { isHoldableAnswer } from "@oh-my-pi/pi-tui/chat/held-answer";
 import type { PlanModeState } from "../plan-mode/state";
 import advisorBoundaryGuidance from "../prompts/advisor/boundary-guidance.md" with { type: "text" };
+import advisorHeldAnswerGuidance from "../prompts/advisor/held-answer-guidance.md" with { type: "text" };
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import {
@@ -125,6 +127,8 @@ import type { YieldQueue } from "./yield-queue";
 
 import {
 	cfgAdvisorContinueSeverity,
+	cfgAdvisorHoldFinalAnswer,
+	cfgAdvisorHoldFinalAnswerTimeout,
 	cfgAdvisorEvictStaleResults,
 	cfgAdvisorImmuneTurns,
 	cfgAdvisorMaxNotesPerUpdate,
@@ -270,6 +274,20 @@ function lastPrimaryUserMessage(messages: readonly AgentMessage[]): AgentMessage
 	}
 	return undefined;
 }
+
+/**
+ * A terminal boundary whose final answer `advisor.holdFinalAnswer` keeps from
+ * the user while waiting advisors review it.
+ */
+interface HeldAnswerBoundary {
+	/** The held answer. */
+	readonly turn: AssistantMessage;
+	/** Whether the merged flush steered a replacement answer. */
+	revised: boolean;
+	/** The boundary's abort signal; an aborted boundary writes no replacement. */
+	readonly signal: AbortSignal | undefined;
+}
+
 /** Advisor statistics for the advisor status command. */
 export interface AdvisorStats {
 	configured: boolean;
@@ -496,6 +514,11 @@ export interface SessionAdvisorsOptions {
 	streamFn?: StreamFn;
 	/** Builds each advisor's provider request transform; called once per advisor agent. */
 	createTransformProviderContext?: () => (context: Context, model: Model) => Context | Promise<Context>;
+	/**
+	 * Replies render in omp's interactive TUI transcript, the only presenter that
+	 * hides a draft answer; `advisor.holdFinalAnswer` applies only then.
+	 */
+	tuiTranscript?: boolean;
 }
 
 /** Options accepted when an advisor injects a primary-session message. */
@@ -525,6 +548,12 @@ export interface SessionAdvisorsHost {
 	planModeState(): PlanModeState | undefined;
 	clientBridge(): ClientBridge | undefined;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
+	/**
+	 * Emit `event` to session listeners only after the agent delivered `turn`'s
+	 * `turn_end` (and so its `message_end`); immediately when it already did or
+	 * `turn` is unknown. Never blocks the caller.
+	 */
+	emitAfterTurnEnd(turn: AgentMessage | undefined, event: AgentSessionEvent): void;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	sendCustomMessage(message: CustomMessagePayload, options?: AdvisorMessageDeliveryOptions): Promise<boolean>;
 	extractQueuedAdvisorCards(): CustomMessage[];
@@ -645,6 +674,27 @@ export class SessionAdvisors {
 	 * simultaneous notes never force N separate cards or continuation turns.
 	 */
 	#advisorBoundaryNotes: AdvisorNote[] = [];
+	/**
+	 * Set for the duration of a terminal-boundary {@link onPrimaryTurnEnd} whose
+	 * final answer `advisor.holdFinalAnswer` keeps from the user; `revised`
+	 * records whether the merged flush steered a replacement answer, `signal`
+	 * is the boundary's abort signal. Cleared early when
+	 * `advisor.holdFinalAnswerTimeout` shows the answer while the wait goes on.
+	 */
+	#heldAnswerBoundary: HeldAnswerBoundary | undefined;
+	/**
+	 * `advisor.holdFinalAnswer` decision for the current primary assistant
+	 * message, captured at its `message_start` ({@link onPrimaryAssistantMessageStart}).
+	 */
+	#answerHeld = false;
+	/**
+	 * The most recent held terminal boundary's answer and its review state.
+	 * Rebuilt transcripts read it ({@link answerHold}) so a draft still under
+	 * review, or already replaced, never renders in full.
+	 */
+	#answerHold: { message: AgentMessage; state: "held" | "revised" | "released" } | undefined;
+	/** Creation-time: see {@link SessionAdvisorsOptions.tuiTranscript}. */
+	readonly #tuiTranscript: boolean;
 	/** Primary-turn count when the staleness header last shipped; `undefined`
 	 *  until the first merged delivery. Gates {@link ADVISOR_BOUNDARY_GUIDANCE}
 	 *  to at most once per {@link ADVISOR_BOUNDARY_GUIDANCE_TURNS} turns. */
@@ -668,16 +718,96 @@ export class SessionAdvisors {
 		this.#advisorConfigWarnings = options.configWarnings ?? [];
 		this.#advisorStreamFn = options.streamFn;
 		this.#createTransformProviderContext = options.createTransformProviderContext;
+		this.#tuiTranscript = options.tuiTranscript === true;
 		if (this.#advisorEnabled) this.#buildAdvisorRuntime();
 	}
 
-	/** Queues eligible primary updates for each live advisor. */
+	/**
+	 * Whether `advisor.holdFinalAnswer` applies to the message now starting:
+	 * the session renders in the interactive TUI transcript, the setting is on,
+	 * and a review can still change the answer. That needs a review that may
+	 * steer a rewrite (not in plan mode, after a user stop, or while advice is
+	 * preserve-only), a primary turn that is not an advisor-started
+	 * continuation (a rewrite is one; it gets at most the one review owed for a
+	 * review its start cancelled, and that review's notes arrive the normal way),
+	 * and a live advisor with a waiting catch-up policy (not `off`) whose cadence
+	 * reviews the next boundary.
+	 */
+	#answerHoldApplies(): boolean {
+		if (!this.#tuiTranscript || !this.#advisorEnabled || !cfgAdvisorHoldFinalAnswer.get(this.#host.settings)) {
+			return false;
+		}
+		if (this.#advisorAutoResumeSuppressed || this.#preserveAdvisorAdvice || this.#steerPreservesAsCard()) {
+			return false;
+		}
+		if (this.#isAdvisorContinuation(this.#host.agent.state.messages)) return false;
+		const defaultReviewInterval = this.#defaultReviewInterval();
+		return this.#advisors.some(
+			advisor =>
+				!advisor.runtime.disposed &&
+				this.#catchupPolicy(advisor) !== "off" &&
+				(advisor.eligibleUpdates + 1) % (advisor.reviewInterval ?? defaultReviewInterval) === 0,
+		);
+	}
+
+	/** Whether the primary is running a continuation an advisor delivery started (see {@link #advisorContinuation}). */
+	#isAdvisorContinuation(messages: readonly AgentMessage[]): boolean {
+		const continuation = this.#advisorContinuation;
+		return continuation !== undefined && lastPrimaryUserMessage(messages) === continuation.userMessage;
+	}
+
+	/** Review interval of the roster-less default advisor, read live from settings. */
+	#defaultReviewInterval(): number {
+		const configured = cfgAdvisorReviewInterval.get(this.#host.settings);
+		return Number.isFinite(configured) && configured >= 1 ? Math.trunc(configured) : 1;
+	}
+
+	/**
+	 * Decide once whether `advisor.holdFinalAnswer` holds the primary assistant
+	 * message now starting. Runs before listeners receive its `message_start`,
+	 * so the UI and the turn's boundary read the same decision; setting or
+	 * advisor changes apply from the next assistant message.
+	 */
+	onPrimaryAssistantMessageStart(): void {
+		this.#answerHeld = this.#answerHoldApplies();
+	}
+
+	/** Whether the current primary assistant message is held: decided when it started. */
+	isAnswerHoldActive(): boolean {
+		return this.#answerHeld;
+	}
+
+	/** The most recent held terminal boundary's answer and review state; cleared at conversation boundaries. */
+	get answerHold(): { readonly message: AgentMessage; readonly state: "held" | "revised" | "released" } | undefined {
+		return this.#answerHold;
+	}
+
+	/** Catch-up policy: a roster entry's `syncBacklog` override, else the live global `advisor.syncBacklog`. */
+	#catchupPolicy(advisor: ActiveAdvisor): AdvisorSyncBacklog {
+		return advisor.syncBacklog ?? cfgAdvisorSyncBacklog.get(this.#host.settings);
+	}
+
+	/**
+	 * Queues eligible primary updates for each live advisor. `turn` is the
+	 * boundary's assistant message; `advisor_answer_review` events are ordered
+	 * after its `turn_end` reaches session listeners.
+	 */
 	async onPrimaryTurnEnd(
 		messages: AgentMessage[],
 		willContinue: boolean | undefined,
 		signal?: AbortSignal,
+		turn?: AgentMessage,
 	): Promise<void> {
 		const terminalBoundary = willContinue !== true;
+		// Uses the hold decision captured when this turn's message started (what
+		// the UI read). Only a terminal boundary ending in a final answer is held;
+		// any other keeps the normal path.
+		const heldMessage = this.#answerHeld && isHoldableAnswer(turn);
+		const holdAnswer = terminalBoundary && heldMessage;
+		const heldBoundary: HeldAnswerBoundary | undefined = holdAnswer ? { turn, revised: false, signal } : undefined;
+		this.#heldAnswerBoundary = heldBoundary;
+		if (holdAnswer) this.#answerHold = { message: turn, state: "held" };
+		let holdTimer: NodeJS.Timeout | undefined;
 		if (terminalBoundary) this.#terminalUnwindActive = true;
 		// Delivery state follows primary boundaries even when review cadence skips a callback.
 		this.#advisorPrimaryWillContinue = willContinue === true;
@@ -700,15 +830,11 @@ export class SessionAdvisors {
 			// The exception is the terminal boundary owed by an advisor whose review
 			// the continuation cancelled: scheduled whatever the cadence, and as a
 			// stand-in for the cancelled review it does not advance cadence.
-			const continuation = this.#advisorContinuation;
-			const advisorContinuation =
-				continuation !== undefined && lastPrimaryUserMessage(messages) === continuation.userMessage;
+			const advisorContinuation = this.#isAdvisorContinuation(messages);
 			if (!advisorContinuation || !this.#advisorPrimaryWillContinue) this.#advisorContinuation = undefined;
 			// The roster-less default advisor follows the cadence settings live.
 			const defaultReviewMode = cfgAdvisorReviewMode.get(this.#host.settings);
-			const configuredInterval = cfgAdvisorReviewInterval.get(this.#host.settings);
-			const defaultReviewInterval =
-				Number.isFinite(configuredInterval) && configuredInterval >= 1 ? Math.trunc(configuredInterval) : 1;
+			const defaultReviewInterval = this.#defaultReviewInterval();
 			let scheduledAdvisors: ActiveAdvisor[] | undefined;
 			for (const advisor of this.#advisors) {
 				if (advisor.runtime.disposed) continue;
@@ -744,21 +870,45 @@ export class SessionAdvisors {
 			// blocks the boundary (no wall-clock cap; abort, failure, quota,
 			// transition, and disposal still release it) while an asynchronous
 			// turn reviewer never parks the primary.
-			const globalSyncBacklog = cfgAdvisorSyncBacklog.get(this.#host.settings);
 			const waits: Promise<boolean>[] = [];
 			for (const scheduled of scheduledAdvisors) {
-				const syncBacklog = scheduled.syncBacklog ?? globalSyncBacklog;
+				const syncBacklog = this.#catchupPolicy(scheduled);
 				if (syncBacklog === "off") continue;
 				const strict = syncBacklog === "strict";
-				const threshold = strict ? 1 : Number.parseInt(syncBacklog, 10);
+				// A held answer waits until every queued review is done, its own
+				// included: a numeric threshold could release it before its review
+				// started. A numeric policy keeps its 30-second cap.
+				const threshold = strict || heldBoundary ? 1 : Number.parseInt(syncBacklog, 10);
 				waits.push(scheduled.runtime.waitForCatchup(strict ? undefined : 30_000, threshold, signal));
+			}
+			if (heldBoundary && waits.length > 0) {
+				this.#host.emitAfterTurnEnd(turn, { type: "advisor_answer_review", state: "reviewing" });
+				holdTimer = this.#scheduleHeldAnswerTimeout(heldBoundary);
 			}
 			await Promise.all(waits);
 		} finally {
+			clearTimeout(holdTimer);
 			this.#advisorTerminalBoundaryOpen = false;
 			// Window closed: deliver everything buffered during flush + catch-up
 			// wait as one merged message (one steer at most, else one card).
 			this.#flushAdvisorBoundaryNotes();
+			// The time limit already showed the answer when it cleared the boundary.
+			if (heldBoundary && this.#heldAnswerBoundary === heldBoundary) {
+				const { turn: held, revised } = heldBoundary;
+				this.#heldAnswerBoundary = undefined;
+				if (this.#answerHold?.message === held) {
+					this.#answerHold = { message: held, state: revised ? "revised" : "released" };
+				}
+				this.#host.emitAfterTurnEnd(held, {
+					type: "advisor_answer_review",
+					state: revised ? "revised" : "released",
+				});
+			} else if (!terminalBoundary && heldMessage) {
+				// A text-only turn the loop re-samples (`pause_turn`, a DSML-leak nudge,
+				// a soft tool-requirement retry): the UI held it at message_start, but
+				// no review runs here, so show it now rather than at the next answer.
+				this.#host.emitAfterTurnEnd(turn, { type: "advisor_answer_review", state: "released" });
+			}
 			// The merge window covers only this callback. With advisor.syncBacklog
 			// off the review drain can still emit after it returns; those late notes
 			// deliver individually through #routeAdvice, and `#terminalUnwindActive`
@@ -767,6 +917,24 @@ export class SessionAdvisors {
 			// `advisor.continueSeverity` may still request a continuation.
 			if (!terminalBoundary) this.#terminalUnwindActive = false;
 		}
+	}
+
+	/**
+	 * `advisor.holdFinalAnswerTimeout`: show the held answer once its review has
+	 * run this long. The boundary keeps waiting under its catch-up policy; its
+	 * notes then arrive as an ordinary correction, because the user has read
+	 * the answer. 0 disables the limit.
+	 */
+	#scheduleHeldAnswerTimeout(boundary: HeldAnswerBoundary): NodeJS.Timeout | undefined {
+		const seconds = cfgAdvisorHoldFinalAnswerTimeout.get(this.#host.settings);
+		if (!(seconds > 0)) return undefined;
+		return setTimeout(() => {
+			if (this.#heldAnswerBoundary !== boundary) return;
+			this.#heldAnswerBoundary = undefined;
+			const held = boundary.turn;
+			if (this.#answerHold?.message === held) this.#answerHold = { message: held, state: "released" };
+			this.#host.emitAfterTurnEnd(held, { type: "advisor_answer_review", state: "released" });
+		}, seconds * 1000);
 	}
 
 	/** Rebuilds live advisors when role assignments alter their resolved runtime inputs. */
@@ -1100,6 +1268,8 @@ export class SessionAdvisors {
 	 * so none of them inject into the new conversation.
 	 */
 	#resetAdvisorSessionState(preserveCost: boolean): void {
+		this.#answerHold = undefined;
+		this.#answerHeld = false;
 		if (!preserveCost) {
 			this.#advisorCosts.clear();
 			this.#advisorSubscriptionSlugs.clear();
@@ -1885,6 +2055,12 @@ export class SessionAdvisors {
 	 * when a note qualifies on its own merits: its severity meets
 	 * `advisor.continueSeverity` (the advisor continuation latch prevents a
 	 * cascade). Otherwise preserves as a single visible card.
+	 *
+	 * A boundary whose final answer `advisor.holdFinalAnswer` kept from the user
+	 * steers under the held-answer guidance (`prompts/advisor/held-answer-guidance.md`,
+	 * never throttled) instead, so the primary
+	 * writes a complete replacement rather than a correction — unless the
+	 * boundary was aborted, which delivers normally and releases the draft.
 	 */
 	#flushAdvisorBoundaryNotes(): void {
 		if (this.#advisorBoundaryNotes.length === 0) return;
@@ -1897,17 +2073,25 @@ export class SessionAdvisors {
 				n.turnsAgo = this.#advisorPrimaryTurnsCompleted - n.turn;
 			}
 		}
+		const batch = formatAdvisorBatchContent(notes, { currentTurn: this.#advisorPrimaryTurnsCompleted });
+		// An aborted boundary writes no replacement: deliver normally so the draft is released.
+		const heldAnswer = this.#heldAnswerBoundary?.signal?.aborted ? undefined : this.#heldAnswerBoundary;
+		// The concern cooldown shields visible work from repeated interruptions. A
+		// held draft was never shown and its rewrite is never held, so this skip
+		// happens once per answer: the cooldown must not turn a reviewed draft into
+		// a late correction card.
+		const steer = notes.some(n => this.#continuesFinishedRun(n.severity, heldAnswer !== undefined));
+		if (heldAnswer && steer && !this.#steerPreservesAsCard()) {
+			heldAnswer.revised = true;
+			this.#deliverAdvisorBatch(notes, prompt.render(advisorHeldAnswerGuidance, { batch }), true, undefined, true);
+			return;
+		}
 		const showGuidance =
 			this.#advisorBoundaryGuidanceLastTurn === undefined ||
 			this.#advisorPrimaryTurnsCompleted - this.#advisorBoundaryGuidanceLastTurn >= ADVISOR_BOUNDARY_GUIDANCE_TURNS;
 		if (showGuidance) this.#advisorBoundaryGuidanceLastTurn = this.#advisorPrimaryTurnsCompleted;
-		const batch = formatAdvisorBatchContent(notes, { currentTurn: this.#advisorPrimaryTurnsCompleted });
 		const content = showGuidance ? `${ADVISOR_BOUNDARY_GUIDANCE}\n${batch}` : batch;
-		this.#deliverAdvisorBatch(
-			notes,
-			content,
-			notes.some(n => this.#continuesFinishedRun(n.severity)),
-		);
+		this.#deliverAdvisorBatch(notes, content, steer);
 	}
 
 	/**
@@ -1918,8 +2102,9 @@ export class SessionAdvisors {
 	 * streaming, so "steer" means triggering one latched continuation turn, never
 	 * steering into the completed one; it also keeps user-stop suppression
 	 * independent of the exact unwind state.
+	 * `ignoreCooldown` skips the post-interrupt concern cooldown (held answers).
 	 */
-	#continuesFinishedRun(severity: AdvisorSeverity | undefined): boolean {
+	#continuesFinishedRun(severity: AdvisorSeverity | undefined, ignoreCooldown = false): boolean {
 		const continueSeverity = cfgAdvisorContinueSeverity.get(this.#host.settings);
 		if (!meetsAdvisorSeverity(severity, continueSeverity)) return false;
 		const channel = resolveAdvisorDeliveryChannel({
@@ -1930,31 +2115,27 @@ export class SessionAdvisors {
 			streaming: false,
 			aborting: this.#host.abortInProgress(),
 			terminalAnswerNoQueuedWork: this.#hasTerminalTextAnswerWithoutQueuedWork(),
-			interruptImmuneTurnActive: this.#isAdvisorInterruptImmuneTurnActive(),
+			interruptImmuneTurnActive: !ignoreCooldown && this.#isAdvisorInterruptImmuneTurnActive(),
 		});
 		return channel === "steer";
 	}
 
 	/**
 	 * Deliver one advisor batch as a steer, or as a visible card when steering
-	 * is technically impossible. A steered batch only continues the run when the
-	 * session can actually start (or is already running) a turn. One idle case
-	 * cannot, so `sendCustomMessage({ triggerTurn: true })` would silently bury
-	 * the card in `#pendingNextTurnMessages` until the next user prompt —
-	 * strictly worse than the visible preserved card. Preserve instead:
-	 *  - ACP bridges with `deferAgentInitiatedTurns`: the client cannot show an
-	 *    agent-initiated turn as busy, so idle triggers are refused (#5628 review).
+	 * is technically impossible ({@link #steerPreservesAsCard}).
+	 * `revisesHeldAnswer` marks the steered card as the rewrite request for an
+	 * answer `advisor.holdFinalAnswer` held.
 	 */
-	#deliverAdvisorBatch(notes: AdvisorNote[], content: string, steer: boolean, producer?: ActiveAdvisor): void {
-		const details = { notes } satisfies AdvisorMessageDetails;
+	#deliverAdvisorBatch(
+		notes: AdvisorNote[],
+		content: string,
+		steer: boolean,
+		producer?: ActiveAdvisor,
+		revisesHeldAnswer = false,
+	): void {
+		const details: AdvisorMessageDetails = revisesHeldAnswer ? { notes, revisedHeldAnswer: true } : { notes };
 		if (steer) {
-			// Plan mode preserves would-be-steering advice as a visible card:
-			// only user-driven turns converge on ask/resolve.
-			const planModePreservesAdvice = this.#host.planModeState()?.enabled === true;
-			const cannotAutoTrigger =
-				!this.#host.agent.state.isStreaming &&
-				this.#host.clientBridge()?.deferAgentInitiatedTurns === true;
-			if (!planModePreservesAdvice && !cannotAutoTrigger) {
+			if (!this.#steerPreservesAsCard()) {
 				// Arm the post-interrupt immune window only now that a turn is actually
 				// being steered/triggered. A merely preserved card never interrupts, so
 				// arming earlier would downgrade the next `advisor.immuneTurns` worth of
@@ -1989,6 +2170,22 @@ export class SessionAdvisors {
 			details,
 			timestamp: Date.now(),
 		});
+	}
+
+	/**
+	 * Whether a would-be steer must preserve as a visible card instead. Plan mode
+	 * preserves would-be-steering advice: only user-driven turns converge on
+	 * ask/resolve. A steered batch only continues the run when the session can
+	 * actually start (or is already running) a turn. One idle case cannot, so
+	 * `sendCustomMessage({ triggerTurn: true })` would silently bury the card in
+	 * `#pendingNextTurnMessages` until the next user prompt — strictly worse
+	 * than the visible preserved card:
+	 *  - ACP bridges with `deferAgentInitiatedTurns`: the client cannot show an
+	 *    agent-initiated turn as busy, so idle triggers are refused (#5628 review).
+	 */
+	#steerPreservesAsCard(): boolean {
+		if (this.#host.planModeState()?.enabled === true) return true;
+		return !this.#host.agent.state.isStreaming && this.#host.clientBridge()?.deferAgentInitiatedTurns === true;
 	}
 
 	/** Re-prime every advisor's transcript view after an in-conversation history rewrite. */
@@ -2828,9 +3025,8 @@ export class SessionAdvisors {
 	 */
 	async waitForAdvisorCatchup(timeoutMs: number, options?: AdvisorCatchupOptions): Promise<boolean> {
 		let deadline = Date.now() + timeoutMs;
-		const globalSyncBacklog = cfgAdvisorSyncBacklog.get(this.#host.settings);
 		const strict = this.#advisors.map(
-			advisor => options?.strictWithoutDeadline === true && (advisor.syncBacklog ?? globalSyncBacklog) === "strict",
+			advisor => options?.strictWithoutDeadline === true && this.#catchupPolicy(advisor) === "strict",
 		);
 		const results = await Promise.all(
 			this.#advisors.map((advisor, index) =>

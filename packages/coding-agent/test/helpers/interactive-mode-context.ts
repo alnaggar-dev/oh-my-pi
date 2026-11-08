@@ -117,6 +117,8 @@ export function createSessionStub(
 		getToolByName: () => undefined,
 		hasBuiltInTool: () => true,
 		getLastAssistantMessage: () => undefined,
+		isAdvisorAnswerHoldActive: () => false,
+		getAdvisorAnswerHold: () => undefined,
 		agent: {
 			state: { streamMessage: null },
 			getPendingToolResults: () => [],

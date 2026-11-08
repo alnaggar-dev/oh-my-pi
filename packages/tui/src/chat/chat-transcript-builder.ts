@@ -15,6 +15,7 @@ import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { type Component, type TUI } from "../tui";
 import type { AdvisorMessageDetails } from "./messages";
+import { HeldAnswerRebuild } from "./held-answer";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "./messages";
 import { chatTranscriptDisplayPreferences as displayPreferences } from "./display-preferences";
 import type { AssistantTextRenderer, MessageRenderer } from "./extension-types";
@@ -112,6 +113,8 @@ export class ChatTranscriptBuilder {
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
 	#expanded = false;
 	#entryComponents = new Map<string, Component[]>();
+	/** Collapses `advisor.holdFinalAnswer` drafts whose rewrite answered. */
+	#heldAnswers = new HeldAnswerRebuild();
 
 	readonly #deps: ChatTranscriptBuilderDeps;
 
@@ -185,6 +188,7 @@ export class ChatTranscriptBuilder {
 		this.#todoSnapshot = null;
 		this.#expandables = [];
 		this.#entryComponents.clear();
+		this.#heldAnswers = new HeldAnswerRebuild();
 		this.container.dispose();
 		this.container.clear();
 	}
@@ -296,6 +300,7 @@ export class ChatTranscriptBuilder {
 	}
 
 	#appendChatMessage(message: AgentMessage): void {
+		if (message.role !== "assistant") this.#heldAnswers.other(message);
 		if (message.role !== "toolResult") this.#flushPendingUsage();
 		if (message.role !== "assistant" && message.role !== "toolResult") {
 			this.#readGroup?.seal();
@@ -442,6 +447,7 @@ export class ChatTranscriptBuilder {
 		);
 		assistantComponent.pickReactionTarget(this.container.children);
 		this.#mountProse(assistantComponent);
+		this.#heldAnswers.assistant(message, assistantComponent);
 		let lastAssistantComponent = assistantComponent;
 
 		if (displayPreferences.cacheMissMarker) {

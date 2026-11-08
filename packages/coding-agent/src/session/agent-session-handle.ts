@@ -345,6 +345,15 @@ export interface AgentViewSession extends AgentSessionHandle {
 	getAdvisorCost(): number;
 	/** Whether advisors bill through a subscription. */
 	isAdvisorUsingSubscription(): boolean;
+	/** Whether `advisor.holdFinalAnswer` holds the current assistant message (decided at its `message_start`). */
+	isAdvisorAnswerHoldActive(): boolean;
+	/**
+	 * `advisor.holdFinalAnswer` state of `message` when it is the latest held
+	 * draft: `held` while its review runs, `revised` once the review sent it
+	 * back for a rewrite. A rebuilt transcript decides from the messages after
+	 * it whether that rewrite answered.
+	 */
+	getAdvisorAnswerHold(message: AgentMessage): "held" | "revised" | undefined;
 	/** Provider usage reports for the active account. */
 	fetchUsageReports(signal?: AbortSignal): Promise<UsageReport[] | null>;
 	/** Snapshot of the session's async jobs. */

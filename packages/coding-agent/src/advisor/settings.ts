@@ -39,6 +39,41 @@ export const cfgAdvisorSyncBacklog = register({
 	},
 });
 
+export const cfgAdvisorHoldFinalAnswer = register({
+	id: "advisor.holdFinalAnswer",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "model",
+		group: "Advisor",
+		label: "Hold Answer for Review",
+		description:
+			"Interactive mode only. Hide the agent's final answer until waiting advisors finish reviewing it. Needs a sync backlog other than off; while an answer is held, numeric settings wait for the whole review, still capped at 30 seconds. If a review asks for changes, the agent rewrites the answer and the draft collapses to one line.",
+		condition: "advisorEnabled",
+	},
+});
+
+export const cfgAdvisorHoldFinalAnswerTimeout = register({
+	id: "advisor.holdFinalAnswerTimeout",
+	type: "number",
+	default: 120,
+	ui: {
+		tab: "model",
+		group: "Advisor",
+		label: "Hold Answer Time Limit",
+		description:
+			"Seconds a held answer waits for its review before it is shown anyway. The review keeps running; its notes then arrive as a correction. 0 waits as long as the review takes.",
+		options: [
+			{ value: "0", label: "No limit" },
+			{ value: "30", label: "30 seconds" },
+			{ value: "60", label: "1 minute" },
+			{ value: "120", label: "2 minutes", description: "Default." },
+			{ value: "300", label: "5 minutes" },
+		],
+		condition: "advisorEnabled",
+	},
+});
+
 export const cfgAdvisorImmuneTurns = register({
 	id: "advisor.immuneTurns",
 	protocolDefault: ["rpc", "acp"],
