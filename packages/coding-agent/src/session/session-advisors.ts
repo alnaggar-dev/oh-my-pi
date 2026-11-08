@@ -74,6 +74,7 @@ import {
 	resolveAdvisorDeliveryChannel,
 	slugifyAdvisorName,
 } from "../advisor";
+import { AdvisorRequestCap } from "../advisor/request-cap";
 import { evictStaleToolResults } from "../advisor/tool-result-eviction";
 import { cfgOffline } from "../config/auxiliary-model-policy";
 import type { ModelRegistry } from "../config/model-registry";
@@ -1582,15 +1583,28 @@ export class SessionAdvisors {
 					advisorAgent.abort(reason);
 				},
 			});
+			// Fork: per-review request cap (advisor.maxRequestsPerUpdate).
+			const advisorRequestCap = new AdvisorRequestCap({
+				settings: this.#host.settings,
+				name: advisorName,
+				liveMessages: () => advisorAgent.state.messages,
+				appendMessage: message => advisorAgent.appendMessage(message),
+				abort: reason => {
+					advisorLoopGuardStopped = true;
+					advisorAgent.abort(reason);
+				},
+			});
 			advisorAgent.setOnTurnEnd((messages, signal, context) => {
 				if (signal?.aborted) return;
 				advisorLoopGuard.recordTurn(messages, context);
+				if (!advisorLoopGuardStopped) advisorRequestCap.recordTurn(messages, context);
 			});
 
 			const advisorAgentFacade: AdvisorAgent = {
 				prompt: async input => {
 					let quarantined: string | undefined;
 					advisorLoopGuard.reset();
+					advisorRequestCap.reset();
 					advisorLoopGuardStopped = false;
 					try {
 						quarantinedAdvisorOutput = undefined;
@@ -1621,6 +1635,7 @@ export class SessionAdvisors {
 				abort: reason => advisorAgent.abort(reason),
 				reset: () => {
 					advisorLoopGuard.reset();
+					advisorRequestCap.reset();
 					advisorLoopGuardStopped = false;
 					advisorAgent.reset();
 					appendOnlyContext.log.clear();

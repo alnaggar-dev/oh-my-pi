@@ -244,6 +244,8 @@ Advisor failures do not permanently stall the primary. The host first attempts i
 
 The advisor also uses `model.toolCallLoopGuard.*` to bound repeated identical tool calls. One detected loop injects a corrective; if the same bound trips again during that review, the review is aborted without treating the stop as a provider failure or starting fallback recovery. The detector resets at the next review/context boundary.
 
+Each review is also capped at `advisor.maxRequestsPerUpdate` model requests (default `50`, `0` = no cap), which stops runaway reviews whose calls are all different. On the request that reaches the cap, an advisor still calling tools other than `advise` is told to call `advise` now or end the review; if its next turn still calls any tool other than `advise`, the review is aborted without counting as a provider failure. The count resets each review.
+
 Unsafe Advisor output follows a separate quarantine path rather than that
 three-attempt request-retry policy. Calls to tools not granted to the advisor receive `Tool <name> not found`
 results so the model can correct itself; they do not quarantine a turn.

@@ -147,6 +147,27 @@ export const cfgAdvisorMaxNotesPerUpdate = register({
 	},
 });
 
+export const cfgAdvisorMaxRequestsPerUpdate = register({
+	id: "advisor.maxRequestsPerUpdate",
+	protocolDefault: ["rpc", "acp"],
+	type: "number",
+	default: 50,
+	ui: {
+		tab: "model",
+		group: "Advisor",
+		label: "Advisor Max Requests Per Update",
+		description:
+			"Model requests an advisor may make in one review. At the cap it is told to advise or stop; further investigation aborts the review. 0 disables the cap.",
+		options: [
+			{ value: "0", label: "No cap" },
+			{ value: "25", label: "25 requests" },
+			{ value: "50", label: "50 requests", description: "Default." },
+			{ value: "100", label: "100 requests" },
+		],
+		condition: "advisorEnabled",
+	},
+});
+
 export const cfgAdvisorEvictStaleResults = register({
 	id: "advisor.evictStaleResults",
 	protocolDefault: ["rpc", "acp"],
