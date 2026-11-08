@@ -44,6 +44,48 @@ between "it compiled" and "it still does what I wanted".
 
 ## Advisor
 
+### Per-review request cap for advisors
+
+- **What it does:** `advisor.maxRequestsPerUpdate` (default 50, 0 = no cap) counts
+  completed advisor model requests in one review. When the request that reaches the cap
+  still calls a tool other than `advise`, the advisor gets one synthetic `user`
+  corrective (advise now or end the review); if its next turn still calls any tool
+  other than `advise`, the update is aborted as a silent review, not a provider failure.
+  The count resets wherever upstream resets `AdvisorLoopGuard`, and a turn the loop
+  guard already stopped is not counted.
+- **Why:** A replay of 54,864 local advisor reviews showed the previous 5× whole-review
+  repeated-call tally fired in only 22 of the 90 reviews that ran over 50 requests,
+  often hundreds of requests in; reviews that cycle through mostly distinct calls never
+  trip a repeat counter (one ran 1,093 requests with 1,069 distinct calls). A cap of 50
+  would have saved about $919 against about $154 for the tally.
+- **Files:** `packages/coding-agent/src/advisor/request-cap.ts` (`AdvisorRequestCap`),
+  `packages/coding-agent/src/prompts/advisor/request-cap-reached.md` (the corrective),
+  `packages/coding-agent/src/advisor/settings.ts` (`cfgAdvisorMaxRequestsPerUpdate`),
+  `docs/advisor-watchdog.md` (the request-cap paragraph after the
+  `model.toolCallLoopGuard.*` paragraph),
+  `docs/settings.md` (the `advisor.maxRequestsPerUpdate` row),
+  `packages/coding-agent/src/session/session-advisors.ts` (the `AdvisorRequestCap`
+  import, its construction, the `recordTurn` call skipped once
+  `advisorLoopGuardStopped` is set, and its two `reset` calls).
+- **Depends on upstream:** `AdvisorLoopGuard` in
+  `packages/coding-agent/src/advisor/loop-guard.ts` staying upstream's, its
+  `AdvisorLoopGuardHost` interface (reused as the cap's host) and its reset points
+  (`prompt` and `reset` of the advisor facade); the advisor `setOnTurnEnd` hook that
+  feeds `recordTurn`, and `advisorLoopGuardStopped` clearing the abort error; #13132's
+  advise-only turn ending the review. Upstream PRs #10117 and #7964 propose the same
+  kind of cap — if one lands, drop this entry for it.
+- **Tripwire paths:** `packages/coding-agent/src/advisor/loop-guard.ts`, `packages/coding-agent/src/session/session-advisors.ts`, `packages/coding-agent/src/advisor/settings.ts`, `packages/agent/src/agent-loop.ts`, `packages/agent/src/types.ts`
+- **Must still be true:**
+  - The corrective is injected on exactly the cap-th completed request of a review,
+    never before; 0 disables the cap.
+  - A cap-th request that calls only `advise`, or no tools, ends the review without a
+    corrective.
+  - After the corrective, a turn calling a non-`advise` tool aborts the update; a turn
+    calling only `advise`, or no tools, does not.
+  - The count restarts at every `AdvisorLoopGuard.reset()` site.
+  - `packages/coding-agent/src/advisor/loop-guard.ts` equals upstream's.
+- **Check:** `bun test packages/coding-agent/test/advisor/request-cap.test.ts packages/coding-agent/test/advisor-tool-call-loop-guard.test.ts`, `git diff --exit-code --stat main -- packages/coding-agent/src/advisor/loop-guard.ts`
+
 ## After sync
 
 - **Install:** `bun install --frozen-lockfile`
