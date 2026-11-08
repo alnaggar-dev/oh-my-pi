@@ -78,7 +78,11 @@ import type {
 } from "../ui/shell";
 import type { StatusFacts, StatusLineSettings } from "../ui/status/facts";
 import type { ExecRun } from "../ui/transcript/exec-run";
-import type { AssistantMessageModel, ToolResultMedia } from "../ui/transcript/messages/assistant-message";
+import type {
+	AnswerReviewState,
+	AssistantMessageModel,
+	ToolResultMedia,
+} from "../ui/transcript/messages/assistant-message";
 import type { ReadGroup } from "../ui/transcript/read-group";
 import type { ToolCall, ToolCallResult } from "../ui/transcript/tool-block";
 import type { EventBus } from "../utils/event-bus";
@@ -271,6 +275,8 @@ export interface AssistantView {
 	readonly errorPinned: Signal<boolean>;
 	/** Show the whole turn-ending error. */
 	readonly errorExpanded: Signal<boolean>;
+	/** `advisor.holdFinalAnswer`: hide the answer for review, or collapse a draft sent back for a rewrite. */
+	readonly answerReview: Signal<AnswerReviewState>;
 }
 
 /** A shown `!`/`$` run's presentation. */

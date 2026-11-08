@@ -100,6 +100,8 @@ export class RpcSessionEventForwarder {
 	}
 
 	forward(event: AgentSessionEvent): void {
+		// Fork (`advisor.holdFinalAnswer`): the review event is for the interactive TUI only.
+		if (event.type === "advisor_answer_review") return;
 		const frame = this.#stamp(toWireEvent(event));
 		if (this.#filter && !this.#filter.has(frame.type)) return;
 		if (frame.type === "message_update" && this.#messageUpdates === "delta") {

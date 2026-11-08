@@ -65,6 +65,7 @@ import { SpotlightNotice } from "../../ui/transcript/figures/spotlight";
 import type { FigureCell } from "../../ui/transcript/figures/svg";
 import {
 	AssistantMessageBlock,
+	type AnswerReviewState,
 	type AssistantMessageModel,
 	thinkingTail,
 	type ToolResultMedia,
@@ -291,6 +292,7 @@ export class TranscriptPresenter {
 			rewound: signal(false),
 			errorPinned: signal(false),
 			errorExpanded: signal(false),
+			answerReview: signal<AnswerReviewState>("none"),
 		};
 		const thinkingRate = signal(0);
 		const sessionManager = this.#host.viewSession.sessionManager;
@@ -318,6 +320,7 @@ export class TranscriptPresenter {
 			servedModelMismatch: signals.servedModelMismatch,
 			turnUsage: signals.turnUsage,
 			rewound: signals.rewound,
+			answerReview: signals.answerReview,
 			thinkingRate,
 			actions: this.#host.onAssistantAction !== undefined,
 			textRenderers: () => {

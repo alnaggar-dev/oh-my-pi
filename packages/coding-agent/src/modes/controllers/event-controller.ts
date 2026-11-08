@@ -73,6 +73,7 @@ import { TurnUsageTally, turnElapsedMs } from "../view-model/overlays/usage-row"
 import { isWarpCliAgentProtocolActive } from "../warp-events";
 import { ComposerPredictionController } from "./composer-prediction-controller";
 import { recapBlock, todoReminderBlock, ttsrBlock, usageRowBlock } from "./event-blocks";
+import { HeldAnswerController } from "./held-answer-controller";
 import { StreamingRevealController } from "./streaming-reveal";
 import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
 
@@ -384,6 +385,8 @@ export class EventController {
 				readonly rules: Signal<readonly NotificationRule[]>;
 		  }
 		| undefined = undefined;
+	/** `advisor.holdFinalAnswer`: hides, releases, collapses or restores held answers. */
+	readonly heldAnswers: HeldAnswerController;
 	#streamingReveal: StreamingRevealController;
 	#toolArgsReveal: ToolArgsRevealController;
 	#prevHideThinking = false;
@@ -478,6 +481,10 @@ export class EventController {
 			getSmoothStreaming: () => cfgDisplaySmoothStreaming.get(this.ctx.settings),
 		});
 		this.composerPrediction = new ComposerPredictionController(ctx);
+		this.heldAnswers = new HeldAnswerController(ctx, () => {
+			// Let the next intent repaint the row even when it repeats the last one.
+			this.#lastIntent = undefined;
+		});
 		this.#handlers = {
 			agent_start: e => this.#handleAgentStart(e),
 			agent_pause: e => this.#handleAgentPause(e),
@@ -536,6 +543,7 @@ export class EventController {
 				// comments coming): the closed-eye state lands.
 				this.ctx.statusLine.refresh();
 			},
+			advisor_answer_review: async e => this.heldAnswers.onReview(e),
 			thinking_level_changed: async () => {
 				this.ctx.statusLine.refresh();
 				this.ctx.updateEditorBorderColor();
@@ -1090,6 +1098,7 @@ export class EventController {
 			this.#enqueueMessageUpdate(event);
 			return;
 		}
+		if (event.type === "message_start" && event.message.role === "assistant") this.heldAnswers.openStream(event);
 		await this.runSerialized(async () => {
 			await this.handleEvent(event);
 		});
@@ -1266,6 +1275,7 @@ export class EventController {
 		this.#displaceableTodo = undefined;
 		this.#todoSnapshotsInHistory.clear();
 		this.#lastTtsrNotification = undefined;
+		this.heldAnswers.reset();
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
 		this.#seedHeldCompletionsFromPendingResults();
@@ -1561,6 +1571,10 @@ export class EventController {
 			const view = this.ctx.presentAssistant();
 			this.ctx.streaming = view;
 			this.ctx.streamingMessage = event.message;
+			// Hold before the first render so no answer text ever paints. The
+			// decision was taken when this message_start arrived, together with
+			// its speech.
+			this.heldAnswers.onAssistantStart(event, view);
 			const timeline = splitAssistantMessageToolTimeline(event.message);
 			this.#streamingReveal.begin(view, timeline.beforeTools, timeline.hasToolCalls);
 		}
@@ -1724,14 +1738,15 @@ export class EventController {
 	 * Speak streamed assistant output as a side effect of the turn. The mode
 	 * decides which deltas feed the vocalizer (the vocalizer re-checks enabled):
 	 * assistant|all speak text; all also speaks thinking; yield speaks nothing
-	 * live (the final message is spoken at turn end).
+	 * live (the final message is spoken at turn end). Answer text of a stream
+	 * held for advisor review is withheld until the hold ends.
 	 */
 	#vocalizeDelta(event: Extract<AgentSessionEvent, { type: "message_update" }>): void {
 		if (!cfgSpeechEnabled.get(settings)) return;
 		const mode = cfgSpeechMode.get(settings);
 		const delta = event.assistantMessageEvent;
 		if (delta.type === "text_delta" && (mode === "assistant" || mode === "all")) {
-			vocalizer.pushDelta(delta.delta);
+			if (!this.heldAnswers.withholdSpeech(delta.delta)) vocalizer.pushDelta(delta.delta);
 		} else if (delta.type === "thinking_delta" && mode === "all") {
 			vocalizer.pushDelta(delta.delta);
 		}
@@ -1751,7 +1766,8 @@ export class EventController {
 	/**
 	 * End-of-turn vocalization: yield mode speaks the final assistant message in
 	 * one shot here (the only mode that is post-hoc); every other mode just makes
-	 * sure the live buffer's trailing partial gets flushed.
+	 * sure the live buffer's trailing partial gets flushed. A final answer still
+	 * held for advisor review is spoken when the hold releases instead.
 	 */
 	#handleTurnEnd(event: Extract<AgentSessionEvent, { type: "turn_end" }>): void {
 		if (!cfgSpeechEnabled.get(settings)) return;
@@ -1762,7 +1778,8 @@ export class EventController {
 		if (event.message.role !== "assistant") return;
 		if (event.message.stopReason === "aborted") return; // interrupted: never speak the aborted partial
 		const text = extractTextContent(event.message);
-		if (text) vocalizer.speak(text);
+		if (!text) return;
+		if (!this.heldAnswers.withholdTurnEndSpeech(text)) vocalizer.speak(text);
 	}
 
 	async #restartAssistantStream(message: AgentMessage): Promise<void> {
@@ -1812,6 +1829,8 @@ export class EventController {
 			// Rendered replies read the effective visibility reactively; the reveal caches it.
 			if (this.ctx.noteDisplayableThinkingContent(message)) this.#streamingReveal.resyncVisibility();
 			this.ctx.streamingMessage = message;
+			// A tool call makes a held reply a working message; answer text shows the writing status.
+			this.heldAnswers.onAssistantUpdate(streaming, message);
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
 			this.#streamingReveal.setTarget(timeline.beforeTools, timeline.hasToolCalls);
 
@@ -2022,6 +2041,9 @@ export class EventController {
 			this.ctx.streamingMessage = event.message;
 			this.#streamingReveal.stop();
 			this.#toolArgsReveal.flushAll();
+			// A held reply stays held only as a finished final answer; an abort,
+			// error or tool call shows it as written.
+			const keepsHold = this.heldAnswers.onAssistantEnd(streaming, event.message);
 			let errorMessage: string | undefined;
 			const aborted = this.ctx.streamingMessage.stopReason === "aborted";
 			const silentlyAborted = aborted && isSilentAbort(this.ctx.streamingMessage);
@@ -2111,7 +2133,8 @@ export class EventController {
 				this.ctx.lastAssistantUsage = usage;
 			}
 			streaming.servedModelMismatch.set(this.ctx.servedModelTracker.check(event.message));
-			streaming.finalized.set(true);
+			// A held answer stays unfinalized (unsettled) until its review ends.
+			if (!keepsHold) streaming.finalized.set(true);
 			let lastPostToolAssistantComponent: AssistantView | undefined;
 			for (const [toolCallId, segment] of displayTimeline.afterToolCalls) {
 				const component = this.#upsertPostToolAssistantSegment(
@@ -2162,6 +2185,7 @@ export class EventController {
 			if (displayMessage === event.message) this.ctx.transcriptBlocks.set(event.message, streaming.block);
 			this.ctx.streaming = undefined;
 			this.ctx.streamingMessage = undefined;
+			if (keepsHold) this.heldAnswers.afterHeldEnd();
 			// Pin a turn-ending provider error above the editor so it survives
 			// transcript scroll and suppress its duplicate inline row. Empty-output
 			// errors are known intermediate attempts: hide them entirely while
@@ -2523,6 +2547,8 @@ export class EventController {
 	 * child agent resumes it (`yielded: true`), or the run's `agent_end` closes it.
 	 */
 	async #handleAgentPause(event: Extract<AgentSessionEvent, { type: "agent_pause" }>): Promise<void> {
+		// The loop stopped: no review outcome is coming for a still-held answer.
+		this.heldAnswers.onRunSettled();
 		if (event.yielded) this.showAsyncWait();
 		// The plan-mode reconciler queues a model switch to apply once the current
 		// stream ends; the continuation must not run on the old model.
@@ -2549,6 +2575,8 @@ export class EventController {
 			this.ctx.clearWorking("turn");
 			return;
 		}
+		// The run settled: no review outcome is coming for a still-held answer.
+		this.heldAnswers.onRunSettled();
 		if (stoppedWaiting) {
 			if (!runActive) setRunStatus({ state: "idle" });
 			await this.#finishAgentEnd(event, { interrupted: true });
@@ -2664,6 +2692,8 @@ export class EventController {
 		// final history — seal it instead of letting its spinner tick while idle.
 		this.#resolveDisplaceablePoll();
 		this.#resolveDisplaceableTodo();
+		// A draft sent back for a rewrite that never answered is shown again.
+		this.heldAnswers.onRunFinished();
 		this.ctx.flushPendingCommandOutput();
 		this.#lastAssistantComponent = undefined;
 		// When the interrupted/failed turn died on a tool call, this replaces the

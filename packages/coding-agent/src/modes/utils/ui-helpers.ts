@@ -4,7 +4,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { providerActiveNotice } from "@oh-my-pi/pi-catalog/compat/auth";
-import { jsx } from "@oh-my-pi/pi-tui";
+import { batch, jsx } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { InternalUrlRouter } from "../../internal-urls";
@@ -44,6 +44,7 @@ import { ToolActivity } from "../../ui/transcript/messages/panel";
 import { normalizeBlobExtension } from "../../utils/image-format";
 import { imageAttachmentSource } from "../../utils/image-source";
 import { previewLine, TRUNCATE_LENGTHS } from "../../utils/render-utils";
+import { HeldAnswerRebuild } from "../controllers/held-answer-controller";
 import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../controllers/tool-args-reveal";
 import { recapBlock, usageRowBlock } from "../controllers/event-blocks";
 import { extractVisibleAssistantText } from "../rpc/rpc-live";
@@ -61,6 +62,7 @@ import type {
 	CompactionQueuedMessage,
 	InteractiveModeContext,
 	PendingTool,
+	PresentAssistantOptions,
 	RenderInitialMessagesOptions,
 	RenderSessionContextOptions,
 	ShowStatusOptions,
@@ -338,6 +340,28 @@ export class UiHelpers {
 	}
 
 	/**
+	 * Present `reply`, the pre-tool part of `message`. A draft the session still holds for review
+	 * (`advisor.holdFinalAnswer`) is drawn unfinalized with its text hidden, so no row of it settles
+	 * before its review ends; the live view's controller takes it over. Whether a draft sent back
+	 * stays collapsed is decided by the replay, from the messages after it.
+	 */
+	#presentReply(
+		ctx: ReplayTarget,
+		message: AssistantMessage,
+		reply: AssistantMessage,
+		options?: PresentAssistantOptions,
+	): AssistantView {
+		if (ctx.viewSession.getAdvisorAnswerHold(message) !== "held") return ctx.presentAssistant(reply, options);
+		const view = ctx.presentAssistant(undefined, options);
+		batch(() => {
+			view.answerReview.set("held");
+			view.message.set(reply);
+		});
+		ctx.eventController?.heldAnswers.adopt(view, message);
+		return view;
+	}
+
+	/**
 	 * Mount the blocks drawing `message` and record the message's block in `transcriptBlocks`.
 	 * Assistant replies draw their pre-tool text only; tool calls and later segments are the
 	 * replay's ({@link renderSessionContext}) or the event controller's.
@@ -373,7 +397,7 @@ export class UiHelpers {
 				return block ? [block] : [];
 			}
 			case "assistant": {
-				const view = ctx.presentAssistant(splitAssistantMessageToolTimeline(message).beforeTools);
+				const view = this.#presentReply(ctx, message, splitAssistantMessageToolTimeline(message).beforeTools);
 				ctx.transcriptBlocks.set(message, view.block);
 				return [view.block];
 			}
@@ -553,6 +577,8 @@ export class UiHelpers {
 		// the ids are handed back to the controller after the loop (#10447).
 		const backgroundCallIds = new Set<string>();
 		const native = ctx.shell.native();
+		// `advisor.holdFinalAnswer`: collapses drafts whose rewrite answered.
+		const heldAnswers = new HeldAnswerRebuild();
 		const messages = sessionContext.messages;
 		const count = messages.length;
 		for (let i = 0; i < count; i++) {
@@ -566,10 +592,13 @@ export class UiHelpers {
 			if (message.role !== "toolResult") flushPendingUsage();
 			if (message.role === "assistant") {
 				const timeline = splitAssistantMessageToolTimeline(message);
-				const assistant = ctx.presentAssistant(timeline.beforeTools, {
+				const assistant = this.#presentReply(ctx, message, timeline.beforeTools, {
 					linkTargets: assistantMessageLinkTargets(message, linkTargets),
 				});
 				ctx.transcriptBlocks.set(message, assistant.block);
+				heldAnswers.assistant(message, assistant);
+				// The session sent this draft back before its rewrite request card reached the transcript.
+				if (ctx.viewSession.getAdvisorAnswerHold(message) === "revised") heldAnswers.sentBack(assistant, message);
 				const usage = message.usage;
 				const explained = sessionContext.cacheMissExplainedAt?.[i] ?? false;
 				if (cfgDisplayCacheMissMarker.get(ctx.settings) && !explained) {
@@ -693,6 +722,7 @@ export class UiHelpers {
 					? turnElapsedMs(turnStartedAt, message)
 					: undefined;
 			} else if (message.role === "toolResult") {
+				heldAnswers.other(message);
 				if (options.preservedLiveToolCallIds?.has(message.toolCallId)) continue;
 				const pendingRead = ctx.pendingTools.get(message.toolCallId);
 				// Mirror the call side: resolve the wire toolName through the registry
@@ -811,10 +841,15 @@ export class UiHelpers {
 					turnUsage.reset();
 					runStartUnseen = false;
 				}
+				heldAnswers.other(message);
 				this.addMessageToChat(message, undefined, ctx);
 			}
 		}
 		flushPendingUsage();
+		// A draft whose rewrite still runs stays collapsed; the controller shows
+		// it again if that rewrite ends without an answer.
+		const rewriting = heldAnswers.finish(ctx.viewSession.isStreaming);
+		if (rewriting) ctx.eventController?.heldAnswers.adoptRewrite(rewriting);
 
 		// The trailing read run has no following break to close it; seal so the
 		// rebuilt group can retire as history even with a never-persisted result.

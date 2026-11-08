@@ -73,6 +73,21 @@ export interface ToolResultMedia {
 	readonly mediaPath?: string;
 }
 
+/**
+ * The one line a held final answer collapses to once an advisor review sent
+ * it back for a rewrite. True whether or not the rewrite finishes: a draft
+ * whose rewrite ends without an answer is shown again in full.
+ */
+export const REVISED_HELD_ANSWER_LABEL = "Draft answer hidden: advisor review asked for a rewrite";
+
+/**
+ * Display state of an `advisor.holdFinalAnswer` review: `held` hides the
+ * answer text while thinking stays visible, `revised` collapses the reply to
+ * {@link REVISED_HELD_ANSWER_LABEL} (the draft shows muted below it while
+ * the error expansion is on), `none` draws it as an answer never held.
+ */
+export type AnswerReviewState = "none" | "held" | "revised";
+
 /** What an assistant block shows. Every field may be a signal the host moves. */
 export interface AssistantMessageModel {
 	/** The reply as last updated (undefined while nothing arrived). */
@@ -136,6 +151,8 @@ export interface AssistantMessageModel {
 	readonly thinkingRenderers?: Reactive<readonly AssistantThinkingRenderer[]>;
 	/** Index in the full reply of this segment's first block (a segment drawn after a tool call). */
 	readonly contentOffset?: number;
+	/** `advisor.holdFinalAnswer` display state (default `none`). */
+	readonly answerReview?: Reactive<AnswerReviewState>;
 }
 
 /** Renderers that threw once: reported once, then their input is drawn. */
@@ -203,7 +220,9 @@ type Part =
 	  }
 	| { kind: "image"; image: ImageContent; tool: boolean; path?: string }
 	| { kind: "media"; path: string }
-	| { kind: "error"; error: ErrorPart };
+	| { kind: "error"; error: ErrorPart }
+	/** A held answer sent back for a rewrite: its label, and its draft while expanded. */
+	| { kind: "revised"; draft: string | undefined };
 
 /** The turn-ending error part. */
 type ErrorPart =
@@ -350,6 +369,13 @@ export function AssistantMessageBlock(props: { model: AssistantMessageModel }): 
 		const current = reply();
 		if (!current) return out;
 		const { answer, displayed } = current;
+		const review = read(model.answerReview) ?? "none";
+		if (review === "revised") {
+			const draft = flag(model.errorExpanded, false) ? answerText(answer) : "";
+			out.set("revised", { kind: "revised", draft: draft || undefined });
+			return out;
+		}
+		const held = review === "held";
 		const finalized = flag(model.finalized, false);
 		const live = !finalized && flag(model.transient, false);
 		const hide = flag(model.hideThinking, false);
@@ -391,6 +417,8 @@ export function AssistantMessageBlock(props: { model: AssistantMessageModel }): 
 			const streaming = live && i === tailIndex;
 			if (content.type === "thinking") thinkingIndex++;
 			if (content.type === "text" && canonicalizeMessage(content.text)) {
+				// A held answer's text stays hidden until its review ends.
+				if (held) continue;
 				const rendered =
 					textRenderers.length > 0
 						? renderAssistantText(
@@ -528,7 +556,8 @@ export function AssistantMessageBlock(props: { model: AssistantMessageModel }): 
 		if (read(model.toolResultMedia)?.size) untrack(revise);
 	});
 
-	const answered = (): boolean => reply()?.answer.content.some(hasVisibleText) ?? false;
+	const review = (): AnswerReviewState => read(model.answerReview) ?? "none";
+	const answered = (): boolean => review() === "none" && (reply()?.answer.content.some(hasVisibleText) ?? false);
 	const rewound = (): boolean => flag(model.rewound, false);
 	const actions = (): boolean => flag(model.actions, false);
 	const usage = (): TurnUsageSummary | undefined => read(model.turnUsage);
@@ -558,16 +587,14 @@ export function AssistantMessageBlock(props: { model: AssistantMessageModel }): 
 						}
 					: undefined;
 			}}
-			term={() => ({ thinkingDots: thinkingDots() })}
+			term={() => ({ thinkingDots: thinkingDots(), held: review() === "held" || undefined })}
 			onAction={act => {
 				if (act === "copy-error") {
 					const part = parts().get("error");
 					if (part?.kind === "error" && part.error.kind === "failed") model.onAction?.(act, part.error.text);
 				} else if (act === "copy-answer") {
-					const blocks = reply()?.answer.content.flatMap(block =>
-						block.type === "text" && hasVisibleText(block) ? [block.text.trim()] : [],
-					);
-					if (blocks?.length) model.onAction?.(act, blocks.join("\n\n"));
+					const text = reply() ? answerText(reply()!.answer) : "";
+					if (text) model.onAction?.(act, text);
 				} else model.onAction?.(act);
 			}}
 			onToggle={(collapsed, event) => {
@@ -632,6 +659,13 @@ export function AssistantMessageBlock(props: { model: AssistantMessageModel }): 
 
 function sameSlots(a: readonly string[], b: readonly string[]): boolean {
 	return a.length === b.length && a.every((slot, i) => slot === b[i]);
+}
+
+/** The answer's text blocks, trimmed and a blank line apart. */
+function answerText(message: AssistantMessage): string {
+	return message.content
+		.flatMap(block => (block.type === "text" && hasVisibleText(block) ? [block.text.trim()] : []))
+		.join("\n\n");
 }
 
 function errorPart(message: AssistantMessage, model: AssistantMessageModel): ErrorPart | undefined {
@@ -851,6 +885,23 @@ function ReplyPart(props: {
 		);
 	}
 	if (kind === "error") return <ErrorPartNode part={props.part} />;
+	if (kind === "revised") {
+		const draft = (): string | undefined => {
+			const part = props.part();
+			return part?.kind === "revised" ? part.draft : undefined;
+		};
+		return (
+			<col key={slot} role="omp.assistant.revised">
+				<text
+					key="label"
+					role="omp.assistant.revised.label"
+					spans={[{ t: REVISED_HELD_ANSWER_LABEL, s: "muted" }]}
+					wrap="none"
+				/>
+				{() => draft() !== undefined && <md key="draft" text={() => draft() ?? ""} tone="muted" />}
+			</col>
+		);
+	}
 	return undefined;
 }
 

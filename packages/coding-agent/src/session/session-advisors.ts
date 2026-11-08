@@ -79,6 +79,7 @@ import {
 	AdvisorEmissionGuard,
 } from "../advisor/emission-guard";
 import { AdvisorLoopGuard } from "../advisor/loop-guard";
+import { AdvisorAnswerHold } from "../advisor/answer-hold";
 import { AdvisorRequestCap } from "../advisor/request-cap";
 import { advisorTranscriptFilename } from "../advisor/transcript-names";
 import type * as Recorder from "../advisor/transcript-recorder";
@@ -510,6 +511,11 @@ export interface SessionAdvisorsOptions {
 		model: Model,
 		signal?: AbortSignal,
 	) => Context | Promise<Context>;
+	/**
+	 * Replies render in omp's interactive TUI transcript, the only presenter that
+	 * hides a draft answer; `advisor.holdFinalAnswer` applies only then.
+	 */
+	tuiTranscript?: boolean;
 }
 
 /** Options accepted when an advisor injects a primary-session message. */
@@ -541,6 +547,12 @@ export interface SessionAdvisorsHost {
 	planModeState(): PlanModeState | undefined;
 	clientBridge(): ClientBridge | undefined;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
+	/**
+	 * Emit `event` to session listeners only after the agent delivered `turn`'s
+	 * `turn_end` (and so its `message_end`); immediately when it already did or
+	 * `turn` is unknown. Never blocks the caller.
+	 */
+	emitAfterTurnEnd(turn: AgentMessage | undefined, event: AgentSessionEvent): void;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	sendCustomMessage(message: CustomMessagePayload, options?: AdvisorMessageDeliveryOptions): Promise<boolean>;
 	extractQueuedAdvisorCards(): CustomMessage[];
@@ -664,6 +676,8 @@ export class SessionAdvisors {
 	 * simultaneous notes never force N separate cards or continuation turns.
 	 */
 	#advisorBoundaryNotes: AdvisorNote[] = [];
+	/** Fork: `advisor.holdFinalAnswer` state and review events. */
+	readonly answerHold: AdvisorAnswerHold;
 	/** Primary-turn count when the staleness header last shipped; `undefined`
 	 *  until the first merged delivery. Gates {@link ADVISOR_BOUNDARY_GUIDANCE}
 	 *  to at most once per {@link ADVISOR_BOUNDARY_GUIDANCE_TURNS} turns. */
@@ -688,6 +702,20 @@ export class SessionAdvisors {
 		this.#advisorConfigDir = options.configDir;
 		this.#advisorStreamFn = options.streamFn;
 		this.#createTransformProviderContext = options.createTransformProviderContext;
+		// Fork: `advisor.holdFinalAnswer`.
+		this.answerHold = new AdvisorAnswerHold({
+			session: host,
+			tuiTranscript: options.tuiTranscript === true,
+			advisors: () => (this.#advisorEnabled ? this.#advisors : []),
+			steeringSuppressed: () => this.#advisorAutoResumeSuppressed || this.#preserveAdvisorAdvice,
+			inAdvisorContinuation: () => {
+				const continuation = this.#advisorContinuation;
+				return (
+					continuation !== undefined &&
+					lastPrimaryUserMessage(host.agent.state.messages) === continuation.userMessage
+				);
+			},
+		});
 		if (this.#advisorEnabled) this.#buildAdvisorRuntime();
 	}
 
@@ -696,8 +724,12 @@ export class SessionAdvisors {
 		messages: AgentMessage[],
 		willContinue: boolean | undefined,
 		signal?: AbortSignal,
+		/** Fork (`advisor.holdFinalAnswer`): the boundary's assistant message. */
+		turn?: AgentMessage,
 	): Promise<void> {
 		const terminalBoundary = willContinue !== true;
+		// Fork: `advisor.holdFinalAnswer`.
+		const heldTurn = this.answerHold.openBoundary(turn, terminalBoundary, signal);
 		if (terminalBoundary) this.#terminalUnwindActive = true;
 		// Delivery state follows primary boundaries even when review cadence skips a callback.
 		this.#advisorPrimaryWillContinue = willContinue === true;
@@ -770,15 +802,21 @@ export class SessionAdvisors {
 				const syncBacklog = scheduled.syncBacklog ?? globalSyncBacklog;
 				if (syncBacklog === "off") continue;
 				const strict = syncBacklog === "strict";
-				const threshold = strict ? 1 : Number.parseInt(syncBacklog, 10);
+				// Fork: a held answer waits until every queued review is done, its own
+				// included: a numeric threshold could release it before its review
+				// started. A numeric policy keeps its 30-second cap.
+				const threshold = strict || heldTurn?.terminal ? 1 : Number.parseInt(syncBacklog, 10);
 				waits.push(scheduled.runtime.waitForCatchup(strict ? undefined : 30_000, threshold, signal));
 			}
+			if (waits.length > 0) this.answerHold.startReview(heldTurn);
 			await Promise.all(waits);
 		} finally {
 			this.#advisorTerminalBoundaryOpen = false;
 			// Window closed: deliver everything buffered during flush + catch-up
 			// wait as one merged message (one steer at most, else one card).
 			this.#flushAdvisorBoundaryNotes();
+			// Fork: shows the held answer, or collapses one the flush sent back.
+			this.answerHold.closeBoundary(heldTurn);
 			// The merge window covers only this callback. With advisor.syncBacklog
 			// off the review drain can still emit after it returns; those late notes
 			// deliver individually through #routeAdvice, and `#terminalUnwindActive`
@@ -1120,6 +1158,7 @@ export class SessionAdvisors {
 	 * so none of them inject into the new conversation.
 	 */
 	#resetAdvisorSessionState(preserveCost: boolean): void {
+		this.answerHold.reset();
 		if (!preserveCost) {
 			this.#advisorCosts.clear();
 			this.#advisorSubscriptionSlugs.clear();
@@ -1927,6 +1966,12 @@ export class SessionAdvisors {
 	 * when a note qualifies on its own merits: its severity meets
 	 * `advisor.continueSeverity` (the advisor continuation latch prevents a
 	 * cascade). Otherwise preserves as a single visible card.
+	 *
+	 * A boundary whose final answer `advisor.holdFinalAnswer` kept from the user
+	 * steers under the held-answer guidance (`prompts/advisor/held-answer-guidance.md`,
+	 * never throttled) instead, so the primary
+	 * writes a complete replacement rather than a correction — unless the
+	 * boundary was aborted, which delivers normally and releases the draft.
 	 */
 	#flushAdvisorBoundaryNotes(): void {
 		if (this.#advisorBoundaryNotes.length === 0) return;
@@ -1938,6 +1983,18 @@ export class SessionAdvisors {
 			if (n.turn !== undefined && this.#advisorPrimaryTurnsCompleted > n.turn) {
 				n.turnsAgo = this.#advisorPrimaryTurnsCompleted - n.turn;
 			}
+		}
+		// Fork (`advisor.holdFinalAnswer`): a held answer whose review asks for a
+		// continuation goes back for a complete rewrite. It skips the concern
+		// cooldown, which shields visible work from repeated interruptions: a held
+		// draft was never shown and its rewrite is never held, so the skip happens
+		// once per answer and no reviewed draft becomes a late correction card.
+		if (this.answerHold.canSendBack() && notes.some(n => this.#continuesFinishedRun(n.severity, true))) {
+			const request = this.answerHold.sendBack(
+				formatAdvisorBatchContent(notes, { currentTurn: this.#advisorPrimaryTurnsCompleted }),
+			);
+			this.#deliverAdvisorBatch(notes, request, true, undefined, true);
+			return;
 		}
 		const showGuidance =
 			this.#advisorBoundaryGuidanceLastTurn === undefined ||
@@ -1960,8 +2017,9 @@ export class SessionAdvisors {
 	 * streaming, so "steer" means triggering one latched continuation turn, never
 	 * steering into the completed one; it also keeps user-stop suppression
 	 * independent of the exact unwind state.
+	 * `ignoreCooldown` skips the post-interrupt concern cooldown (held answers).
 	 */
-	#continuesFinishedRun(severity: AdvisorSeverity | undefined): boolean {
+	#continuesFinishedRun(severity: AdvisorSeverity | undefined, ignoreCooldown = false): boolean {
 		const continueSeverity = cfgAdvisorContinueSeverity.get(this.#host.settings);
 		if (!meetsAdvisorSeverity(severity, continueSeverity)) return false;
 		const channel = resolveAdvisorDeliveryChannel({
@@ -1972,7 +2030,7 @@ export class SessionAdvisors {
 			streaming: false,
 			aborting: this.#host.abortInProgress(),
 			terminalAnswerNoQueuedWork: this.#hasTerminalTextAnswerWithoutQueuedWork(),
-			interruptImmuneTurnActive: this.#isAdvisorInterruptImmuneTurnActive(),
+			interruptImmuneTurnActive: !ignoreCooldown && this.#isAdvisorInterruptImmuneTurnActive(),
 		});
 		return channel === "steer";
 	}
@@ -1986,9 +2044,17 @@ export class SessionAdvisors {
 	 * strictly worse than the visible preserved card. Preserve instead:
 	 *  - ACP bridges with `deferAgentInitiatedTurns`: the client cannot show an
 	 *    agent-initiated turn as busy, so idle triggers are refused (#5628 review).
+	 * `revisesHeldAnswer` marks the steered card as the rewrite request for an
+	 * answer `advisor.holdFinalAnswer` held.
 	 */
-	#deliverAdvisorBatch(notes: AdvisorNote[], content: string, steer: boolean, producer?: ActiveAdvisor): void {
-		const details = { notes } satisfies AdvisorMessageDetails;
+	#deliverAdvisorBatch(
+		notes: AdvisorNote[],
+		content: string,
+		steer: boolean,
+		producer?: ActiveAdvisor,
+		revisesHeldAnswer = false,
+	): void {
+		const details: AdvisorMessageDetails = revisesHeldAnswer ? { notes, revisedHeldAnswer: true } : { notes };
 		if (steer) {
 			// Plan mode preserves would-be-steering advice as a visible card:
 			// only user-driven turns converge on ask/resolve.

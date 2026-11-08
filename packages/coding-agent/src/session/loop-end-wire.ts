@@ -23,11 +23,20 @@ export type WireAgentEnd = AgentEndEvent & {
 	awaitingAsyncWork?: true;
 };
 
+/**
+ * Fork (`advisor.holdFinalAnswer`): a session event that stays in the process.
+ * Only the interactive TUI reads it; every wire boundary drops it before
+ * {@link toWireEvent}.
+ */
+export type LocalSessionEvent = Extract<AgentSessionEvent, { type: "advisor_answer_review" }>;
+
 /** A session event as the wires carry it. */
-export type WireSessionEvent = Exclude<AgentSessionEvent, { type: "agent_pause" | "agent_end" }> | WireAgentEnd;
+export type WireSessionEvent =
+	| Exclude<AgentSessionEvent, { type: "agent_pause" | "agent_end" } | LocalSessionEvent>
+	| WireAgentEnd;
 
 /** Encode a session event for a wire: loop pauses and the run's end both become flagged `agent_end`s. */
-export function toWireEvent(event: AgentSessionEvent): WireSessionEvent {
+export function toWireEvent(event: Exclude<AgentSessionEvent, LocalSessionEvent>): WireSessionEvent {
 	if (event.type === "agent_pause") {
 		return {
 			type: "agent_end",

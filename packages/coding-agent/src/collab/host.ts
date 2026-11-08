@@ -547,6 +547,8 @@ export class CollabHost {
 		// peer); a joining guest's welcome snapshot covers everything before that.
 		// The local registry work below is independent of this.
 		this.#unsubscribe = this.#ctx.session.subscribe(event => {
+			// Fork (`advisor.holdFinalAnswer`): the review event is for the host's own TUI only.
+			if (event.type === "advisor_answer_review") return;
 			// Guests speak the per-loop `agent_end` wire shape (see loop-end-wire.ts).
 			const wireEvent = toWireEvent(event);
 			if (isWireAgentEvent(wireEvent)) this.#broadcastEvent(wireEvent);

@@ -18,7 +18,10 @@
  *   or the recovered-retry note, each after a blank row.
  * - Markers draw as dividers; the rewound tag and usage line are native-only.
  * - While a block streams, the rows before it and its finished head are
- *   reported stable.
+ *   reported stable, unless the reply is held for advisor review
+ *   (`advisor.holdFinalAnswer`): nothing of it may reach scrollback yet. A
+ *   held answer sent back for a rewrite draws one dim line, then its draft
+ *   in `dim` while the error expansion is on.
  */
 import type { UiNode } from "@oh-my-pi/pi-tui";
 import { type Block, defineRolePainter, type Hit, type PaintContext } from "@oh-my-pi/pi-tui/term/paint";
@@ -30,11 +33,12 @@ import {
 	renderMarkdownFrame,
 	takeExtensionLinks,
 } from "@oh-my-pi/pi-tui/text/markdown/index";
-import { replaceTabs, wrap } from "@oh-my-pi/pi-tui/text/width";
+import { replaceTabs, truncate, wrap } from "@oh-my-pi/pi-tui/text/width";
 import type { Theme } from "@oh-my-pi/pi-tui/theme/contract";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import { terminalPaddingX } from "../terminal-padding";
 import { expandKeyLabel } from "../../keys/hints";
+import { REVISED_HELD_ANSWER_LABEL } from "../../transcript/messages/assistant-message";
 import { hexFg, paddedText, propsOf, termOf } from "./fill";
 import { imageLink } from "../tools/file-common";
 
@@ -47,6 +51,7 @@ const SPEED_MAX = 200;
 
 interface AssistantTerm {
 	thinkingDots?: { tokens: number; rate: number };
+	held?: boolean;
 }
 
 interface ProseTerm {
@@ -305,10 +310,24 @@ function paintAssistant(node: UiNode, cx: PaintContext): Block {
 		} else if (role.startsWith("omp.marker.")) {
 			pulse();
 			rows.push(...cx.paint(child, cx.width).rows);
+		} else if (role === "omp.assistant.revised") {
+			const paddingX = terminalPaddingX();
+			rows.push(
+				`${" ".repeat(paddingX)}${truncate(theme.fg("dim", REVISED_HELD_ANSWER_LABEL), Math.max(1, cx.width - 2 * paddingX))}`,
+			);
+			const draft = child.children().find(c => c.kind === "md");
+			const text = draft ? propsOf<{ text: string }>(draft).text : undefined;
+			if (text) {
+				const frame = renderMarkdownFrame(text, cx.width, { theme, paddingX, textStyle: "dim" });
+				rows.push("", ...frame.rows);
+			}
+			rendered = true;
 		}
 	}
 	pulse();
 	stable = Math.min(stable, deferredAt);
+	// A reply held for advisor review reports nothing stable: none of it may reach scrollback yet.
+	if (termOf<AssistantTerm>(node).held) stable = 0;
 	return { rows, ...(stable > 0 ? { stable } : {}), ...(hits.length > 0 ? { hits } : {}) };
 }
 

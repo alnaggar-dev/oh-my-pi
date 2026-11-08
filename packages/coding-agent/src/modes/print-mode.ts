@@ -91,6 +91,8 @@ function stripProviderPayload<T extends AgentMessage>(message: T): T {
  *   shape (`isTerminal`, `yielded`, `awaitingAsyncWork`; see `loop-end-wire.ts`).
  */
 export function printableEvent(sessionEvent: AgentSessionEvent): unknown {
+	// Fork (`advisor.holdFinalAnswer`): the review event is for the interactive TUI only.
+	if (sessionEvent.type === "advisor_answer_review") return undefined;
 	const event = toWireEvent(sessionEvent);
 	switch (event.type) {
 		case "tool_stream_update":
@@ -387,6 +389,8 @@ async function runPrintModeCore(
 
 	// Always subscribe to enable session persistence via _handleAgentEvent
 	session.subscribe(event => {
+		// Fork (`advisor.holdFinalAnswer`): the review event is never printed.
+		if (event.type === "advisor_answer_review") return;
 		// In JSON mode, output all events
 		if (mode === "json") {
 			stdout.writeLine(`${JSON.stringify(printableEvent(event))}\n`);
