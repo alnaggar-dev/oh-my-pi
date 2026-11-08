@@ -285,6 +285,7 @@ describe("UiHelpers.renderSessionContext turn elapsed", () => {
 			session: {
 				retryAttempt: 0,
 				getToolByName: () => undefined,
+				getAdvisorAnswerHold: () => undefined,
 				sessionManager: {
 					getCwd: () => process.cwd(),
 					getConversationTip: () => undefined,

@@ -12,6 +12,7 @@ function buildContext(): InteractiveModeContext {
 		transcriptMessageComponents: new WeakMap(),
 		viewSession: {
 			extensionRunner: undefined,
+			getAdvisorAnswerHold: () => undefined,
 			sessionManager: { putBlobSync: () => "unused" },
 		},
 		ui: { requestRender: vi.fn(), imageBudget: undefined },

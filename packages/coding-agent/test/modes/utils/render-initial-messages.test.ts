@@ -85,6 +85,7 @@ function makeCtx(): RenderInitialMessagesTestContext {
 		viewSession: {
 			buildTranscriptSessionContext: transcriptSpy,
 			hasBuiltInTool: () => true,
+			getAdvisorAnswerHold: () => undefined,
 			sessionManager: {
 				buildSessionContext: llmContextSpy,
 				getEntries: vi.fn(() => []),
@@ -197,6 +198,7 @@ function makeRenderCtx(
 			buildTranscriptSessionContext: () => transcript,
 			getToolByName: () => undefined,
 			hasBuiltInTool: () => true,
+			getAdvisorAnswerHold: () => undefined,
 			extensionRunner: undefined,
 			sessionManager: {
 				getEntries: vi.fn(() => []),
